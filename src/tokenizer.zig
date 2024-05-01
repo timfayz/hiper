@@ -269,10 +269,21 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             // strict mode only
             number_post_first_nonzero,
             number_post_first_zero,
-            number_post_base,
-            number_post_base_first_digit,
-            number_post_dot,
-            number_post_dot_first_digit,
+
+            number_post_base_bin,
+            number_post_base_oct,
+            number_post_base_hex,
+
+            number_post_base_first_digit_bin,
+            number_post_base_first_digit_oct,
+            number_post_base_first_digit_hex,
+
+            number_post_dot_decimal,
+            number_post_dot_hex,
+
+            number_post_dot_first_digit_decimal,
+            number_post_dot_first_digit_hex,
+
             number_post_exp,
             number_post_exp_sign,
             number_post_exp_first_digit,
@@ -285,6 +296,29 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
 
             // strict mode only
             string_post_double_quote,
+
+            pub fn toBase(s: @This()) Base {
+                return switch (s) {
+                    .number_post_base_bin,
+                    .number_post_base_first_digit_bin,
+                    => Base.binary,
+
+                    .number_post_base_oct,
+                    .number_post_base_first_digit_oct,
+                    => Base.octal,
+
+                    .number_post_base_hex,
+                    .number_post_base_first_digit_hex,
+                    .number_post_dot_first_digit_hex,
+                    .number_post_dot_hex,
+                    => Base.hex,
+
+                    .number_post_dot_decimal,
+                    .number_post_dot_first_digit_decimal,
+                    => Base.decimal,
+                    else => unreachable,
+                };
+            }
         };
 
         pub fn init(input: [:0]const u8) Self {
@@ -329,7 +363,6 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                     .end = s.index,
                 },
             };
-            var base: Base = .decimal;
             s.state = from;
             while (true) : (s.index += 1) {
                 const c = s.input[s.index];
@@ -486,7 +519,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                         switch (c) {
                             '0'...'9' => {}, // <nonzero><digit+>[..]
                             'e', 'E' => s.state = .number_post_exp, // <nonzero><exp>[..]
-                            '.' => s.state = .number_post_dot, // <nonzero><dot>[..]
+                            '.' => s.state = .number_post_dot_decimal, // <nonzero><dot>[..]
                             // TODO assert next is [0-9] or null otherwise invalid
                             '_' => if (s.input[s.index + 1] == '_') {
                                 token.tag = .invalid;
@@ -499,7 +532,6 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                                 break;
                             },
                             else => {
-                                // std.log.err("\'{}\', idx {}, len {}", .{ c, s.index, s.input.len });
                                 if (s.index == s.input.len) break;
                                 // isn't token char and isn't the last char
                                 s.state = .complete;
@@ -507,18 +539,18 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                             },
                         }
                     },
-                    .number_post_first_zero => { // 0[..] (hex, octal, bin only)
+                    .number_post_first_zero => { // 0[..]
                         switch (c) {
                             '.' => { // 0<dot>[..]
-                                s.state = .number_post_dot;
+                                s.state = .number_post_dot_decimal;
                             },
                             'e', 'E' => { // 0<exp>[..]
                                 s.state = .number_post_exp;
                             },
-                            'b', 'o', 'x' => { // 0<base>[..]
-                                base = Base.fromChar(c);
-                                s.state = .number_post_base;
-                            },
+                            // 0<base>[..]
+                            'b' => s.state = .number_post_base_bin,
+                            'o' => s.state = .number_post_base_oct,
+                            'x' => s.state = .number_post_base_hex,
                             // token char range except [boeEx]
                             '_', '0'...'9', 'a', 'c', 'd', 'f'...'n', 'p'...'w', 'y'...'z', 'A'...'D', 'F'...'Z' => {
                                 token.tag = .invalid;
@@ -532,34 +564,50 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                             },
                         }
                     },
-                    .number_post_base => { // 0<base>[..] (hex, octal, bin only)
-                        // assert next char is .. otherwise invalid
-                        switch (base) {
-                            .decimal => unreachable, // decimals cannot have base prefix
-                            inline else => |in_base| {
-                                if (in_base.isDigit(c)) { // 0<base><digit>[..]
-                                    s.state = .number_post_base_first_digit;
-                                } else {
-                                    if (s.index == s.input.len) {
-                                        token.tag = .incomplete;
-                                    } else {
-                                        token.tag = .invalid;
-                                        s.index += 1;
-                                    }
-                                    break;
-                                }
-                            },
+                    .number_post_base_bin,
+                    .number_post_base_oct,
+                    .number_post_base_hex,
+                    => |state| { // 0<base>[..]
+                        const base = state.toBase();
+                        // assert next char is ..
+                        if (base.isDigit(c)) { // 0<base><digit>[..]
+                            s.state = switch (base) {
+                                .binary => .number_post_base_first_digit_bin,
+                                .octal => .number_post_base_first_digit_oct,
+                                .hex => .number_post_base_first_digit_hex,
+                                else => unreachable,
+                            };
+                        } else {
+                            if (s.index == s.input.len) {
+                                token.tag = .incomplete;
+                            } else {
+                                token.tag = .invalid;
+                                s.index += 1;
+                            }
+                            break;
                         }
                     },
-                    .number_post_base_first_digit => { // 0<base><digit>[..] (hex, octal, bin only)
+                    .number_post_base_first_digit_bin,
+                    .number_post_base_first_digit_oct,
+                    .number_post_base_first_digit_hex,
+                    => |state| { // 0<base><digit>[..]
+                        const base = state.toBase();
                         switch (c) {
-                            '.', 'p', 'P' => { // 0<base><digit+>(<dot>|<exp>)[..]
-                                if (base != .hex) { // non-decimal floats available only for hex
+                            'p', 'P' => { // 0<base><digit+><exp>[..]
+                                if (base != .hex) { // non-decimal float points available only for hex
                                     token.tag = .invalid;
                                     s.index += 1;
                                     break;
                                 }
-                                s.state = if (c == '.') .number_post_dot else .number_post_exp;
+                                s.state = .number_post_exp;
+                            },
+                            '.' => { // 0<base><digit+><dot>[..]
+                                if (base != .hex) { // non-decimal exponents available only for hex
+                                    token.tag = .invalid;
+                                    s.index += 1;
+                                    break;
+                                }
+                                s.state = .number_post_dot_hex;
                             },
                             // token char range except [.pP]
                             '0'...'9', 'a'...'o', 'q'...'z', 'A'...'O', 'Q'...'Z' => |digit| { // 0<base><digit+>[..]
@@ -576,10 +624,17 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                             },
                         }
                     },
-                    .number_post_dot => { // <num><dot>[..] (any base)
-                        // assert next char is .. otherwise invalid
+                    .number_post_dot_decimal,
+                    .number_post_dot_hex,
+                    => |state| { // <num><dot>[..]
+                        const base = state.toBase();
+                        // assert next char is ..
                         if (base.isDigit(c)) { // <num><dot><digit>[..]
-                            s.state = .number_post_dot_first_digit;
+                            s.state = switch (base) {
+                                .decimal => .number_post_dot_first_digit_decimal,
+                                .hex => .number_post_dot_first_digit_hex,
+                                else => unreachable,
+                            };
                         } else {
                             if (s.index == s.input.len) {
                                 token.tag = .incomplete;
@@ -590,12 +645,15 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                             break;
                         }
                     },
-                    .number_post_dot_first_digit => { // <num><dot><digit>[..] (any base)
+                    .number_post_dot_first_digit_decimal,
+                    .number_post_dot_first_digit_hex,
+                    => |state| { // <num><dot><digit>[..] (any base)
+                        const base = state.toBase();
                         switch (c) {
                             '0'...'9', 'a'...'z', 'A'...'Z' => {
                                 if (base.isDigit(c)) continue; // <num><dot><digit+>[..]
-                                if (base == .decimal and (c == 'e' or c == 'E') or
-                                    base == .hex and (c == 'p' or c == 'P')) // <num><dot><digit+><exp>[..]
+                                if (base == .decimal and (c == 'e' or c == 'E') or // <num><dot><digit+><exp>[..]
+                                    base == .hex and (c == 'p' or c == 'P'))
                                 {
                                     s.state = .number_post_exp;
                                 } else {
@@ -618,7 +676,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                         }
                     },
                     .number_post_exp => { // <num><exp>[..]
-                        // assert next char is .. otherwise invalid
+                        // assert next char is ..
                         switch (c) {
                             '+', '-' => s.state = .number_post_exp_sign,
                             '0'...'9' => s.state = .number_post_exp_first_digit,
@@ -634,7 +692,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                         }
                     },
                     .number_post_exp_sign => { // <num><exp><sign>[..]
-                        // assert next char is .. otherwise invalid
+                        // assert next char is ..
                         switch (c) {
                             '0'...'9' => {
                                 s.state = .number_post_exp_first_digit;
@@ -848,7 +906,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                     'x' => .hex,
                     'o' => .octal,
                     'b' => .binary,
-                    else => unreachable,
+                    else => .decimal,
                 };
             }
         };
@@ -908,7 +966,7 @@ pub fn TokenizerStreaming(read_size: usize, opt: TokenizerOptions) type {
             return written;
         }
 
-        pub fn next(s: *Self) !Token {
+        pub inline fn next(s: *Self) !Token {
             return s.nextImpl(.complete, opt.strict_mode);
         }
 
@@ -1123,65 +1181,65 @@ test "test tokenizer" {
 
         // base 2
         try case("0b1 ", .number, .complete);
-        try case("0b1", .number, .number_post_base_first_digit);
-        try case("0b01", .number, .number_post_base_first_digit);
-        try case("0b09", .invalid, .number_post_base_first_digit);
-        try case("0b1z", .invalid, .number_post_base_first_digit);
-        try case("0b1Z", .invalid, .number_post_base_first_digit);
+        try case("0b1", .number, .number_post_base_first_digit_bin);
+        try case("0b01", .number, .number_post_base_first_digit_bin);
+        try case("0b09", .invalid, .number_post_base_first_digit_bin);
+        try case("0b1z", .invalid, .number_post_base_first_digit_bin);
+        try case("0b1Z", .invalid, .number_post_base_first_digit_bin);
         // failed base
-        try case("0b ", .invalid, .number_post_base);
-        try case("0b", .incomplete, .number_post_base);
+        try case("0b ", .invalid, .number_post_base_bin);
+        try case("0b", .incomplete, .number_post_base_bin);
 
         // base 8
         try case("0o1 ", .number, .complete);
-        try case("0o1", .number, .number_post_base_first_digit);
-        try case("0o07", .number, .number_post_base_first_digit);
-        try case("0o08", .invalid, .number_post_base_first_digit);
-        try case("0o7z", .invalid, .number_post_base_first_digit);
-        try case("0o7Z", .invalid, .number_post_base_first_digit);
+        try case("0o1", .number, .number_post_base_first_digit_oct);
+        try case("0o07", .number, .number_post_base_first_digit_oct);
+        try case("0o08", .invalid, .number_post_base_first_digit_oct);
+        try case("0o7z", .invalid, .number_post_base_first_digit_oct);
+        try case("0o7Z", .invalid, .number_post_base_first_digit_oct);
         // failed base
-        try case("0o ", .invalid, .number_post_base);
-        try case("0o", .incomplete, .number_post_base);
+        try case("0o ", .invalid, .number_post_base_oct);
+        try case("0o", .incomplete, .number_post_base_oct);
 
         // base 16
         try case("0x1 ", .number, .complete);
-        try case("0x1", .number, .number_post_base_first_digit);
-        try case("0x0f", .number, .number_post_base_first_digit);
-        try case("0x0F", .number, .number_post_base_first_digit);
-        try case("0x0g", .invalid, .number_post_base_first_digit);
-        try case("0x0G", .invalid, .number_post_base_first_digit);
-        try case("0xfz", .invalid, .number_post_base_first_digit);
-        try case("0xfZ", .invalid, .number_post_base_first_digit);
+        try case("0x1", .number, .number_post_base_first_digit_hex);
+        try case("0x0f", .number, .number_post_base_first_digit_hex);
+        try case("0x0F", .number, .number_post_base_first_digit_hex);
+        try case("0x0g", .invalid, .number_post_base_first_digit_hex);
+        try case("0x0G", .invalid, .number_post_base_first_digit_hex);
+        try case("0xfz", .invalid, .number_post_base_first_digit_hex);
+        try case("0xfZ", .invalid, .number_post_base_first_digit_hex);
         // failed base
-        try case("0x ", .invalid, .number_post_base);
-        try case("0x", .incomplete, .number_post_base);
+        try case("0x ", .invalid, .number_post_base_hex);
+        try case("0x", .incomplete, .number_post_base_hex);
 
         // floats dot:
         // base 10
         try case("0.0 ", .number, .complete);
-        try case("0.0", .number, .number_post_dot_first_digit);
-        try case("0.09", .number, .number_post_dot_first_digit);
-        try case("0.09.", .invalid, .number_post_dot_first_digit);
-        try case("0.09a", .invalid, .number_post_dot_first_digit);
+        try case("0.0", .number, .number_post_dot_first_digit_decimal);
+        try case("0.09", .number, .number_post_dot_first_digit_decimal);
+        try case("0.09.", .invalid, .number_post_dot_first_digit_decimal);
+        try case("0.09a", .invalid, .number_post_dot_first_digit_decimal);
         // failed dot
-        try case("0. ", .invalid, .number_post_dot);
-        try case("0..", .invalid, .number_post_dot);
-        try case("1. ", .invalid, .number_post_dot);
-        try case("1..", .invalid, .number_post_dot);
-        try case("0.", .incomplete, .number_post_dot);
-        try case("1.", .incomplete, .number_post_dot);
+        try case("0. ", .invalid, .number_post_dot_decimal);
+        try case("0..", .invalid, .number_post_dot_decimal);
+        try case("1. ", .invalid, .number_post_dot_decimal);
+        try case("1..", .invalid, .number_post_dot_decimal);
+        try case("0.", .incomplete, .number_post_dot_decimal);
+        try case("1.", .incomplete, .number_post_dot_decimal);
 
         // base 16
         try case("0xf.0 ", .number, .complete);
-        try case("0xf.0", .number, .number_post_dot_first_digit);
-        try case("0xf.09", .number, .number_post_dot_first_digit);
-        try case("0xf.09.", .invalid, .number_post_dot_first_digit);
-        try case("0xf.09z", .invalid, .number_post_dot_first_digit);
+        try case("0xf.0", .number, .number_post_dot_first_digit_hex);
+        try case("0xf.09", .number, .number_post_dot_first_digit_hex);
+        try case("0xf.09.", .invalid, .number_post_dot_first_digit_hex);
+        try case("0xf.09z", .invalid, .number_post_dot_first_digit_hex);
         // failed dot
-        try case("0x0. ", .invalid, .number_post_dot);
-        try case("0x0..", .invalid, .number_post_dot);
-        try case("0x0.", .incomplete, .number_post_dot);
-        try case("0x09.", .incomplete, .number_post_dot);
+        try case("0x0. ", .invalid, .number_post_dot_hex);
+        try case("0x0..", .invalid, .number_post_dot_hex);
+        try case("0x0.", .incomplete, .number_post_dot_hex);
+        try case("0x09.", .incomplete, .number_post_dot_hex);
 
         // floats exponent:
         // base 10
