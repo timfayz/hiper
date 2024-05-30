@@ -24,12 +24,12 @@ pub const Token = struct {
         newline, // \n
 
         // brackets
-        l_paren, // (
-        r_paren, // )
-        l_curly, // {
-        r_curly, // }
-        l_square, // [
-        r_square, // ]
+        left_paren, // (
+        right_paren, // )
+        left_curly, // {
+        right_curly, // }
+        left_square, // [
+        right_square, // ]
 
         // special
         single_quote, // ' (currently unused)
@@ -101,12 +101,12 @@ pub const Token = struct {
                 '\n' => .newline,
 
                 // brackets
-                '(' => .l_paren,
-                ')' => .r_paren,
-                '{' => .l_curly,
-                '}' => .r_curly,
-                '[' => .l_square,
-                ']' => .r_square,
+                '(' => .left_paren,
+                ')' => .right_paren,
+                '{' => .left_curly,
+                '}' => .right_curly,
+                '[' => .left_square,
+                ']' => .right_square,
 
                 // special
                 '\'' => .single_quote,
@@ -157,12 +157,12 @@ pub const Token = struct {
                 .newline => '\n',
 
                 // brackets
-                .l_paren => '(',
-                .r_paren => ')',
-                .l_curly => '{',
-                .r_curly => '}',
-                .l_square => '[',
-                .r_square => ']',
+                .left_paren => '(',
+                .right_paren => ')',
+                .left_curly => '{',
+                .right_curly => '}',
+                .left_square => '[',
+                .right_square => ']',
 
                 // special
                 .single_quote => '\'',
@@ -204,7 +204,7 @@ pub const Token = struct {
         return self.loc.end - self.loc.start;
     }
 
-    pub inline fn slice(self: *const Token, input: []const u8) []const u8 {
+    pub inline fn sliceFrom(self: *const Token, input: []const u8) []const u8 {
         return input[self.loc.start..self.loc.end];
     }
 
@@ -218,6 +218,10 @@ const TokenizerOptions = struct {
     /// * `true` - consume only valid tokens (useful if we want to terminate parsing as soon as the first encountered token is invalid).
     /// * `false` - consume any token that "looks" valid (useful if we want to tokenize complete input and report several invalid occasions).
     strict_mode: bool = true,
+    /// Enable ignoring of spaces as separate tokens:
+    /// * `true` - spaces are not recognized as separate tokens.
+    /// * `false` - spaces are recognized as separate tokens.
+    ignore_spaces: bool = false,
     /// Enable line cursor tracking.
     /// ```txt
     /// 0 1  2 3 4 5 6   tokenizer.index = 4 (buf.len = 3)
@@ -231,7 +235,7 @@ const TokenizerOptions = struct {
 /// Tokenizer splits input into a stream of tokens.
 /// To retrieve a token, use the `next()` function. Several invariants apply on every `next()` call:
 /// * An invalid token always contains the character that caused it, see token[token.len - 1].
-/// * Every token has 4 possible conditions:
+/// * Returned token has 4 possible conditions:
 ///   Tag          State
 ///  .[tag],      .complete   -- Completed and valid token (next token will be of a different tag).
 ///  .[tag],      .[state]    -- Valid token but potentially extendable if stream continues.
@@ -255,8 +259,12 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             line_number: usize = 1,
         };
 
-        /// The state in which tokenizer returns.
+        /// The state in which tokenizer starts and returns.
         pub const State = enum {
+            /// Orphan state, reachable only by specifying `nextFrom(.space)`.
+            space,
+
+            /// Initial state that leads to other child states below.
             complete,
 
             identifier_non_strict,
@@ -345,17 +353,21 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
         }
 
         pub fn validate(s: *Self, tag: Token.Tag) bool {
-            const token = s.nextImpl(.complete, true);
+            const token = s.nextImpl(.complete, .{ .strict = true, .ignore_spaces = false });
             defer s.rewind(token);
             return token.tag == tag;
         }
 
         /// Read the Tokenizer's doc comment.
         pub inline fn next(self: *Self) Token {
-            return self.nextImpl(.complete, opt.strict_mode);
+            return self.nextFrom(.complete);
         }
 
-        pub fn nextImpl(s: *Self, from: State, comptime strict: bool) Token {
+        pub inline fn nextFrom(s: *Self, from: State) Token {
+            return s.nextImpl(from, .{ .strict = opt.strict_mode, .ignore_spaces = opt.ignore_spaces });
+        }
+
+        pub fn nextImpl(s: *Self, from: State, comptime mode: struct { strict: bool, ignore_spaces: bool }) Token {
             var token = Token{
                 .tag = .eof,
                 .loc = .{
@@ -364,9 +376,24 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                 },
             };
             s.state = from;
-            while (true) : (s.index += 1) {
+            while (true) : (s.index +%= 1) {
                 const c = s.input[s.index];
                 switch (s.state) {
+                    .space => { // orphan
+                        switch (c) {
+                            ' ' => {
+                                token.tag = .space;
+                                s.index += 1;
+                                while (s.input[s.index] == ' ') : (s.index += 1) {}
+                                s.state = .complete;
+                                break;
+                            },
+                            else => {
+                                s.index -%= 1;
+                                s.state = .complete;
+                            },
+                        }
+                    },
                     .complete => { // equivalent to '.start' and '.end'
                         switch (c) {
                             0 => {
@@ -379,10 +406,14 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
 
                             // whitespace
                             ' ' => {
-                                token.tag = .space;
-                                s.index += 1;
-                                while (s.input[s.index] == ' ') : (s.index += 1) {}
-                                break;
+                                if (mode.ignore_spaces) {
+                                    token.loc.start += 1;
+                                } else {
+                                    token.tag = .space;
+                                    s.index += 1;
+                                    while (s.input[s.index] == ' ') : (s.index += 1) {}
+                                    break;
+                                }
                             },
                             '\n' => {
                                 token.tag = .newline;
@@ -432,17 +463,17 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                             // identifier
                             '_', 'a'...'z', 'A'...'Z' => {
                                 token.tag = .identifier;
-                                s.state = comptime if (!strict) .identifier_non_strict else .identifier_post_first_alpha;
+                                s.state = comptime if (!mode.strict) .identifier_non_strict else .identifier_post_first_alpha;
                             },
 
                             // number
                             '0' => {
                                 token.tag = .number;
-                                s.state = comptime if (!strict) .number_non_strict else .number_post_first_zero;
+                                s.state = comptime if (!mode.strict) .number_non_strict else .number_post_first_zero;
                             },
                             '1'...'9' => {
                                 token.tag = .number;
-                                s.state = comptime if (!strict) .number_non_strict else .number_post_first_nonzero;
+                                s.state = comptime if (!mode.strict) .number_non_strict else .number_post_first_nonzero;
                             },
 
                             // string literal
@@ -453,7 +484,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
 
                             '\'' => {
                                 token.tag = .char;
-                                s.state = comptime if (!strict) .char_non_strict else .char_post_single_quote;
+                                s.state = comptime if (!mode.strict) .char_non_strict else .char_post_single_quote;
                             },
 
                             else => {
@@ -846,10 +877,6 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             return token;
         }
 
-        pub inline fn nextFromState(s: *Self, from: State) Token {
-            return s.nextImpl(from, opt.strict_mode);
-        }
-
         pub fn nextIs(s: *Self, tag: Token.Tag) bool {
             // TODO add support for strings, numbers, etc
             // TODO add invariant or comment that this would work only on a fresh start (after previous token is .complete)
@@ -913,141 +940,14 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
     };
 }
 
-pub fn TokenizerStreaming(read_size: usize, opt: TokenizerOptions) type {
-    return struct {
-        reader: std.io.AnyReader,
-        offset: usize = @as(usize, 0) -% read_size,
-        buffer: [read_size:0]u8,
-        impl: Implementation,
-
-        const Self = @This();
-        pub const Implementation = Tokenizer(opt);
-
-        pub fn init(reader: std.io.AnyReader) !Self {
-            var tokenizer = Self{
-                .reader = reader,
-                .buffer = undefined,
-                .impl = .{
-                    .input = undefined,
-                    .index = 0,
-                    .state = .complete,
-                },
-            };
-            _ = try tokenizer.feedInput();
-
-            // TODO check on new.tokenizer.input.len, if < 3 do refill read
-            const start: usize = if (std.mem.startsWith(u8, &tokenizer.buffer, "\xEF\xBB\xBF")) 3 else 0;
-            tokenizer.impl.index = start;
-
-            return tokenizer;
-        }
-
-        pub inline fn atLine(s: *const Self) usize {
-            return s.impl.atLine();
-        }
-
-        pub inline fn atCol(s: *const Self) usize {
-            return (s.offset + s.impl.index) -% s.impl.loc.line_start;
-        }
-
-        /// Returns the actual index in the stream of data.
-        pub inline fn index(s: *const Self) usize {
-            return s.offset + s.impl.index;
-        }
-
-        pub fn feedInput(s: *Self) !usize {
-            // assert we are done with the last refilled input
-            if (s.impl.index != s.impl.input.len) return error.RefillOfUnreadInput;
-            const written = try s.reader.readAll(&s.buffer);
-            s.buffer[written] = 0;
-            s.impl.input = s.buffer[0..written :0];
-            s.impl.index = 0;
-            s.offset +%= s.buffer.len;
-            return written;
-        }
-
-        pub inline fn next(s: *Self) !Token {
-            return s.nextImpl(.complete, opt.strict_mode);
-        }
-
-        /// Retrieve the next token across (possibly multiple) reads.
-        pub fn nextImpl(s: *Self, from: Implementation.State, comptime strict: bool) !Token {
-            // first run
-            std.log.err("{}", .{s.impl.input.len});
-            var token = s.impl.nextImpl(from, strict);
-            const tag = token.tag; // persistent across reads
-            const start = s.offset + token.loc.start; // persistent across reads
-
-            while (true) {
-                // continuation won't help (token became invalid after refill)
-                if (token.tag == .invalid) break;
-                // continuation not needed (token was completed after refill)
-                if (s.impl.state == .complete) break;
-                // refill
-                const written = try s.feedInput();
-                // continuation not possible, stream has ended
-                if (written == 0) {
-                    if (token.tag == .incomplete) { // refill didn't help completing the token
-                        token.tag = .invalid; // then it was simply invalid
-                    }
-                    break;
-                }
-                // continue
-                token = s.impl.nextImpl(s.impl.state, strict);
-            }
-
-            token.tag = if (token.tag == .invalid) .invalid else tag;
-            token.loc.start = start;
-            token.loc.end = s.offset + token.loc.end;
-            return token;
-        }
-
-        pub fn nextAlloc(s: *Self, alloc: std.mem.Allocator) Token {
-            _ = s; // autofix
-            _ = alloc; // autofix
-        }
-    };
-}
-
-test "test buffered tokenizer" {
-    if (true) return error.SkipZigTest;
-    const t = std.testing;
-    const buffer = std.io.fixedBufferStream;
-
-    var stream = buffer("123,45");
-    // const alc = std.heap.c_allocator;
-
-    var scan = try TokenizerStreaming(1, .{
-        .strict_mode = true,
-        .track_location = true,
-    }).init(stream.reader().any());
-
-    {
-        const token = try scan.next();
-        try t.expectEqual(.number, token.tag);
-        try t.expectEqual(.complete, scan.impl.state);
-    }
-    {
-        const token = try scan.next();
-        try t.expectEqual(.comma, token.tag);
-        try t.expectEqual(.complete, scan.impl.state);
-    }
-
-    {
-        const token = try scan.next();
-        try t.expectEqual(.number, token.tag);
-        try t.expectEqual(.complete, scan.impl.state);
-    }
-}
-
 test "test tokenizer" {
-    // if (true) return error.SkipZigTest;
     const t = std.testing;
 
     const case = struct {
         const Options = TokenizerOptions{
             .strict_mode = true,
             .track_location = true,
+            .ignore_spaces = false,
         };
 
         const T = Tokenizer(Options);
@@ -1068,7 +968,6 @@ test "test tokenizer" {
             try t.expectEqual(expect_tag, token.tag);
         }
 
-        const stream = std.io.fixedBufferStream;
         pub fn run(input: [:0]const u8, expect_tag: Token.Tag, expect_state: T.State) !void {
             { // complete input tokenizer
                 var scan = T.init(input);
@@ -1076,6 +975,8 @@ test "test tokenizer" {
 
                 try assert(input, token, expect_tag, scan.state, expect_state);
             }
+
+            // const stream = std.io.fixedBufferStream;
             // { // partial input tokenizer
             //     var fbs = std.io.fixedBufferStream(input);
             //     const reader = fbs.reader().any();
@@ -1087,6 +988,7 @@ test "test tokenizer" {
         }
     }.run;
 
+    // Test correct location tracking.
     {
         var scan = Tokenizer(.{ .track_location = true }).init("\nfoo!\n\n");
         // cold start
@@ -1124,8 +1026,11 @@ test "test tokenizer" {
         try t.expectEqual(1, scan.atCol());
     }
 
-    // In this test set, all complete valid tokens end with a space to avoid tokenizing only the correct beginning and leaving the invalid end.
+    // Test correct token recognition.
     {
+        // Note, in this test set, all complete valid tokens end with a space to
+        // avoid tokenizing only the correct beginning and leaving the invalid end.
+
         // primes
         // -------------------------------
         // whitespace
@@ -1133,12 +1038,12 @@ test "test tokenizer" {
         try case("\n ", .newline, .complete);
 
         // brackets
-        try case("( ", .l_paren, .complete);
-        try case(") ", .r_paren, .complete);
-        try case("{ ", .l_curly, .complete);
-        try case("} ", .r_curly, .complete);
-        try case("[ ", .l_square, .complete);
-        try case("] ", .r_square, .complete);
+        try case("( ", .left_paren, .complete);
+        try case(") ", .right_paren, .complete);
+        try case("{ ", .left_curly, .complete);
+        try case("} ", .right_curly, .complete);
+        try case("[ ", .left_square, .complete);
+        try case("] ", .right_square, .complete);
 
         // special
         // no single quotes (see strings)
@@ -1312,11 +1217,11 @@ test "test tokenizer" {
         try case("0.000000001 ", .number, .complete); // nanosecond
         try case("0x12345678.9ABCCDEFp-10 ", .number, .complete); // more_hex
 
-        // char
+        // chars
         // -------------------------------
         try case("\'", .char, .char_post_single_quote);
 
-        // string
+        // strings
         // -------------------------------
         try case("\"\" ", .string, .complete);
         try case("\"", .incomplete, .string_post_double_quote);
@@ -1325,20 +1230,163 @@ test "test tokenizer" {
 
         // mixed
         // -------------------------------
-        const input = "  hello!\n\n{123,456}+";
-        var scan = Tokenizer(.{}).init(input);
-        try t.expectEqual(.space, scan.next().tag);
-        try t.expectEqual(.identifier, scan.next().tag);
-        try t.expectEqual(true, scan.nextIs(.exclamation));
-        try t.expectEqual(.exclamation, scan.next().tag);
-        try t.expectEqual(.newline, scan.next().tag);
-        try t.expectEqual(.l_curly, scan.next().tag);
-        try t.expectEqual(.number, scan.next().tag);
-        try t.expectEqual(.comma, scan.next().tag);
-        try t.expectEqual(.number, scan.next().tag);
-        try t.expectEqual(.r_curly, scan.next().tag);
-        try t.expectEqual(.plus, scan.next().tag);
-        try t.expectEqual(.eof, scan.next().tag);
-        try t.expectEqual(.eof, scan.next().tag);
+        {
+            var scan = Tokenizer(.{}).init("  hello!\n\n{123,456}+");
+            try t.expectEqual(.space, scan.next().tag);
+            try t.expectEqual(.identifier, scan.next().tag);
+            try t.expectEqual(true, scan.nextIs(.exclamation));
+            try t.expectEqual(.exclamation, scan.next().tag);
+            try t.expectEqual(.newline, scan.next().tag);
+            try t.expectEqual(.left_curly, scan.next().tag);
+            try t.expectEqual(.number, scan.next().tag);
+            try t.expectEqual(.comma, scan.next().tag);
+            try t.expectEqual(.number, scan.next().tag);
+            try t.expectEqual(.right_curly, scan.next().tag);
+            try t.expectEqual(.plus, scan.next().tag);
+            try t.expectEqual(.eof, scan.next().tag);
+            try t.expectEqual(.eof, scan.next().tag);
+        }
+
+        // spaces
+        // -------------------------------
+        {
+            var scan = Tokenizer(.{ .ignore_spaces = true }).init(" 1");
+            try t.expectEqual(.number, scan.next().tag);
+        }
+        {
+            var scan = Tokenizer(.{ .ignore_spaces = true }).init(" 1");
+            try t.expectEqual(.space, scan.nextFrom(.space).tag);
+        }
+        {
+            var scan = Tokenizer(.{ .ignore_spaces = true }).init("1");
+            try t.expectEqual(.number, scan.nextFrom(.space).tag);
+        }
+    }
+}
+
+pub fn TokenizerStreaming(read_size: usize, opt: TokenizerOptions) type {
+    return struct {
+        reader: std.io.AnyReader,
+        offset: usize = @as(usize, 0) -% read_size,
+        buffer: [read_size:0]u8,
+        impl: Implementation,
+
+        const Self = @This();
+        pub const Implementation = Tokenizer(opt);
+
+        pub fn init(reader: std.io.AnyReader) !Self {
+            var tokenizer = Self{
+                .reader = reader,
+                .buffer = undefined,
+                .impl = .{
+                    .input = undefined,
+                    .index = 0,
+                    .state = .complete,
+                },
+            };
+            _ = try tokenizer.feedInput();
+
+            // TODO check on new.tokenizer.input.len, if < 3 do refill read
+            const start: usize = if (std.mem.startsWith(u8, &tokenizer.buffer, "\xEF\xBB\xBF")) 3 else 0;
+            tokenizer.impl.index = start;
+
+            return tokenizer;
+        }
+
+        pub inline fn atLine(s: *const Self) usize {
+            return s.impl.atLine();
+        }
+
+        pub inline fn atCol(s: *const Self) usize {
+            return (s.offset + s.impl.index) -% s.impl.loc.line_start;
+        }
+
+        /// Returns the actual index in the stream of data.
+        pub inline fn index(s: *const Self) usize {
+            return s.offset + s.impl.index;
+        }
+
+        pub fn feedInput(s: *Self) !usize {
+            // assert we are done with the last refilled input
+            if (s.impl.index != s.impl.input.len) return error.RefillOfUnreadInput;
+            const written = try s.reader.readAll(&s.buffer);
+            s.buffer[written] = 0;
+            s.impl.input = s.buffer[0..written :0];
+            s.impl.index = 0;
+            s.offset +%= s.buffer.len;
+            return written;
+        }
+
+        pub inline fn next(s: *Self) !Token {
+            return s.nextImpl(.complete, opt.strict_mode);
+        }
+
+        /// Retrieve the next token across (possibly multiple) reads.
+        pub fn nextImpl(s: *Self, from: Implementation.State, comptime strict: bool) !Token {
+            // first run
+            std.log.err("{}", .{s.impl.input.len});
+            var token = s.impl.nextImpl(from, strict);
+            const tag = token.tag; // persistent across reads
+            const start = s.offset + token.loc.start; // persistent across reads
+
+            while (true) {
+                // continuation won't help (token became invalid after refill)
+                if (token.tag == .invalid) break;
+                // continuation not needed (token was completed after refill)
+                if (s.impl.state == .complete) break;
+                // refill
+                const written = try s.feedInput();
+                // continuation not possible, stream has ended
+                if (written == 0) {
+                    if (token.tag == .incomplete) { // refill didn't help completing the token
+                        token.tag = .invalid; // then it was simply invalid
+                    }
+                    break;
+                }
+                // continue
+                token = s.impl.nextImpl(s.impl.state, strict);
+            }
+
+            token.tag = if (token.tag == .invalid) .invalid else tag;
+            token.loc.start = start;
+            token.loc.end = s.offset + token.loc.end;
+            return token;
+        }
+
+        pub fn nextAlloc(s: *Self, alloc: std.mem.Allocator) Token {
+            _ = s; // autofix
+            _ = alloc; // autofix
+        }
+    };
+}
+
+test "test buffered tokenizer" {
+    if (true) return;
+    const t = std.testing;
+    const buffer = std.io.fixedBufferStream;
+
+    var stream = buffer("123,45");
+    // const alc = std.heap.c_allocator;
+
+    var scan = try TokenizerStreaming(1, .{
+        .strict_mode = true,
+        .track_location = true,
+    }).init(stream.reader().any());
+
+    {
+        const token = try scan.next();
+        try t.expectEqual(.number, token.tag);
+        try t.expectEqual(.complete, scan.impl.state);
+    }
+    {
+        const token = try scan.next();
+        try t.expectEqual(.comma, token.tag);
+        try t.expectEqual(.complete, scan.impl.state);
+    }
+
+    {
+        const token = try scan.next();
+        try t.expectEqual(.number, token.tag);
+        try t.expectEqual(.complete, scan.impl.state);
     }
 }
