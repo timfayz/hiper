@@ -18,7 +18,7 @@ pub const Token = struct {
         invalid, // non-recoverable (even if stream continues)
         eof, // end of stream
 
-        // single-char tokens
+        // symbol tokens
         // whitespace
         space, //
         newline, // \n
@@ -26,6 +26,8 @@ pub const Token = struct {
         // brackets
         left_paren, // (
         right_paren, // )
+        empty_parens, // ()
+
         left_curly, // {
         right_curly, // }
         left_square, // [
@@ -47,6 +49,7 @@ pub const Token = struct {
         pipe, // |
         hash, // #
         plus, // +
+        plus_plus, // ++
         minus, // -
         percent, // %
         asterisk, // *
@@ -58,7 +61,7 @@ pub const Token = struct {
         gt, // >
         at, // @
 
-        // composite tokens
+        // literal tokens
         number,
         identifier,
         string,
@@ -267,14 +270,22 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             /// Initial state that leads to other child states below.
             complete,
 
+            // symbol token states
+
+            left_paren,
+            plus,
+
+            // literal token states
+
             identifier_non_strict,
-            // strict mode only
+            // strict mode only {
             identifier_post_first_alpha,
             identifier_post_first_digit,
             identifier_end,
+            // }
 
             number_non_strict,
-            // strict mode only
+            // strict mode only {
             number_post_first_nonzero,
             number_post_first_zero,
 
@@ -295,16 +306,18 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             number_post_exp,
             number_post_exp_sign,
             number_post_exp_first_digit,
+            // }
 
             char_non_strict,
-            // strict mode only
+            // strict mode only {
             char_post_single_quote,
             char_post_backslash,
             char_end,
+            // }
 
-            // strict mode only
             string_post_double_quote,
 
+            /// Applicable only for .number_* states
             pub fn toBase(s: @This()) Base {
                 return switch (s) {
                     .number_post_base_bin,
@@ -422,9 +435,11 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                                 break;
                             },
 
+                            '(' => s.state = .left_paren,
+                            '+' => s.state = .plus,
+
                             inline // "for each"
                             // brackets
-                            '(',
                             ')',
                             '{',
                             '}',
@@ -443,7 +458,6 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                             '^',
                             '|',
                             '#',
-                            '+',
                             '-',
                             '%',
                             '*',
@@ -490,6 +504,34 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                             else => {
                                 token.tag = .invalid;
                                 s.index += 1;
+                                break;
+                            },
+                        }
+                    },
+
+                    .plus => {
+                        switch (c) {
+                            '+' => {
+                                token.tag = .plus_plus;
+                                s.index += 1;
+                            },
+                            else => token.tag = .plus,
+                        }
+                        s.state = .complete;
+                        break;
+                    },
+
+                    .left_paren => {
+                        switch (c) {
+                            ')' => {
+                                token.tag = .empty_parens;
+                                s.state = .complete;
+                                s.index += 1;
+                                break;
+                            },
+                            else => {
+                                token.tag = .left_paren;
+                                s.state = .complete;
                                 break;
                             },
                         }
@@ -911,19 +953,19 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
 
             const digit_value = blk: {
                 var table = [1]u8{0xFF} ** 256;
-                for ('0'..'9' + 1) |ch| {
+                for ('0'..'9' + 1) |ch| { // maps to 0..9
                     table[ch] = ch - '0';
                 }
-                for ('a'..'f' + 1) |ch| {
-                    table[ch] = ch - 'a' + 10;
+                for ('a'..'f' + 1) |ch| { // maps to 10..15
+                    table[ch] = (ch - 'a') + 10;
                 }
-                for ('A'..'F' + 1) |ch| {
-                    table[ch] = ch - 'A' + 10;
+                for ('A'..'F' + 1) |ch| { // maps to 10..15
+                    table[ch] = (ch - 'A') + 10;
                 }
                 break :blk table;
             };
 
-            // digit must be '0'...'9'
+            /// Applicable only for digits within '0'..'9'
             pub inline fn isDigit(base: @This(), digit: u8) bool {
                 return digit_value[digit] < @intFromEnum(base);
             }
@@ -1040,6 +1082,7 @@ test "test tokenizer" {
         // brackets
         try case("( ", .left_paren, .complete);
         try case(") ", .right_paren, .complete);
+        try case("() ", .empty_parens, .complete);
         try case("{ ", .left_curly, .complete);
         try case("} ", .right_curly, .complete);
         try case("[ ", .left_square, .complete);
@@ -1060,6 +1103,7 @@ test "test tokenizer" {
         try case("| ", .pipe, .complete);
         try case("# ", .hash, .complete);
         try case("+ ", .plus, .complete);
+        try case("++ ", .plus_plus, .complete);
         try case("- ", .minus, .complete);
         try case("% ", .percent, .complete);
         try case("* ", .asterisk, .complete);
