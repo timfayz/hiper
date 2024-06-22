@@ -111,6 +111,95 @@ const Tokenizer = @import("tokenizer.zig").Tokenizer(
     .{ .ignore_spaces = true },
 );
 
+const debug = struct {
+    /// Activate dumping parse state to stderr if `pub const
+    /// debug = true` is present in a user file that imports this file
+    const mode = false or @hasDecl(@import("root"), "debug");
+    const color = @import("ansi_colors.zig");
+
+    pub fn stacks(p: *Parser) void {
+        if (mode) {
+            const stderr = std.io.getStdErr().writer();
+            var bw = std.io.bufferedWriter(stderr);
+            const w = bw.writer();
+
+            const operators = p.pending.operators.items;
+            const operands = p.pending.operands.items;
+            const scopes = p.pending.scope.items;
+
+            // stacks width
+            const op_len = 16;
+            const od_len = 16;
+            const sc_len = 18;
+            var i: usize = @max(scopes.len, @max(operands.len, operators.len)) -| 1;
+
+            // border
+            const border = "+" ++ ("-" ** (op_len + od_len + sc_len + 8)) ++ "+";
+
+            w.print("{s}\n", .{border}) catch return;
+            while (true) : (i -= 1) { // zip print
+                const operand = if (i >= operands.len) "" else blk: {
+                    const name = @tagName(operands[i].tag);
+                    break :blk if (name.len > op_len) name[0 .. op_len - 2] ++ ".." else name;
+                };
+
+                const operator = if (i >= operators.len) "" else blk: {
+                    const name = @tagName(operators[i]);
+                    break :blk if (name.len > od_len) name[0 .. od_len - 2] ++ ".." else name;
+                };
+
+                const st = if (i >= scopes.len) "" else blk: {
+                    const name = @tagName(scopes[i].state)[7..];
+                    break :blk if (name.len > sc_len) name[0 .. sc_len - 2] ++ ".." else name;
+                };
+
+                const bracket = if (i >= scopes.len) "" else blk: {
+                    break :blk switch (scopes[i].closing_token) {
+                        .right_paren => ")",
+                        .right_curly => "}",
+                        .right_square => "]",
+                        else => unreachable,
+                    };
+                };
+
+                w.print("|{s: <16}| |{s: <16}| |{s: <18}{s: >2}|\n", .{ operand, operator, st, bracket }) catch return;
+
+                if (i == 0) break;
+            }
+            w.print("{s}\n", .{border}) catch return;
+
+            bw.flush() catch return;
+        }
+    }
+
+    pub fn cursor(p: *Parser) void {
+        if (mode) {
+            print("[state: " ++ color.ctEscape(.{.bold}, "{s}") ++ ", token: {s}]\n", .{ @tagName(p.state), @tagName(p.token.tag) });
+        }
+    }
+
+    pub fn at(src: std.builtin.SourceLocation) void {
+        if (mode) {
+            print("[action: {s}]\n", .{src.fn_name});
+        }
+    }
+
+    pub fn action(tag: Node.Tag) void {
+        if (mode) {
+            print("[action: {s}]\n", .{@tagName(tag)});
+        }
+    }
+    pub fn end() void {
+        if (mode) print("END\n", .{});
+    }
+
+    fn print(comptime fmt: []const u8, args: anytype) void {
+        if (mode) {
+            std.io.getStdErr().writer().print(fmt, args) catch return;
+        }
+    }
+};
+
 pub const Parser = struct {
     tokenizer: Tokenizer,
     indent: struct {
@@ -125,6 +214,7 @@ pub const Parser = struct {
         const Stack = @This();
 
         pub inline fn resolveAllIfPrecedenceIsHigher(s: *Stack, alloc: std.mem.Allocator, current: Node.Tag) Error!void {
+            debug.at(@src());
             while (s.operators.getLastOrNull()) |pending| {
                 if (pending.precedence() > current.precedence() or
                     (pending.precedence() == current.precedence() and !current.isRightAssociative()))
@@ -135,6 +225,7 @@ pub const Parser = struct {
         }
 
         pub inline fn resolveAllUntil(s: *Stack, alloc: std.mem.Allocator, tag: Node.Tag) Error!void {
+            debug.at(@src());
             while (s.operators.popOrNull()) |operator| {
                 try s.resolveAs(alloc, operator);
                 if (operator == tag) break;
@@ -142,18 +233,21 @@ pub const Parser = struct {
         }
 
         pub inline fn resolveAll(s: *Stack, alloc: std.mem.Allocator) Error!void {
+            debug.at(@src());
             while (s.operators.popOrNull()) |operator| {
                 try s.resolveAs(alloc, operator);
             }
         }
 
         pub fn resolveOnce(s: *Stack, alloc: std.mem.Allocator) Error!void {
+            debug.at(@src());
             if (s.operators.popOrNull()) |operator| {
                 try s.resolveAs(alloc, operator);
             }
         }
 
         pub fn resolveAs(s: *Stack, alloc: std.mem.Allocator, operator: Node.Tag) Error!void {
+            debug.action(operator);
             switch (operator) {
                 // discarding operators
                 .op_scope => {},
@@ -265,7 +359,8 @@ pub const Parser = struct {
         p.token = p.tokenizer.nextFrom(.space);
         p.state = from;
         parse: while (true) {
-            try p.printStacks(alloc);
+            debug.cursor(p);
+            debug.stacks(p);
             switch (p.state) {
                 // initialization state
                 .expect_leading_space => {
@@ -480,6 +575,7 @@ pub const Parser = struct {
 
         try p.pending.resolveAll(alloc);
 
+        debug.end();
         return p.pending.operands.popOrNull();
     }
 
@@ -488,119 +584,18 @@ pub const Parser = struct {
         return p.parse(alloc, .expect_leading_space);
     }
 
-    pub fn errMessage(p: *Parser, alloc: std.mem.Allocator) ![]u8 {
-        if (p.err) |err| {
-            return switch (err) {
-                .UnbalancedOperandStack => {
-                    std.fmt.allocPrint(alloc, "Invalid token {s}: {}", .{ err.token.sliceFrom(p.tokenizer.input), err.token.loc });
-                },
-            };
-        }
-    }
-
-    fn printStacks(p: *Parser, alloc: std.mem.Allocator) !void {
-        var out = std.ArrayList(u8).init(alloc);
-        const operators = p.pending.operators.items;
-        const operands = p.pending.operands.items;
-        const scopes = p.pending.scope.items;
-
-        var i: usize = @max(scopes.len, @max(operands.len, operators.len)) -| 1;
-        const l1 = 16;
-        const l2 = 16;
-        const l3 = 18;
-        while (true) : (i -= 1) { // zip print
-            const operand = if (i >= operands.len) "" else blk: {
-                const name = @tagName(operands[i].tag);
-                break :blk if (name.len > l1) name[0 .. l1 - 2] ++ ".." else name;
-            };
-
-            const operator = if (i >= operators.len) "" else blk: {
-                const name = @tagName(operators[i]);
-                break :blk if (name.len > l2) name[0 .. l2 - 2] ++ ".." else name;
-            };
-
-            const state = if (i >= scopes.len) "" else blk: {
-                const name = @tagName(scopes[i].state)[7..];
-                break :blk if (name.len > l3) name[0 .. l3 - 2] ++ ".." else name;
-            };
-
-            const bracket = if (i >= scopes.len) "   " else blk: {
-                break :blk switch (scopes[i].closing_token) {
-                    .right_paren => "')'",
-                    .right_curly => "'}'",
-                    .right_square => "']'",
-                    else => unreachable,
-                };
-            };
-
-            try out.writer().print("|{s: <16}| |{s: <16}| |{s: <18} {s}|\n", .{ operand, operator, state, bracket });
-
-            if (i == 0) break;
-        }
-        const sep = ("-" ** (l1 + l2 + l3 + 11)) ++ "\n";
-
-        const stderr = std.io.getStdErr().writer();
-        var bw = std.io.bufferedWriter(stderr);
-        bw.writer().print("\n{s}", .{@tagName(p.state)}) catch return;
-        bw.writer().print("\n{s}" ++ sep, .{out.items}) catch return;
-        bw.flush() catch return;
+    pub fn errMessage(p: *Parser, alloc: std.mem.Allocator, err: Error) ![]u8 {
+        return switch (err) {
+            Error.UnbalancedOperandsStack => std.fmt.allocPrint(alloc, "Invalid token {s}: {}", .{ p.token.sliceFrom(p.tokenizer.input), p.token.loc }),
+            else => {
+                return error.UnsupportedErrorMessage;
+            },
+        };
     }
 };
 
-pub fn renderDebugTree(alloc: std.mem.Allocator, tree: ?*Node, lvl: usize) ![]u8 {
-    if (tree) |node| {
-        var out = std.ArrayList(u8).init(alloc);
-        const indent_size = 2;
-        // `  [node_tag]`
-        try out.appendNTimes(' ', indent_size * lvl);
-        try out.writer().print(".{s}", .{@tagName(node.tag)});
-        switch (node.data) {
-            .literal => |token| {
-                // ` -> "literal"`
-                try out.writer().print(" -> \"{s}\"\n", .{token});
-            },
-            .single => |elm| {
-                // `\n` + recursion
-                try out.append('\n');
-                const rhs = try renderDebugTree(alloc, elm, (lvl + 1));
-                try out.appendSlice(rhs);
-            },
-            .pair => |pair| {
-                // `\n` + recursion
-                try out.append('\n');
-                const lhs = try renderDebugTree(alloc, pair.left, (lvl + 1));
-                try out.appendSlice(lhs);
-                const rhs = try renderDebugTree(alloc, pair.right, (lvl + 1));
-                try out.appendSlice(rhs);
-            },
-            .list => |list| {
-                // `\n` + recursion
-                try out.append('\n');
-                for (list.items) |item| {
-                    const res = try renderDebugTree(alloc, item, (lvl + 1));
-                    try out.appendSlice(res);
-                }
-            },
-            .map => |map| {
-                // `\n`
-                try out.append('\n');
-                var iter = map.iterator();
-                while (iter.next()) |entry| {
-                    // `  "key" -> .node_tag`
-                    try out.appendNTimes(' ', indent_size * (lvl + 1));
-                    try out.writer().print("\"{s}\":\n", .{entry.key_ptr.*});
-                    const rhs = try renderDebugTree(alloc, entry.value_ptr.*, (lvl + 2));
-                    try out.appendSlice(rhs);
-                }
-            },
-        }
-        return out.toOwnedSlice();
-    }
-    return "";
-}
-
 test "Parser" {
-    const t = std.testing;
+    const writer = @import("writer.zig");
 
     const case = struct {
         fn run(input: [:0]const u8, expect: [:0]const u8) !void {
@@ -608,8 +603,8 @@ test "Parser" {
             defer arena.deinit();
 
             const node = try Parser.parseFromInput(arena.allocator(), input);
-            const res = try renderDebugTree(arena.allocator(), node, 0);
-            try t.expectEqualStrings(expect, res[0..res.len -| 1]); // ignore trailing \n
+            const res = try writer.writeDebugTree(arena.allocator(), node, 0);
+            try std.testing.expectEqualStrings(expect, res[0..res.len -| 1]); // ignore trailing \n
         }
     };
 
