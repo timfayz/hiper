@@ -5,103 +5,152 @@ const std = @import("std");
 pub const List = std.ArrayListUnmanaged;
 pub const Map = std.StringHashMapUnmanaged;
 
-pub const Node = struct {
-    tag: Tag,
-    data: union(DataTag) {
-        literal: []const u8,
-        single: ?*Node,
-        pair: struct { left: ?*Node, right: ?*Node },
-        list: List(*Node),
-        map: Map(*Node),
-    },
+/// Underlying data representation of nodes.
+pub const Data = union(enum) {
+    void: void,
+    literal: []const u8,
+    single: ?*Node,
+    pair: struct { left: ?*Node, right: ?*Node },
+    list: List(*Node),
+    map: Map(*Node),
 
-    pub const DataTag = enum {
-        literal,
-        single,
-        pair,
-        list,
-        map,
-    };
-
-    pub fn init(alloc: std.mem.Allocator, tag: Tag, data_tag: DataTag) !*Node {
-        var node = try alloc.create(Node);
-        node.tag = tag;
-        node.data = switch (data_tag) {
+    pub inline fn defaults(tag: Tag) Data {
+        return switch (tag) {
+            .void => .{ .void = {} },
             .literal => .{ .literal = &[_]u8{} },
             .single => .{ .single = null },
             .pair => .{ .pair = .{ .left = null, .right = null } },
             .list => .{ .list = List(*Node){} },
             .map => .{ .map = Map(*Node){} },
         };
+    }
+
+    pub const Tag = std.meta.Tag(Data);
+};
+
+pub const Node = struct {
+    tag: Tag,
+    data: Data,
+
+    pub fn init(alloc: std.mem.Allocator, tag: Tag) !*Node {
+        const node = try alloc.create(Node);
+        node.tag = tag;
+        node.data = Data.defaults(tag.dataTag());
         return node;
     }
 
     pub const Tag = enum(u5) {
-        // operands
+        // primitives
         literal_number,
         literal_string,
         literal_identifier,
-        node_list,
-        node_map,
 
-        // operators
-        op_arith_add,
-        op_arith_sub,
-        op_arith_mul,
-        op_arith_div,
-        op_arith_exp,
-        op_arith_neg,
+        // aggregation
+        enum_and,
+        enum_or,
 
-        op_node,
-        op_node_name,
-        op_node_attr,
-        op_node_type,
-        op_node_value,
+        // arithmetics
+        arith_add,
+        arith_sub,
+        arith_mul,
+        arith_div,
+        arith_exp,
+        arith_neg,
 
-        op_enum_and,
-        op_enum_or,
+        // abstraction
+        dot,
 
-        op_scope,
+        // control
+        ctrl_for,
+        ctrl_while,
+        ctrl_if,
 
-        op_ctrl_for,
-        op_ctrl_for_cnd,
-        op_ctrl_for_body,
+        // pseudo
+        scope,
+        key_body,
+        key_cnd,
+        key_value,
+        key_attr,
+        key_name,
 
-        op_ctrl_while,
-        op_ctrl_if,
+        pub fn dataTag(node_tag: Tag) Data.Tag {
+            return switch (node_tag) {
+                .literal_number,
+                .literal_string,
+                .literal_identifier,
+                => .literal,
+
+                .arith_neg,
+                => .single,
+
+                .arith_add,
+                .arith_sub,
+                .arith_mul,
+                .arith_div,
+                .arith_exp,
+                => .pair,
+
+                .enum_and,
+                .enum_or,
+                => .list,
+
+                .dot,
+                .ctrl_for,
+                .ctrl_while,
+                .ctrl_if,
+                => .map,
+
+                // has no data representation
+                .scope,
+                .key_body,
+                .key_cnd,
+                .key_value,
+                .key_attr,
+                .key_name,
+                => .void,
+            };
+        }
+
+        pub fn keyName(node_tag: Tag) []const u8 {
+            return switch (node_tag) {
+                .key_body => "body",
+                .key_cnd => "cnd",
+                .key_value => "val",
+                .key_attr => "attr",
+                .key_name => "name",
+                else => unreachable,
+            };
+        }
 
         /// If there are two identical operators in a sequence, right
         /// associativity means that the operator on the right is applied first.
-        inline fn isRightAssociative(node_tag: Tag) bool {
-            return if (node_tag.precedence() == 0 or node_tag == .op_arith_exp) true else false;
+        /// Right associative: `1 + 2 + 3` –› `(1 + (2 + 3))`.
+        /// Left associative: `1 + 2 + 3` –› `((1 + 2) + 3)`.
+        pub inline fn isRightAssociative(node_tag: Tag) bool {
+            return if (node_tag.precedence() == 0 or node_tag == .arith_exp) true else false;
         }
 
-        inline fn precedence(node_tag: Tag) std.meta.Tag(Tag) {
+        pub inline fn precedence(node_tag: Tag) std.meta.Tag(Tag) {
             return precedence_table[@intFromEnum(node_tag)];
         }
 
+        /// The precedence of operators is defined here.
         const precedence_table = blk: {
             const Tags_size = std.meta.Tag(Tag); // u5
             const tags_len = std.meta.fields(Tag).len;
             var table = [1]Tags_size{0} ** tags_len; // 0 for all, except:
-            table[@intFromEnum(Tag.op_arith_add)] = 1;
-            table[@intFromEnum(Tag.op_arith_sub)] = 1;
-            table[@intFromEnum(Tag.op_arith_mul)] = 2;
-            table[@intFromEnum(Tag.op_arith_div)] = 2;
-            table[@intFromEnum(Tag.op_arith_exp)] = 3;
-            table[@intFromEnum(Tag.op_arith_neg)] = 7;
-            // table[@intFromEnum(Tag.op_enum_or)] = 1;
+            table[@intFromEnum(Tag.arith_add)] = 1;
+            table[@intFromEnum(Tag.arith_sub)] = 1;
+            table[@intFromEnum(Tag.arith_mul)] = 2;
+            table[@intFromEnum(Tag.arith_div)] = 2;
+            table[@intFromEnum(Tag.arith_exp)] = 3;
+            table[@intFromEnum(Tag.arith_neg)] = 7;
             break :blk table;
         };
 
         pub inline fn isOperator(node_tag: Tag) bool {
-            return @intFromEnum(node_tag) >= @intFromEnum(Tag.op_arith_add) and
-                @intFromEnum(node_tag) <= @intFromEnum(Tag.op_arith_exp);
-        }
-
-        pub inline fn isStatement(node_tag: Tag) bool {
-            return @intFromEnum(node_tag) >= @intFromEnum(Tag.op_ctrl_for) and
-                @intFromEnum(node_tag) <= @intFromEnum(Tag.op_ctrl_if);
+            return @intFromEnum(node_tag) >= @intFromEnum(Tag.arith_add) and
+                @intFromEnum(node_tag) <= @intFromEnum(Tag.arith_exp);
         }
     };
 };
@@ -117,6 +166,12 @@ const debug = struct {
     const mode = false or @hasDecl(@import("root"), "debug");
     const color = @import("ansi_colors.zig");
 
+    fn print(comptime fmt: []const u8, args: anytype) void {
+        if (mode) {
+            std.io.getStdErr().writer().print(fmt, args) catch return;
+        }
+    }
+
     pub fn stacks(p: *Parser) void {
         if (mode) {
             const stderr = std.io.getStdErr().writer();
@@ -125,7 +180,7 @@ const debug = struct {
 
             const operators = p.pending.operators.items;
             const operands = p.pending.operands.items;
-            const scopes = p.pending.scope.items;
+            const scopes = p.pending.scopes.items;
 
             // stacks width
             const op_len = 16;
@@ -149,7 +204,7 @@ const debug = struct {
                 };
 
                 const st = if (i >= scopes.len) "" else blk: {
-                    const name = @tagName(scopes[i].state)[7..];
+                    const name = @tagName(scopes[i].next_state)[7..];
                     break :blk if (name.len > sc_len) name[0 .. sc_len - 2] ++ ".." else name;
                 };
 
@@ -174,29 +229,20 @@ const debug = struct {
 
     pub fn cursor(p: *Parser) void {
         if (mode) {
-            print("[state: " ++ color.ctEscape(.{.bold}, "{s}") ++ ", token: {s}]\n", .{ @tagName(p.state), @tagName(p.token.tag) });
+            print("[state:  " ++ color.ctEscape(.{.bold}, "{s}") ++ " at .{s}]\n", .{ @tagName(p.state), @tagName(p.token.tag) });
         }
     }
 
-    pub fn at(src: std.builtin.SourceLocation) void {
+    pub fn action(name: []const u8, arg: []const u8) void {
         if (mode) {
-            print("[action: {s}]\n", .{src.fn_name});
-        }
-    }
-
-    pub fn action(tag: Node.Tag) void {
-        if (mode) {
-            print("[action: {s}]\n", .{@tagName(tag)});
+            if (arg.len == 0)
+                print("[action: {s}]\n", .{name})
+            else
+                print("[action: {s} .{s}]\n", .{ name, arg });
         }
     }
     pub fn end() void {
-        if (mode) print("END\n", .{});
-    }
-
-    fn print(comptime fmt: []const u8, args: anytype) void {
-        if (mode) {
-            std.io.getStdErr().writer().print(fmt, args) catch return;
-        }
+        if (mode) print("END\n\n", .{});
     }
 };
 
@@ -209,78 +255,95 @@ pub const Parser = struct {
     pending: struct {
         operands: List(*Node) = .{},
         operators: List(Node.Tag) = .{},
-        scope: List(struct { state: Parser.State, closing_token: Token.Tag }) = .{},
+        scopes: List(struct { next_state: Parser.State, closing_token: Token.Tag }) = .{},
 
         const Stack = @This();
 
-        pub inline fn resolveAllIfPrecedenceIsHigher(s: *Stack, alloc: std.mem.Allocator, current: Node.Tag) Error!void {
-            debug.at(@src());
+        pub inline fn pushScope(s: *Stack, alloc: std.mem.Allocator, next_state: Parser.State, closing_token: Token.Tag) Error!void {
+            try s.operators.append(alloc, .scope);
+            try s.scopes.append(alloc, .{ .next_state = next_state, .closing_token = closing_token });
+        }
+
+        pub inline fn pushOperand(s: *Stack, alloc: std.mem.Allocator, node: *Node) !void {
+            debug.action(@src().fn_name, "");
+            try s.operands.append(alloc, node);
+        }
+
+        pub inline fn pushOperator(s: *Stack, alloc: std.mem.Allocator, op_tag: Node.Tag) !void {
+            debug.action(@src().fn_name, @tagName(op_tag));
+            try s.operators.append(alloc, op_tag);
+        }
+
+        pub inline fn resolveAllIfPrecedenceHigher(s: *Stack, alloc: std.mem.Allocator, op_tag: Node.Tag) Error!void {
+            debug.action(@src().fn_name, @tagName(op_tag));
+            const current = op_tag;
             while (s.operators.getLastOrNull()) |pending| {
                 if (pending.precedence() > current.precedence() or
                     (pending.precedence() == current.precedence() and !current.isRightAssociative()))
                 {
-                    try s.resolveOnce(alloc); // (case 1)
-                } else break; // (case 2)
+                    try s.resolveOnce(alloc);
+                } else break;
             }
         }
 
-        pub inline fn resolveAllUntil(s: *Stack, alloc: std.mem.Allocator, tag: Node.Tag) Error!void {
-            debug.at(@src());
+        pub inline fn resolveAllUntil(s: *Stack, alloc: std.mem.Allocator, op_tag: Node.Tag) Error!void {
+            debug.action(@src().fn_name, @tagName(op_tag));
             while (s.operators.popOrNull()) |operator| {
                 try s.resolveAs(alloc, operator);
-                if (operator == tag) break;
+                if (operator == op_tag) break;
             }
         }
 
         pub inline fn resolveAll(s: *Stack, alloc: std.mem.Allocator) Error!void {
-            debug.at(@src());
+            debug.action(@src().fn_name, "");
             while (s.operators.popOrNull()) |operator| {
                 try s.resolveAs(alloc, operator);
             }
         }
 
         pub fn resolveOnce(s: *Stack, alloc: std.mem.Allocator) Error!void {
-            debug.at(@src());
-            if (s.operators.popOrNull()) |operator| {
-                try s.resolveAs(alloc, operator);
+            debug.action(@src().fn_name, "");
+            if (s.operators.popOrNull()) |op_tag| {
+                try s.resolveAs(alloc, op_tag);
             }
         }
 
-        pub fn resolveAs(s: *Stack, alloc: std.mem.Allocator, operator: Node.Tag) Error!void {
-            debug.action(operator);
-            switch (operator) {
+        /// Types of actions on stack operands.
+        pub fn resolveAs(s: *Stack, alloc: std.mem.Allocator, op_tag: Node.Tag) Error!void {
+            debug.action(@src().fn_name, @tagName(op_tag));
+            switch (op_tag) {
                 // discarding operators
-                .op_scope => {},
+                .scope => {},
 
                 // single-operand operators
-                .op_arith_neg => {
-                    if (s.operands.items.len < 1) return Error.UnbalancedOperandsStack;
+                .arith_neg => {
+                    if (s.operands.items.len < 1) return Error.InvalidOperandStack;
 
-                    const node = try Node.init(alloc, operator, .single);
+                    const node = try Node.init(alloc, op_tag);
                     node.data.single = s.operands.pop();
                     try s.operands.append(alloc, node);
                 },
 
                 // two-operands operators
-                .op_arith_add,
-                .op_arith_div,
-                .op_arith_exp,
-                .op_arith_mul,
-                .op_arith_sub,
+                .arith_add,
+                .arith_div,
+                .arith_exp,
+                .arith_mul,
+                .arith_sub,
                 => {
-                    if (s.operands.items.len < 2) return Error.UnbalancedOperandsStack;
+                    if (s.operands.items.len < 2) return Error.InvalidOperandStack;
 
-                    const node = try Node.init(alloc, operator, .pair);
+                    const node = try Node.init(alloc, op_tag);
                     node.data.pair.right = s.operands.pop();
                     node.data.pair.left = s.operands.pop();
                     try s.operands.append(alloc, node);
                 },
 
                 // n-operands operators
-                .op_enum_and,
-                .op_enum_or,
+                .enum_and,
+                .enum_or,
                 => {
-                    if (s.operands.items.len < 2) return Error.UnbalancedOperandsStack;
+                    if (s.operands.items.len < 2) return Error.InvalidOperandStack;
 
                     const right = s.operands.pop();
                     const left = s.operands.pop();
@@ -288,7 +351,7 @@ pub const Parser = struct {
                         try left.data.list.append(alloc, right);
                         try s.operands.append(alloc, left);
                     } else {
-                        const node = try Node.init(alloc, operator, .list);
+                        const node = try Node.init(alloc, op_tag);
                         try node.data.list.append(alloc, left);
                         try node.data.list.append(alloc, right);
                         try s.operands.append(alloc, node);
@@ -296,30 +359,20 @@ pub const Parser = struct {
                 },
 
                 // operands-mapping operators
-                inline .op_ctrl_for_body,
-                .op_ctrl_for_cnd,
-                .op_node_value,
-                .op_node_attr,
-                .op_node_name,
-                => |op| {
-                    if (s.operands.items.len < 2) return Error.UnbalancedOperandsStack;
+                inline .key_body,
+                .key_cnd,
+                .key_value,
+                .key_attr,
+                .key_name,
+                => |key| {
+                    if (s.operands.items.len < 2) return Error.InvalidOperandStack;
 
                     const val = s.operands.pop();
                     const node = s.operands.getLast();
-                    const key = comptime switch (op) {
-                        .op_ctrl_for_body => "body",
-                        .op_ctrl_for_cnd => "cnd",
-                        .op_node_value => "val",
-                        .op_node_attr => "attr",
-                        .op_node_name => "name",
-                        else => unreachable,
-                    };
-                    try node.data.map.put(alloc, key, val);
+                    try node.data.map.put(alloc, key.keyName(), val);
                 },
 
-                else => {
-                    return Error.UnsupportedOperator;
-                },
+                else => return Error.UnreachableCode,
             }
         }
     } = .{},
@@ -330,8 +383,8 @@ pub const Parser = struct {
         expect_leading_space,
         expect_indentation,
 
-        expect_literal_or_op_prefix,
-        expect_op_postfix_or_infix,
+        expect_literal_or_prefix,
+        expect_postfix_or_infix,
 
         expect_past_for,
         expect_past_for_condition,
@@ -343,11 +396,10 @@ pub const Parser = struct {
 
     pub const Error = error{
         OutOfMemory,
-        UnbalancedOperandsStack,
-        InvalidToken, // TODO utilize
+        InvalidToken,
+        InvalidOperandStack,
         UnexpectedToken,
-        UnexpectedState, // TODO remove
-        UnsupportedOperator, // TODO temporarily?
+        UnreachableCode, // TODO temporarily?
         UnbalancedClosingBracket,
     };
 
@@ -369,7 +421,7 @@ pub const Parser = struct {
                             .space => p.indent.lead_size = @intCast(p.token.len()),
                             .newline => p.indent.lead_size = 0,
                             else => {
-                                p.state = .expect_literal_or_op_prefix;
+                                p.state = .expect_literal_or_prefix;
                                 continue :parse;
                             },
                         }
@@ -378,51 +430,51 @@ pub const Parser = struct {
                 },
 
                 // main state
-                .expect_literal_or_op_prefix => {
+                .expect_literal_or_prefix => {
                     switch (p.token.tag) {
                         .eof => break,
+
                         .left_paren => {
-                            try p.pending.operators.append(alloc, .op_scope);
-                            try p.pending.scope.append(alloc, .{ .state = .expect_op_postfix_or_infix, .closing_token = .right_paren });
+                            try p.pending.pushScope(alloc, .expect_postfix_or_infix, .right_paren);
                         },
+
                         .identifier => {
-                            var node = try Node.init(alloc, .literal_identifier, .literal);
+                            const node = try Node.init(alloc, .literal_identifier);
                             node.data.literal = p.token.sliceFrom(p.tokenizer.input);
-                            try p.pending.operands.append(alloc, node);
-                            p.state = .expect_op_postfix_or_infix;
+                            try p.pending.pushOperand(alloc, node);
+                            p.state = .expect_postfix_or_infix;
                         },
                         .number => {
-                            var node = try Node.init(alloc, .literal_number, .literal);
+                            const node = try Node.init(alloc, .literal_number);
                             node.data.literal = p.token.sliceFrom(p.tokenizer.input);
-                            try p.pending.operands.append(alloc, node);
-                            p.state = .expect_op_postfix_or_infix;
+                            try p.pending.pushOperand(alloc, node);
+                            p.state = .expect_postfix_or_infix;
                         },
 
-                        .keyword_for => {
-                            p.state = .expect_past_for;
-                        },
-                        .dot => {
-                            p.state = .expect_past_dot;
-                        },
-                        .minus => { // add jump to a state instead (to limit the space of next valid tokens)
-                            try p.pending.operators.append(alloc, .op_arith_neg);
+                        .keyword_for => p.state = .expect_past_for,
+                        .dot => p.state = .expect_past_dot,
+
+                        // TODO .minus => p.state = .expect_past_minus,
+                        .minus => {
+                            try p.pending.pushOperator(alloc, .arith_neg);
                         },
 
-                        // invalid states:
-                        .invalid => {
-                            return Error.InvalidToken;
-                        }, // TODO utilize
-                        else => {
-                            // Provide additional error context
-                            // switch (token.tag) {
-                            // .right_paren => {},
-                            // }
-                            return Error.UnexpectedToken;
-                        },
+                        .invalid => return Error.InvalidToken,
+                        else => return Error.UnexpectedToken,
                     }
                 },
 
-                .expect_op_postfix_or_infix => {
+                // TODO
+                // .expect_past_minus => {
+                //     switch (p.token.tag) {
+                //         .left_paren => {
+                //             try p.pending.pushScope(alloc, .expect_postfix_or_infix, .right_paren);
+                //         },
+                //         else => return Error.UnexpectedToken,
+                //     }
+                // },
+
+                .expect_postfix_or_infix => {
                     switch (p.token.tag) {
                         .eof => break,
                         // .newline => p.state = .end_parse_scope,
@@ -434,44 +486,44 @@ pub const Parser = struct {
                         .caret,
                         => |tag| {
                             const operator = switch (tag) {
-                                .plus => .op_arith_add,
-                                .minus => .op_arith_sub,
-                                .asterisk => .op_arith_mul,
-                                .slash => .op_arith_div,
-                                .caret => .op_arith_exp,
+                                .plus => .arith_add,
+                                .minus => .arith_sub,
+                                .asterisk => .arith_mul,
+                                .slash => .arith_div,
+                                .caret => .arith_exp,
                                 else => unreachable,
                             };
-                            try p.pending.resolveAllIfPrecedenceIsHigher(alloc, operator);
-                            try p.pending.operators.append(alloc, operator);
-                            p.state = .expect_literal_or_op_prefix;
+                            try p.pending.resolveAllIfPrecedenceHigher(alloc, operator);
+                            try p.pending.pushOperator(alloc, operator);
+                            p.state = .expect_literal_or_prefix;
                         },
 
                         inline .comma,
                         .pipe,
                         => |tag| {
                             const operator = switch (tag) {
-                                .comma => .op_enum_and,
-                                .pipe => .op_enum_or,
+                                .comma => .enum_and,
+                                .pipe => .enum_or,
                                 else => unreachable,
                             };
-                            try p.pending.resolveAllIfPrecedenceIsHigher(alloc, operator);
+                            try p.pending.resolveAllIfPrecedenceHigher(alloc, operator);
                             if (p.pending.operators.getLastOrNull() == operator) {
                                 try p.pending.resolveOnce(alloc);
                             }
-                            try p.pending.operators.append(alloc, operator);
-                            p.state = .expect_literal_or_op_prefix;
+                            try p.pending.pushOperator(alloc, operator);
+                            p.state = .expect_literal_or_prefix;
                         },
 
                         .right_square,
                         .right_paren,
                         .right_curly,
                         => |bracket| {
-                            if (p.pending.scope.popOrNull()) |pending| {
-                                if (pending.closing_token != bracket) {
+                            if (p.pending.scopes.popOrNull()) |scope| {
+                                if (scope.closing_token != bracket) {
                                     return Error.UnbalancedClosingBracket;
                                 }
-                                try p.pending.resolveAllUntil(alloc, .op_scope);
-                                p.state = pending.state;
+                                try p.pending.resolveAllUntil(alloc, .scope);
+                                p.state = scope.next_state;
                             } else {
                                 return Error.UnexpectedToken;
                             }
@@ -491,7 +543,7 @@ pub const Parser = struct {
                         }
                         // check depth integrity
                     }
-                    p.state = .expect_literal_or_op_prefix;
+                    p.state = .expect_literal_or_prefix;
                     // continue;
                 },
 
@@ -501,34 +553,30 @@ pub const Parser = struct {
                         return Error.UnexpectedToken;
                     }
 
-                    const node = try Node.init(alloc, .op_ctrl_for, .map);
-                    try p.pending.operands.append(alloc, node);
-
-                    try p.pending.operators.append(alloc, .op_scope);
-                    try p.pending.scope.append(alloc, .{ .state = .expect_past_for_condition, .closing_token = .right_paren });
-                    p.state = .expect_literal_or_op_prefix;
+                    const node = try Node.init(alloc, .ctrl_for);
+                    try p.pending.pushOperand(alloc, node);
+                    try p.pending.pushScope(alloc, .expect_past_for_condition, .right_paren);
+                    p.state = .expect_literal_or_prefix;
                 },
 
                 .expect_past_for_condition => {
-                    // try p.pending.operators.append(alloc, .op_ctrl_for_body);
-                    try p.pending.resolveAs(alloc, .op_ctrl_for_cnd);
-                    try p.pending.operators.append(alloc, .op_ctrl_for_body);
-                    p.state = .expect_literal_or_op_prefix;
+                    try p.pending.resolveAs(alloc, .key_cnd);
+                    try p.pending.pushOperator(alloc, .key_body);
+                    p.state = .expect_literal_or_prefix;
                     continue;
                 },
 
                 // node processing states
                 .expect_past_dot => {
-                    const node = try Node.init(alloc, .op_node, .map);
-                    try p.pending.operands.append(alloc, node);
+                    const node = try Node.init(alloc, .dot);
+                    try p.pending.pushOperand(alloc, node);
 
                     switch (p.token.tag) {
                         .identifier => {
-                            var literal = try Node.init(alloc, .literal_identifier, .literal);
-                            literal.data.literal = p.token.sliceFrom(p.tokenizer.input);
-                            try p.pending.operands.append(alloc, literal);
-
-                            try p.pending.resolveAs(alloc, .op_node_name);
+                            const id = try Node.init(alloc, .literal_identifier);
+                            id.data.literal = p.token.sliceFrom(p.tokenizer.input);
+                            try p.pending.pushOperand(alloc, id);
+                            try p.pending.resolveAs(alloc, .key_name);
                             p.state = .expect_past_dot_id;
                         },
                         else => {
@@ -539,30 +587,28 @@ pub const Parser = struct {
                 .expect_past_dot_id => {
                     switch (p.token.tag) {
                         .left_square => {
-                            try p.pending.operators.append(alloc, .op_scope);
-                            try p.pending.scope.append(alloc, .{ .state = .expect_past_dot_id_attr, .closing_token = .right_square });
-
-                            p.state = .expect_literal_or_op_prefix;
+                            try p.pending.pushScope(alloc, .expect_past_dot_id_attr, .right_square);
+                            p.state = .expect_literal_or_prefix;
                         },
                         .equal => {
-                            try p.pending.operators.append(alloc, .op_node_value);
-                            p.state = .expect_literal_or_op_prefix;
+                            try p.pending.pushOperator(alloc, .key_value);
+                            p.state = .expect_literal_or_prefix;
                         },
                         else => {
-                            p.state = .expect_op_postfix_or_infix;
+                            p.state = .expect_postfix_or_infix;
                             continue;
                         },
                     }
                 },
                 .expect_past_dot_id_attr => {
-                    try p.pending.resolveAs(alloc, .op_node_attr);
+                    try p.pending.resolveAs(alloc, .key_attr);
                     switch (p.token.tag) {
                         .equal => {
-                            try p.pending.operators.append(alloc, .op_node_value);
-                            p.state = .expect_literal_or_op_prefix;
+                            try p.pending.pushOperator(alloc, .key_value);
+                            p.state = .expect_literal_or_prefix;
                         },
                         else => {
-                            p.state = .expect_op_postfix_or_infix;
+                            p.state = .expect_postfix_or_infix;
                             continue;
                         },
                     }
@@ -584,13 +630,33 @@ pub const Parser = struct {
         return p.parse(alloc, .expect_leading_space);
     }
 
+    pub fn at(p: *Parser, alloc: std.mem.Allocator) ![]u8 {
+        _ = p; // autofix
+        _ = alloc; // autofix
+        // given params context {before, after} prints
+        // 1 | abc abc abc abc␃
+        //    ~~~^ ('\x22') | (end of string)
+    }
+
     pub fn errMessage(p: *Parser, alloc: std.mem.Allocator, err: Error) ![]u8 {
-        return switch (err) {
-            Error.UnbalancedOperandsStack => std.fmt.allocPrint(alloc, "Invalid token {s}: {}", .{ p.token.sliceFrom(p.tokenizer.input), p.token.loc }),
+        switch (err) {
+            Error.UnexpectedToken => {
+                return std.fmt.allocPrint(alloc, "unexpected token '{s}' (.{s})", .{
+                    p.token.sliceFrom(p.tokenizer.input),
+                    @tagName(p.token.tag),
+                });
+            },
+            Error.InvalidOperandStack => {
+                return std.fmt.allocPrint(alloc, "unexpected number of operands for .{s} operation (expected {d}, got {d})", .{
+                    @tagName(p.pending.operators.items[p.pending.operators.items.len -| 1]),
+                    p.pending.operands.items.len,
+                    p.pending.operands.items.len,
+                });
+            },
             else => {
                 return error.UnsupportedErrorMessage;
             },
-        };
+        }
     }
 };
 
@@ -613,56 +679,56 @@ test "Parser" {
     );
 
     try case.run("1 + 2",
-        \\.op_arith_add
+        \\.arith_add
         \\  .literal_number -> "1"
         \\  .literal_number -> "2"
     );
 
     try case.run("1 + 2 * 3 ^ 4 - 5",
-        \\.op_arith_sub
-        \\  .op_arith_add
+        \\.arith_sub
+        \\  .arith_add
         \\    .literal_number -> "1"
-        \\    .op_arith_mul
+        \\    .arith_mul
         \\      .literal_number -> "2"
-        \\      .op_arith_exp
+        \\      .arith_exp
         \\        .literal_number -> "3"
         \\        .literal_number -> "4"
         \\  .literal_number -> "5"
     );
 
     try case.run("(1 + 2) * 3 ^ -(4 - 5)",
-        \\.op_arith_mul
-        \\  .op_arith_add
+        \\.arith_mul
+        \\  .arith_add
         \\    .literal_number -> "1"
         \\    .literal_number -> "2"
-        \\  .op_arith_exp
+        \\  .arith_exp
         \\    .literal_number -> "3"
-        \\    .op_arith_neg
-        \\      .op_arith_sub
+        \\    .arith_neg
+        \\      .arith_sub
         \\        .literal_number -> "4"
         \\        .literal_number -> "5"
     );
 
     try case.run("for (x) 1 + 2 | 3",
-        \\.op_ctrl_for
+        \\.ctrl_for
         \\  "cnd":
         \\    .literal_identifier -> "x"
         \\  "body":
-        \\    .op_enum_or
-        \\      .op_arith_add
+        \\    .enum_or
+        \\      .arith_add
         \\        .literal_number -> "1"
         \\        .literal_number -> "2"
         \\      .literal_number -> "3"
     );
 
     try case.run(".name [attr1, attr2] = 5",
-        \\.op_node
+        \\.dot
         \\  "name":
         \\    .literal_identifier -> "name"
         \\  "val":
         \\    .literal_number -> "5"
         \\  "attr":
-        \\    .op_enum_and
+        \\    .enum_and
         \\      .literal_identifier -> "attr1"
         \\      .literal_identifier -> "attr2"
     );

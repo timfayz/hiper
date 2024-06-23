@@ -48,6 +48,7 @@ pub fn writeDebugTree(alloc: std.mem.Allocator, tree: ?*Node, lvl: usize) ![]u8 
                     try out.appendSlice(rhs);
                 }
             },
+            .void => unreachable,
         }
         return out.toOwnedSlice();
     }
