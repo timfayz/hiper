@@ -248,16 +248,44 @@ const debug = struct {
 
 pub const Parser = struct {
     tokenizer: Tokenizer,
-    indent: struct {
+    token: Token = undefined, // cursor
+    indent: Indent = .{},
+    pending: Stack = .{},
+    state: State = .expect_leading_space,
+
+    pub const Indent = struct {
         lead_size: u16 = 0, // --code   (-- space before indentation)
         size: u16 = 0, //      --++code (++ indentation size)
-    } = .{},
-    pending: struct {
+    };
+
+    pub const State = enum {
+        expect_leading_space,
+        expect_indentation,
+
+        expect_literal_or_prefix,
+        expect_postfix_or_infix,
+
+        expect_past_for,
+        expect_past_for_condition,
+
+        expect_past_dot,
+        expect_past_dot_id,
+        expect_past_dot_id_attr,
+    };
+
+    pub const Error = error{
+        OutOfMemory,
+        InvalidToken,
+        InvalidOperandStack,
+        UnexpectedToken,
+        UnreachableCode, // TODO temporarily?
+        UnbalancedClosingBracket,
+    };
+
+    const Stack = struct {
         operands: List(*Node) = .{},
         operators: List(Node.Tag) = .{},
         scopes: List(struct { next_state: Parser.State, closing_token: Token.Tag }) = .{},
-
-        const Stack = @This();
 
         pub inline fn pushScope(s: *Stack, alloc: std.mem.Allocator, next_state: Parser.State, closing_token: Token.Tag) Error!void {
             try s.operators.append(alloc, .scope);
@@ -375,32 +403,6 @@ pub const Parser = struct {
                 else => return Error.UnreachableCode,
             }
         }
-    } = .{},
-    state: State = .expect_leading_space,
-    token: Token = undefined,
-
-    pub const State = enum {
-        expect_leading_space,
-        expect_indentation,
-
-        expect_literal_or_prefix,
-        expect_postfix_or_infix,
-
-        expect_past_for,
-        expect_past_for_condition,
-
-        expect_past_dot,
-        expect_past_dot_id,
-        expect_past_dot_id_attr,
-    };
-
-    pub const Error = error{
-        OutOfMemory,
-        InvalidToken,
-        InvalidOperandStack,
-        UnexpectedToken,
-        UnreachableCode, // TODO temporarily?
-        UnbalancedClosingBracket,
     };
 
     pub fn init(input: [:0]const u8) Parser {
