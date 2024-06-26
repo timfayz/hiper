@@ -168,16 +168,18 @@ const debug = struct {
 
     fn print(comptime fmt: []const u8, args: anytype) void {
         if (mode) {
-            std.io.getStdErr().writer().print(fmt, args) catch return;
+            const stderr = std.io.getStdErr().writer();
+            var bw = std.io.bufferedWriter(stderr);
+
+            std.debug.lockStdErr();
+            defer std.debug.unlockStdErr();
+            bw.writer().print(fmt, args) catch return;
+            bw.flush() catch return;
         }
     }
 
     pub fn stacks(p: *Parser) void {
         if (mode) {
-            const stderr = std.io.getStdErr().writer();
-            var bw = std.io.bufferedWriter(stderr);
-            const w = bw.writer();
-
             const operators = p.pending.operators.items;
             const operands = p.pending.operands.items;
             const scopes = p.pending.scopes.items;
@@ -191,7 +193,7 @@ const debug = struct {
             // border
             const border = "+" ++ ("-" ** (op_len + od_len + sc_len + 8)) ++ "+";
 
-            w.print("{s}\n", .{border}) catch return;
+            debug.print("{s}\n", .{border});
             while (true) : (i -= 1) { // zip print
                 const operand = if (i >= operands.len) "" else blk: {
                     const name = @tagName(operands[i].tag);
@@ -217,13 +219,11 @@ const debug = struct {
                     };
                 };
 
-                w.print("|{s: <16}| |{s: <16}| |{s: <18}{s: >2}|\n", .{ operand, operator, st, bracket }) catch return;
+                debug.print("|{s: <16}| |{s: <16}| |{s: <18}{s: >2}|\n", .{ operand, operator, st, bracket });
 
                 if (i == 0) break;
             }
-            w.print("{s}\n", .{border}) catch return;
-
-            bw.flush() catch return;
+            debug.print("{s}\n", .{border});
         }
     }
 
