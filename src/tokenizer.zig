@@ -1002,12 +1002,12 @@ test "test tokenizer" {
             if (expect_tag != .space and expect_state == .complete)
                 try t.expectEqual(' ', input[token.len()]);
 
-            // assert invalid token always includes the first invalid char
-            if (expect_tag == .invalid)
-                try t.expectEqual(input.len, token.len());
-
             // assert tags match
             try t.expectEqual(expect_tag, token.tag);
+
+            // assert invalid token always includes the first invalid char
+            if (expect_tag == .invalid)
+                try t.expectEqual(input[input.len - 1], input[token.loc.end - 1]);
         }
 
         pub fn run(input: [:0]const u8, expect_tag: Token.Tag, expect_state: T.State) !void {
