@@ -5,37 +5,33 @@ const std = @import("std");
 pub const List = std.ArrayListUnmanaged;
 pub const Map = std.StringHashMapUnmanaged;
 
-/// Underlying data representation of nodes.
-pub const Data = union(enum) {
-    void: void,
-    literal: []const u8,
-    single: ?*Node,
-    pair: struct { left: ?*Node, right: ?*Node },
-    list: List(*Node),
-    map: Map(*Node),
-
-    pub inline fn defaults(tag: Tag) Data {
-        return switch (tag) {
-            .void => .{ .void = {} },
-            .literal => .{ .literal = &[_]u8{} },
-            .single => .{ .single = null },
-            .pair => .{ .pair = .{ .left = null, .right = null } },
-            .list => .{ .list = List(*Node){} },
-            .map => .{ .map = Map(*Node){} },
-        };
-    }
-
-    pub const Tag = std.meta.Tag(Data);
-};
-
 pub const Node = struct {
     tag: Tag,
     data: Data,
 
+    /// Underlying node representation.
+    pub const Data = union(enum) {
+        void: void,
+        token: Token,
+        single: *Node,
+        pair: struct { left: *Node, right: *Node },
+        list: List(*Node),
+        map: Map(*Node),
+
+        pub const Tag = std.meta.Tag(Data);
+    };
+
     pub fn init(alloc: std.mem.Allocator, tag: Tag) !*Node {
         const node = try alloc.create(Node);
         node.tag = tag;
-        node.data = Data.defaults(tag.dataTag());
+        node.data = switch (tag.dataTag()) {
+            .void => .{ .void = {} },
+            .token => .{ .token = undefined },
+            .single => .{ .single = undefined },
+            .pair => .{ .pair = .{ .left = undefined, .right = undefined } },
+            .list => .{ .list = List(*Node){} },
+            .map => .{ .map = Map(*Node){} },
+        };
         return node;
     }
 
@@ -68,7 +64,7 @@ pub const Node = struct {
         // pseudo
         scope,
         key_body,
-        key_cnd,
+        key_cond,
         key_value,
         key_attr,
         key_name,
@@ -78,7 +74,7 @@ pub const Node = struct {
                 .literal_number,
                 .literal_string,
                 .literal_identifier,
-                => .literal,
+                => .token,
 
                 .arith_neg,
                 => .single,
@@ -103,7 +99,7 @@ pub const Node = struct {
                 // has no data representation
                 .scope,
                 .key_body,
-                .key_cnd,
+                .key_cond,
                 .key_value,
                 .key_attr,
                 .key_name,
@@ -114,7 +110,7 @@ pub const Node = struct {
         pub fn keyName(node_tag: Tag) []const u8 {
             return switch (node_tag) {
                 .key_body => "body",
-                .key_cnd => "cnd",
+                .key_cond => "cond",
                 .key_value => "val",
                 .key_attr => "attr",
                 .key_name => "name",
@@ -247,11 +243,11 @@ const debug = struct {
 };
 
 pub const Parser = struct {
-    tokenizer: Tokenizer,
+    tokenizer: Tokenizer, // input
     token: Token = undefined, // cursor
-    indent: Indent = .{},
-    pending: Stack = .{},
-    state: State = .expect_leading_space,
+    indent: Indent = .{}, // params
+    pending: Stack = .{}, // scratchpad
+    state: State = .parse_leading_space,
 
     pub const Indent = struct {
         lead_size: u16 = 0, // --code   (-- space before indentation)
@@ -259,18 +255,18 @@ pub const Parser = struct {
     };
 
     pub const State = enum {
-        expect_leading_space,
-        expect_indentation,
+        parse_leading_space,
+        parse_indentation,
 
-        expect_literal_or_prefix,
-        expect_postfix_or_infix,
+        parse_literal_or_prefix,
+        parse_postfix_or_infix,
 
-        expect_past_for,
-        expect_past_for_condition,
+        parse_past_for,
+        parse_past_for_condition,
 
-        expect_past_dot,
-        expect_past_dot_id,
-        expect_past_dot_id_attr,
+        parse_past_dot,
+        parse_past_dot_id,
+        parse_past_dot_id_attr,
     };
 
     pub const Error = error{
@@ -336,7 +332,8 @@ pub const Parser = struct {
             }
         }
 
-        /// Types of actions on stack operands.
+        // pub fn resolveImmediateAs(s: *Stack, alloc: std.mem.Allocator, node: *Node, op_tag: Node.Tag) Error!void { }
+
         pub fn resolveAs(s: *Stack, alloc: std.mem.Allocator, op_tag: Node.Tag) Error!void {
             debug.action(@src().fn_name, @tagName(op_tag));
             switch (op_tag) {
@@ -347,7 +344,7 @@ pub const Parser = struct {
                 .arith_neg => {
                     if (s.operands.items.len < 1) return Error.InvalidOperandStack;
 
-                    const node = try Node.init(alloc, op_tag);
+                    var node = try Node.init(alloc, op_tag);
                     node.data.single = s.operands.pop();
                     try s.operands.append(alloc, node);
                 },
@@ -361,7 +358,7 @@ pub const Parser = struct {
                 => {
                     if (s.operands.items.len < 2) return Error.InvalidOperandStack;
 
-                    const node = try Node.init(alloc, op_tag);
+                    var node = try Node.init(alloc, op_tag);
                     node.data.pair.right = s.operands.pop();
                     node.data.pair.left = s.operands.pop();
                     try s.operands.append(alloc, node);
@@ -379,7 +376,7 @@ pub const Parser = struct {
                         try left.data.list.append(alloc, right);
                         try s.operands.append(alloc, left);
                     } else {
-                        const node = try Node.init(alloc, op_tag);
+                        var node = try Node.init(alloc, op_tag);
                         try node.data.list.append(alloc, left);
                         try node.data.list.append(alloc, right);
                         try s.operands.append(alloc, node);
@@ -388,7 +385,7 @@ pub const Parser = struct {
 
                 // operands-mapping operators
                 inline .key_body,
-                .key_cnd,
+                .key_cond,
                 .key_value,
                 .key_attr,
                 .key_name,
@@ -412,71 +409,63 @@ pub const Parser = struct {
     pub fn parse(p: *Parser, alloc: std.mem.Allocator, from: State) Error!?*Node {
         p.token = p.tokenizer.nextFrom(.space);
         p.state = from;
-        parse: while (true) {
+        while (true) {
             debug.cursor(p);
-            debug.stacks(p);
             switch (p.state) {
                 // initialization state
-                .expect_leading_space => {
-                    while (true) {
-                        switch (p.token.tag) {
-                            .space => p.indent.lead_size = @intCast(p.token.len()),
-                            .newline => p.indent.lead_size = 0,
-                            else => {
-                                p.state = .expect_literal_or_prefix;
-                                continue :parse;
-                            },
-                        }
-                        p.token = p.tokenizer.nextFrom(.space);
+                .parse_leading_space => {
+                    switch (p.token.tag) {
+                        .space => p.indent.lead_size = @intCast(p.token.len()),
+                        .newline => p.indent.lead_size = 0,
+                        else => {
+                            p.state = .parse_literal_or_prefix;
+                            continue;
+                        },
                     }
+                    p.token = p.tokenizer.nextFrom(.space);
+                    continue;
                 },
 
                 // main state
-                .expect_literal_or_prefix => {
+                .parse_literal_or_prefix => {
                     switch (p.token.tag) {
                         .eof => break,
-
                         .left_paren => {
-                            try p.pending.pushScope(alloc, .expect_postfix_or_infix, .right_paren);
+                            try p.pending.pushScope(alloc, .parse_postfix_or_infix, .right_paren);
                         },
-
                         .identifier => {
                             const node = try Node.init(alloc, .literal_identifier);
-                            node.data.literal = p.token.sliceFrom(p.tokenizer.input);
+                            node.data.token = p.token;
                             try p.pending.pushOperand(alloc, node);
-                            p.state = .expect_postfix_or_infix;
+                            p.state = .parse_postfix_or_infix;
                         },
                         .number => {
                             const node = try Node.init(alloc, .literal_number);
-                            node.data.literal = p.token.sliceFrom(p.tokenizer.input);
+                            node.data.token = p.token;
                             try p.pending.pushOperand(alloc, node);
-                            p.state = .expect_postfix_or_infix;
+                            p.state = .parse_postfix_or_infix;
                         },
-
-                        .keyword_for => p.state = .expect_past_for,
-                        .dot => p.state = .expect_past_dot,
-
-                        // TODO .minus => p.state = .expect_past_minus,
+                        .keyword_for => p.state = .parse_past_for,
+                        .dot => p.state = .parse_past_dot,
+                        // TODO .minus => p.state = .parse_past_minus,
                         .minus => {
                             try p.pending.pushOperator(alloc, .arith_neg);
                         },
-
-                        .invalid => return Error.InvalidToken,
                         else => return Error.UnexpectedToken,
                     }
                 },
 
                 // TODO
-                // .expect_past_minus => {
+                // .parse_past_minus => {
                 //     switch (p.token.tag) {
                 //         .left_paren => {
-                //             try p.pending.pushScope(alloc, .expect_postfix_or_infix, .right_paren);
+                //             try p.pending.pushScope(alloc, .parse_postfix_or_infix, .right_paren);
                 //         },
                 //         else => return Error.UnexpectedToken,
                 //     }
                 // },
 
-                .expect_postfix_or_infix => {
+                .parse_postfix_or_infix => {
                     switch (p.token.tag) {
                         .eof => break,
                         // .newline => p.state = .end_parse_scope,
@@ -497,7 +486,7 @@ pub const Parser = struct {
                             };
                             try p.pending.resolveAllIfPrecedenceHigher(alloc, operator);
                             try p.pending.pushOperator(alloc, operator);
-                            p.state = .expect_literal_or_prefix;
+                            p.state = .parse_literal_or_prefix;
                         },
 
                         inline .comma,
@@ -513,7 +502,7 @@ pub const Parser = struct {
                                 try p.pending.resolveOnce(alloc);
                             }
                             try p.pending.pushOperator(alloc, operator);
-                            p.state = .expect_literal_or_prefix;
+                            p.state = .parse_literal_or_prefix;
                         },
 
                         .right_square,
@@ -531,13 +520,11 @@ pub const Parser = struct {
                             }
                         },
 
-                        else => {
-                            return Error.UnexpectedToken;
-                        },
+                        else => return Error.UnexpectedToken,
                     }
                 },
 
-                .expect_indentation => {
+                .parse_indentation => {
                     // token = p.tokenizer.nextFrom(.space);
                     if (p.token.tag == .space) {
                         if (p.indent.size == 0) {
@@ -545,72 +532,70 @@ pub const Parser = struct {
                         }
                         // check depth integrity
                     }
-                    p.state = .expect_literal_or_prefix;
+                    p.state = .parse_literal_or_prefix;
                     // continue;
                 },
 
-                // control structure states
-                .expect_past_for => {
+                // control structure
+                .parse_past_for => {
                     if (p.token.tag != .left_paren) {
                         return Error.UnexpectedToken;
                     }
-
                     const node = try Node.init(alloc, .ctrl_for);
                     try p.pending.pushOperand(alloc, node);
-                    try p.pending.pushScope(alloc, .expect_past_for_condition, .right_paren);
-                    p.state = .expect_literal_or_prefix;
+                    try p.pending.pushScope(alloc, .parse_past_for_condition, .right_paren);
+                    p.state = .parse_literal_or_prefix;
                 },
-
-                .expect_past_for_condition => {
-                    try p.pending.resolveAs(alloc, .key_cnd);
+                .parse_past_for_condition => {
+                    try p.pending.resolveAs(alloc, .key_cond);
                     try p.pending.pushOperator(alloc, .key_body);
-                    p.state = .expect_literal_or_prefix;
+                    p.state = .parse_literal_or_prefix;
                     continue;
                 },
 
-                // node processing states
-                .expect_past_dot => {
+                // node processing
+                .parse_past_dot => {
                     const node = try Node.init(alloc, .dot);
                     try p.pending.pushOperand(alloc, node);
 
                     switch (p.token.tag) {
                         .identifier => {
                             const id = try Node.init(alloc, .literal_identifier);
-                            id.data.literal = p.token.sliceFrom(p.tokenizer.input);
+                            id.data.token = p.token;
                             try p.pending.pushOperand(alloc, id);
                             try p.pending.resolveAs(alloc, .key_name);
-                            p.state = .expect_past_dot_id;
+                            p.state = .parse_past_dot_id;
                         },
                         else => {
                             return Error.UnexpectedToken;
                         },
                     }
                 },
-                .expect_past_dot_id => {
+                .parse_past_dot_id => {
                     switch (p.token.tag) {
                         .left_square => {
-                            try p.pending.pushScope(alloc, .expect_past_dot_id_attr, .right_square);
-                            p.state = .expect_literal_or_prefix;
+                            try p.pending.pushScope(alloc, .parse_past_dot_id_attr, .right_square);
+                            p.state = .parse_literal_or_prefix;
                         },
                         .equal => {
                             try p.pending.pushOperator(alloc, .key_value);
-                            p.state = .expect_literal_or_prefix;
+                            p.state = .parse_literal_or_prefix;
                         },
                         else => {
-                            p.state = .expect_postfix_or_infix;
+                            p.state = .parse_postfix_or_infix;
                             continue;
                         },
                     }
                 },
-                .expect_past_dot_id_attr => {
+                .parse_past_dot_id_attr => {
                     try p.pending.resolveAs(alloc, .key_attr);
                     switch (p.token.tag) {
                         .equal => {
                             try p.pending.pushOperator(alloc, .key_value);
-                            p.state = .expect_literal_or_prefix;
+                            p.state = .parse_literal_or_prefix;
                         },
                         else => {
-                            p.state = .expect_postfix_or_infix;
+                            p.state = .parse_postfix_or_infix;
                             continue;
                         },
                     }
@@ -618,18 +603,26 @@ pub const Parser = struct {
 
                 // else => return error.UnexpectedState,
             }
+            debug.stacks(p);
             p.token = p.tokenizer.next();
         }
 
         try p.pending.resolveAll(alloc);
-
         debug.end();
-        return p.pending.operands.popOrNull();
+
+        if (p.pending.operands.popOrNull()) |node| {
+            return node;
+        } else {
+            if (p.token.tag != .eof)
+                return Error.UnreachableCode;
+            return null;
+        }
     }
 
-    pub fn parseFromInput(alloc: std.mem.Allocator, input: [:0]const u8) !?*Node {
+    /// Deprecated.
+    pub fn parseFromInput(alloc: std.mem.Allocator, input: [:0]const u8) Error!?*Node {
         var p = Parser.init(input);
-        return p.parse(alloc, .expect_leading_space);
+        return p.parse(alloc, .parse_leading_space);
     }
 
     pub fn at(p: *Parser, alloc: std.mem.Allocator) ![]u8 {
@@ -670,8 +663,8 @@ test "Parser" {
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer arena.deinit();
 
-            const node = try Parser.parseFromInput(arena.allocator(), input);
-            const res = try writer.writeDebugTree(arena.allocator(), node, 0);
+            const root = try Parser.parseFromInput(arena.allocator(), input);
+            const res = try writer.writeDebugTree(arena.allocator(), input, root, 0);
             try std.testing.expectEqualStrings(expect, res[0..res.len -| 1]); // ignore trailing \n
         }
     };
@@ -713,7 +706,7 @@ test "Parser" {
 
     try case.run("for (x) 1 + 2 | 3",
         \\.ctrl_for
-        \\  "cnd":
+        \\  "cond":
         \\    .literal_identifier -> "x"
         \\  "body":
         \\    .enum_or
