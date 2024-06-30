@@ -22,6 +22,7 @@ pub const Token = struct {
         // whitespace
         space, //
         newline, // \n
+        indent,
 
         // brackets
         left_paren, // (
@@ -217,20 +218,31 @@ pub const Token = struct {
 };
 
 const TokenizerOptions = struct {
-    /// Enable strict tokenization mode:
-    /// * `true` - consume only valid tokens (useful if we want to terminate parsing as soon as the first encountered token is invalid).
-    /// * `false` - consume any token that "looks" valid (useful if we want to tokenize complete input and report several invalid occasions).
+    /// Enable strict recognition of tokens:
+    /// * `true` - Consume only valid tokens (this is useful if you want to
+    ///    terminate tokenization as soon as the first invalid token is
+    ///    encountered).
+    /// * `false` - Consume any token that "looks" valid (this is useful if you
+    ///    want to tokenize the complete input and report several invalid
+    ///    occasions).
     strict_mode: bool = true,
-    /// Enable ignoring of spaces as separate tokens:
-    /// * `true` - spaces are not recognized as separate tokens.
-    /// * `false` - spaces are recognized as separate tokens.
-    ignore_spaces: bool = false,
-    /// Enable line cursor tracking.
+    /// Recognize spaces as separate tokens.
+    tokenize_spaces: bool = false,
+    /// Recognize indents as separate tokens. An indent is a newline followed by
+    /// optional leading spaces before the next printable character.
+    /// * `true` - tokenizer produces .indent tokens, skipping empty lines,
+    ///   including those with spaces. token.len() gives the size of the leading
+    ///   spaces before the first printable character.
+    /// * `false` - tokenizer produces .newline tokens instead, consuming as
+    ///   many newlines as possible in one go until it encounters a space or
+    ///   a printable character. token.len() gives the number of lines consumed.
+    tokenize_indents: bool = false,
+    /// Track line position of the cursor.
     /// ```txt
-    /// 0 1  2 3 4 5 6   tokenizer.index = 4 (buf.len = 3)
-    /// a \n b c d e f   +tokenizer.loc.line_number = 2 (starts at 1)
-    ///          ^       +tokenizer.loc.line_start = 2 (starts at 0)
-    ///                  +tokenizer.atCol() = 3 (starts at 1)
+    /// 0 1  2 3 4  tokenizer.index = 4
+    /// a \n b c d  tokenizer.loc.line_number = 2 (starts at 1)
+    ///          ^  tokenizer.loc.line_start = 2 (starts at 0)
+    ///             tokenizer.atCol() = 3 (starts at 1)
     /// ````
     track_location: bool = true,
 };
@@ -264,18 +276,21 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
 
         /// The state in which tokenizer starts and returns.
         pub const State = enum {
-            /// Orphan state, reachable only by specifying `nextFrom(.space)`.
-            space,
-
-            /// Initial state that leads to other child states below.
+            // root state that leads to others
             complete,
 
-            // symbol token states
+            // [forced recognition states]
 
+            space, // reachable only by using nextFrom()
+            indent, // reachable only by using nextFrom()
+
+            // [symbols recognition states]
+
+            post_newline,
             left_paren,
             plus,
 
-            // literal token states
+            // [literals recognition states]
 
             identifier_non_strict,
             // strict mode only {
@@ -377,10 +392,6 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
         }
 
         pub inline fn nextFrom(s: *Self, from: State) Token {
-            return s.nextImpl(from, .{ .strict = opt.strict_mode, .ignore_spaces = opt.ignore_spaces });
-        }
-
-        pub fn nextImpl(s: *Self, from: State, comptime mode: struct { strict: bool, ignore_spaces: bool }) Token {
             var token = Token{
                 .tag = .eof,
                 .loc = .{
@@ -389,25 +400,11 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                 },
             };
             s.state = from;
-            while (true) : (s.index +%= 1) {
+            while (true) {
                 const c = s.input[s.index];
                 switch (s.state) {
-                    .space => { // orphan
-                        switch (c) {
-                            ' ' => {
-                                token.tag = .space;
-                                s.index += 1;
-                                while (s.input[s.index] == ' ') : (s.index += 1) {}
-                                s.state = .complete;
-                                break;
-                            },
-                            else => {
-                                s.index -%= 1;
-                                s.state = .complete;
-                            },
-                        }
-                    },
-                    .complete => { // equivalent to '.start' and '.end'
+                    // root state for others; equivalent to '.start' and '.end' states
+                    .complete => {
                         switch (c) {
                             0 => {
                                 if (s.index != s.input.len) {
@@ -419,26 +416,42 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
 
                             // whitespace
                             ' ' => {
-                                if (mode.ignore_spaces) {
-                                    token.loc.start += 1;
-                                } else {
+                                if (opt.tokenize_spaces) {
                                     token.tag = .space;
                                     s.index += 1;
+                                    // shortcut {
                                     while (s.input[s.index] == ' ') : (s.index += 1) {}
+                                    // }
+                                    break;
+                                } else {
+                                    token.loc.start += 1;
+                                }
+                            },
+
+                            // newline
+                            '\n' => {
+                                if (opt.tokenize_indents) {
+                                    token.loc.start += 1;
+                                    s.state = .post_newline;
+                                } else {
+                                    token.tag = .newline;
+                                    s.index += 1;
+                                    // shortcut {
+                                    while (s.input[s.index] == '\n') : (s.index += 1) {}
+                                    // }
+                                    if (opt.track_location) {
+                                        s.loc.line_start = s.index -| 1;
+                                        s.loc.line_number += s.index - token.loc.start;
+                                    }
                                     break;
                                 }
                             },
-                            '\n' => {
-                                token.tag = .newline;
-                                s.index += 1;
-                                while (s.input[s.index] == '\n') : (s.index += 1) {}
-                                break;
-                            },
 
+                            // operator-looking tokens
                             '(' => s.state = .left_paren,
                             '+' => s.state = .plus,
 
-                            inline // "for each"
+                            inline
                             // brackets
                             ')',
                             '{',
@@ -477,17 +490,17 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                             // identifier
                             '_', 'a'...'z', 'A'...'Z' => {
                                 token.tag = .identifier;
-                                s.state = comptime if (!mode.strict) .identifier_non_strict else .identifier_post_first_alpha;
+                                s.state = comptime if (!opt.strict_mode) .identifier_non_strict else .identifier_post_first_alpha;
                             },
 
                             // number
                             '0' => {
                                 token.tag = .number;
-                                s.state = comptime if (!mode.strict) .number_non_strict else .number_post_first_zero;
+                                s.state = comptime if (!opt.strict_mode) .number_non_strict else .number_post_first_zero;
                             },
                             '1'...'9' => {
                                 token.tag = .number;
-                                s.state = comptime if (!mode.strict) .number_non_strict else .number_post_first_nonzero;
+                                s.state = comptime if (!opt.strict_mode) .number_non_strict else .number_post_first_nonzero;
                             },
 
                             // string literal
@@ -496,9 +509,10 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                                 s.state = .string_post_double_quote;
                             },
 
+                            // char
                             '\'' => {
                                 token.tag = .char;
-                                s.state = comptime if (!mode.strict) .char_non_strict else .char_post_single_quote;
+                                s.state = comptime if (!opt.strict_mode) .char_non_strict else .char_post_single_quote;
                             },
 
                             else => {
@@ -509,6 +523,49 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                         }
                     },
 
+                    // use nextFrom(.space) to recognize spaces even if
+                    // .tokenize_spaces is false
+                    .space => {
+                        switch (c) {
+                            ' ' => {
+                                token.tag = .space;
+                                s.index += 1;
+                                // shortcut {
+                                while (s.input[s.index] == ' ') : (s.index += 1) {}
+                                // }
+                                break;
+                            },
+                            else => {
+                                s.state = .complete;
+                                continue;
+                            },
+                        }
+                    },
+
+                    .indent, .post_newline => {
+                        switch (c) {
+                            ' ' => {}, // continue
+                            '\n' => {
+                                s.index += 1;
+                                // shortcut {
+                                while (s.input[s.index] == '\n') : (s.index += 1) {}
+                                // }
+                                if (opt.track_location) {
+                                    s.loc.line_start = s.index -| 1;
+                                    s.loc.line_number += s.index - token.loc.start;
+                                }
+                                token.loc.start = s.index;
+                                continue;
+                            },
+                            else => {
+                                token.tag = .indent;
+                                s.state = .complete;
+                                break;
+                            },
+                        }
+                    },
+
+                    // operators
                     .plus => {
                         switch (c) {
                             '+' => {
@@ -520,7 +577,6 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                         s.state = .complete;
                         break;
                     },
-
                     .left_paren => {
                         switch (c) {
                             ')' => {
@@ -643,7 +699,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                     => |state| { // 0<base>[..]
                         const base = state.toBase();
                         // assert next char is ..
-                        if (base.isDigit(c)) { // 0<base><digit>[..]
+                        if (base.hasDigit(c)) { // 0<base><digit>[..]
                             s.state = switch (base) {
                                 .binary => .number_post_base_first_digit_bin,
                                 .octal => .number_post_base_first_digit_oct,
@@ -684,10 +740,11 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                             },
                             // token char range except [.pP]
                             '0'...'9', 'a'...'o', 'q'...'z', 'A'...'O', 'Q'...'Z' => |digit| { // 0<base><digit+>[..]
-                                if (base.isDigit(digit)) continue;
-                                token.tag = .invalid;
-                                s.index += 1;
-                                break;
+                                if (!base.hasDigit(digit)) {
+                                    token.tag = .invalid;
+                                    s.index += 1;
+                                    break;
+                                }
                             },
                             // TODO // '_' => ,
                             else => {
@@ -702,7 +759,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                     => |state| { // <num><dot>[..]
                         const base = state.toBase();
                         // assert next char is ..
-                        if (base.isDigit(c)) { // <num><dot><digit>[..]
+                        if (base.hasDigit(c)) { // <num><dot><digit>[..]
                             s.state = switch (base) {
                                 .decimal => .number_post_dot_first_digit_decimal,
                                 .hex => .number_post_dot_first_digit_hex,
@@ -724,16 +781,17 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                         const base = state.toBase();
                         switch (c) {
                             '0'...'9', 'a'...'z', 'A'...'Z' => {
-                                if (base.isDigit(c)) continue; // <num><dot><digit+>[..]
-                                if (base == .decimal and (c == 'e' or c == 'E') or // <num><dot><digit+><exp>[..]
-                                    base == .hex and (c == 'p' or c == 'P'))
-                                {
-                                    s.state = .number_post_exp;
-                                } else {
-                                    token.tag = .invalid;
-                                    s.index += 1;
-                                    break;
-                                }
+                                if (!base.hasDigit(c)) {
+                                    if (base == .decimal and (c == 'e' or c == 'E') or // <num><dot><digit+><exp>[..]
+                                        base == .hex and (c == 'p' or c == 'P'))
+                                    {
+                                        s.state = .number_post_exp;
+                                    } else {
+                                        token.tag = .invalid;
+                                        s.index += 1;
+                                        break;
+                                    }
+                                } // <num><dot><digit+>[..]
                             },
                             '.' => { // redundant dot
                                 token.tag = .invalid;
@@ -895,27 +953,23 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                             },
                             else => {
                                 // TODO allow UTF-8 as well
-                                if (std.ascii.isPrint(c)) continue;
-                                if (s.index == s.input.len) {
-                                    token.tag = .incomplete;
-                                } else {
-                                    token.tag = .invalid;
-                                    s.index += 1;
+                                if (!std.ascii.isPrint(c)) {
+                                    if (s.index == s.input.len) {
+                                        token.tag = .incomplete; // TODO why?
+                                    } else {
+                                        token.tag = .invalid;
+                                        s.index += 1;
+                                    }
+                                    break;
                                 }
-                                break;
                             },
                         }
                     },
                     else => break,
                 }
+                s.index +%= 1;
             }
             token.loc.end = s.index;
-            if (opt.track_location) {
-                if (token.tag == .newline) {
-                    s.loc.line_start = s.index -| 1; // TODO remove -1 and test
-                    s.loc.line_number += token.len();
-                }
-            }
             return token;
         }
 
@@ -966,7 +1020,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             };
 
             /// Applicable only for digits within '0'..'9'
-            pub inline fn isDigit(base: @This(), digit: u8) bool {
+            pub inline fn hasDigit(base: @This(), digit: u8) bool {
                 return digit_value[digit] < @intFromEnum(base);
             }
 
@@ -984,51 +1038,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
 
 test "test tokenizer" {
     const t = std.testing;
-
-    const case = struct {
-        const Options = TokenizerOptions{
-            .strict_mode = true,
-            .track_location = true,
-            .ignore_spaces = false,
-        };
-
-        const T = Tokenizer(Options);
-
-        fn assert(input: [:0]const u8, token: Token, expect_tag: Token.Tag, state: T.State, expect_state: T.State) !void {
-            // assert states match
-            try t.expectEqual(expect_state, state);
-
-            // assert complete valid token always end with a space
-            if (expect_tag != .space and expect_state == .complete)
-                try t.expectEqual(' ', input[token.len()]);
-
-            // assert tags match
-            try t.expectEqual(expect_tag, token.tag);
-
-            // assert invalid token always includes the first invalid char
-            if (expect_tag == .invalid)
-                try t.expectEqual(input[input.len - 1], input[token.loc.end - 1]);
-        }
-
-        pub fn run(input: [:0]const u8, expect_tag: Token.Tag, expect_state: T.State) !void {
-            { // complete input tokenizer
-                var scan = T.init(input);
-                const token = scan.next();
-
-                try assert(input, token, expect_tag, scan.state, expect_state);
-            }
-
-            // const stream = std.io.fixedBufferStream;
-            // { // partial input tokenizer
-            //     var fbs = std.io.fixedBufferStream(input);
-            //     const reader = fbs.reader().any();
-            //     var scan = try TokenizerStreaming(1, Options).init(reader);
-            //     const token = try scan.next();
-
-            //     try assert(input, token, expect_tag, scan.impl.state, expect_state);
-            // }
-        }
-    }.run;
+    @setEvalBranchQuota(2000);
 
     // Test correct location tracking.
     {
@@ -1072,6 +1082,38 @@ test "test tokenizer" {
     {
         // Note, in this test set, all complete valid tokens end with a space to
         // avoid tokenizing only the correct beginning and leaving the invalid end.
+
+        const case = struct {
+            const T = Tokenizer(.{
+                .strict_mode = true,
+                .track_location = true,
+                .tokenize_spaces = true,
+                .tokenize_indents = false,
+            });
+
+            pub fn run(input: [:0]const u8, expect_tag: Token.Tag, expect_state: T.State) !void {
+                var scan = T.init(input);
+                const token = scan.next();
+
+                try assert(input, token, expect_tag, scan.state, expect_state);
+            }
+
+            fn assert(input: [:0]const u8, token: Token, expect_tag: Token.Tag, state: T.State, expect_state: T.State) !void {
+                // states match
+                try t.expectEqual(expect_state, state);
+
+                // complete valid token end with a space
+                if (expect_tag != .space and expect_state == .complete)
+                    try t.expectEqual(' ', input[token.len()]);
+
+                // tags match
+                try t.expectEqual(expect_tag, token.tag);
+
+                // invalid token includes the first invalid char
+                if (expect_tag == .invalid)
+                    try t.expectEqual(input[input.len - 1], input[token.loc.end - 1]);
+            }
+        }.run;
 
         // primes
         // -------------------------------
@@ -1272,15 +1314,102 @@ test "test tokenizer" {
         try case("\"\n", .invalid, .string_post_double_quote);
         try case("\" !#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\" ", .string, .complete);
 
-        // mixed
+        // option: .tokenize_spaces
         // -------------------------------
         {
-            var scan = Tokenizer(.{}).init("  hello!\n\n{123,456}+");
-            try t.expectEqual(.space, scan.next().tag);
+            var scan = Tokenizer(.{ .tokenize_spaces = false }).init("  1");
+            try t.expectEqual(.number, scan.next().tag);
+            try t.expectEqual(.eof, scan.next().tag);
+        }
+        {
+            var scan = Tokenizer(.{ .tokenize_spaces = true }).init("  1");
+            const token = scan.next();
+            try t.expectEqual(.space, token.tag);
+            try t.expectEqual(2, token.len());
+            try t.expectEqual(.number, scan.next().tag);
+            try t.expectEqual(.eof, scan.next().tag);
+        }
+
+        // option: .tokenize_indents
+        // -------------------------------
+        {
+            var scan = Tokenizer(.{ .tokenize_indents = false }).init("\n");
+            try t.expectEqual(.newline, scan.next().tag);
+        }
+        {
+            var scan = Tokenizer(.{ .tokenize_indents = true }).init("\n");
+            const token = scan.next();
+            try t.expectEqual(.indent, token.tag);
+            try t.expectEqual(0, token.len());
+            try t.expectEqual(0, scan.input[token.loc.start]);
+            try t.expectEqual(0, scan.input[token.loc.end]);
+        }
+        {
+            var scan = Tokenizer(.{ .tokenize_indents = true }).init("\n  !");
+            const token = scan.next();
+            try t.expectEqual(.indent, token.tag);
+            try t.expectEqual(2, token.len());
+            try t.expectEqual(' ', scan.input[token.loc.start]);
+            try t.expectEqual('!', scan.input[token.loc.end]);
+        }
+        {
+            var scan = Tokenizer(.{ .tokenize_indents = true }).init(
+                \\
+                //^^ the first newline is necessary to recognize the indent
+                \\   hello
+                \\  
+                //^^ '  \n' an empty line with two spaces
+                \\   world
+            );
+            var token = scan.next();
+            try t.expectEqual(.indent, token.tag);
+            try t.expectEqual(3, token.len());
+
+            // hello
+            try t.expectEqual(.identifier, scan.next().tag);
+
+            token = scan.next();
+            try t.expectEqual(.indent, token.tag);
+            try t.expectEqual(3, token.len());
+
+            // world
+            try t.expectEqual(.identifier, scan.next().tag);
+        }
+
+        // special case: nextFrom(.indent)
+        // -------------------------------
+        {
+            var scan = Tokenizer(.{ .tokenize_indents = false }).init("  !");
+            const token = scan.nextFrom(.indent);
+            try t.expectEqual(.indent, token.tag);
+            try t.expectEqual(2, token.len());
+            try t.expectEqual(' ', scan.input[token.loc.start]);
+            try t.expectEqual('!', scan.input[token.loc.end]);
+        }
+
+        // random
+        // -------------------------------
+        {
+            var scan = Tokenizer(.{
+                .tokenize_indents = true,
+                .tokenize_spaces = true,
+            }).init(
+                \\  hello!
+                \\  {123,456}+
+            );
+
+            var token = scan.next();
+            try t.expectEqual(.space, token.tag);
+            try t.expectEqual(2, token.len());
+
             try t.expectEqual(.identifier, scan.next().tag);
             try t.expectEqual(true, scan.nextIs(.exclamation));
             try t.expectEqual(.exclamation, scan.next().tag);
-            try t.expectEqual(.newline, scan.next().tag);
+
+            token = scan.next();
+            try t.expectEqual(.indent, token.tag);
+            try t.expectEqual(2, token.len());
+
             try t.expectEqual(.left_curly, scan.next().tag);
             try t.expectEqual(.number, scan.next().tag);
             try t.expectEqual(.comma, scan.next().tag);
@@ -1288,22 +1417,7 @@ test "test tokenizer" {
             try t.expectEqual(.right_curly, scan.next().tag);
             try t.expectEqual(.plus, scan.next().tag);
             try t.expectEqual(.eof, scan.next().tag);
-            try t.expectEqual(.eof, scan.next().tag);
-        }
-
-        // spaces
-        // -------------------------------
-        {
-            var scan = Tokenizer(.{ .ignore_spaces = true }).init(" 1");
-            try t.expectEqual(.number, scan.next().tag);
-        }
-        {
-            var scan = Tokenizer(.{ .ignore_spaces = true }).init(" 1");
-            try t.expectEqual(.space, scan.nextFrom(.space).tag);
-        }
-        {
-            var scan = Tokenizer(.{ .ignore_spaces = true }).init("1");
-            try t.expectEqual(.number, scan.nextFrom(.space).tag);
+            try t.expectEqual(.eof, scan.next().tag); // make sure we stay the same
         }
     }
 }

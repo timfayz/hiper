@@ -153,7 +153,7 @@ pub const Node = struct {
 
 const Token = @import("tokenizer.zig").Token;
 const Tokenizer = @import("tokenizer.zig").Tokenizer(
-    .{ .ignore_spaces = true },
+    .{ .tokenize_spaces = false },
 );
 
 const debug = struct {
