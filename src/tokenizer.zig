@@ -557,6 +557,16 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                                 token.loc.start = s.index;
                                 continue;
                             },
+                            0 => {
+                                if (s.index != s.input.len) {
+                                    token.tag = .invalid;
+                                    s.index += 1;
+                                } else {
+                                    token.tag = .eof;
+                                    s.state = .complete;
+                                }
+                                break;
+                            },
                             else => {
                                 token.tag = .indent;
                                 s.state = .complete;
@@ -1339,10 +1349,18 @@ test "test tokenizer" {
         {
             var scan = Tokenizer(.{ .tokenize_indents = true }).init("\n");
             const token = scan.next();
-            try t.expectEqual(.indent, token.tag);
+            try t.expectEqual(.eof, token.tag);
             try t.expectEqual(0, token.len());
             try t.expectEqual(0, scan.input[token.loc.start]);
             try t.expectEqual(0, scan.input[token.loc.end]);
+        }
+        {
+            var scan = Tokenizer(.{ .tokenize_indents = true }).init("\n!");
+            const token = scan.next();
+            try t.expectEqual(.indent, token.tag);
+            try t.expectEqual(0, token.len());
+            try t.expectEqual('!', scan.input[token.loc.start]);
+            try t.expectEqual('!', scan.input[token.loc.end]);
         }
         {
             var scan = Tokenizer(.{ .tokenize_indents = true }).init("\n  !");
