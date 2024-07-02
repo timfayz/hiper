@@ -256,7 +256,6 @@ pub const Parser = struct {
 
     pub const State = enum {
         parse_leading_space,
-        parse_indentation,
 
         parse_literal_or_prefix,
         parse_postfix_or_infix,
@@ -288,8 +287,10 @@ pub const Parser = struct {
             try s.scopes.append(alloc, .{ .next_state = next_state, .closing_token = closing_token });
         }
 
-        pub inline fn pushOperand(s: *Stack, alloc: std.mem.Allocator, node: *Node) !void {
-            debug.action(@src().fn_name, "");
+        pub inline fn pushOperand(s: *Stack, alloc: std.mem.Allocator, comptime op_tag: Node.Tag, token: ?Token) !void {
+            debug.action(@src().fn_name, @tagName(op_tag));
+            const node = try Node.init(alloc, op_tag);
+            if (token) |t| node.data.token = t;
             try s.operands.append(alloc, node);
         }
 
@@ -434,36 +435,25 @@ pub const Parser = struct {
                             try p.pending.pushScope(alloc, .parse_postfix_or_infix, .right_paren);
                         },
                         .identifier => {
-                            const node = try Node.init(alloc, .literal_identifier);
-                            node.data.token = p.token;
-                            try p.pending.pushOperand(alloc, node);
+                            try p.pending.pushOperand(alloc, .literal_identifier, p.token);
                             p.state = .parse_postfix_or_infix;
                         },
                         .number => {
-                            const node = try Node.init(alloc, .literal_number);
-                            node.data.token = p.token;
-                            try p.pending.pushOperand(alloc, node);
+                            try p.pending.pushOperand(alloc, .literal_number, p.token);
                             p.state = .parse_postfix_or_infix;
                         },
-                        .keyword_for => p.state = .parse_past_for,
-                        .dot => p.state = .parse_past_dot,
-                        // TODO .minus => p.state = .parse_past_minus,
+                        .keyword_for => {
+                            p.state = .parse_past_for;
+                        },
+                        .dot => {
+                            p.state = .parse_past_dot;
+                        },
                         .minus => {
                             try p.pending.pushOperator(alloc, .arith_neg);
                         },
                         else => return Error.UnexpectedToken,
                     }
                 },
-
-                // TODO
-                // .parse_past_minus => {
-                //     switch (p.token.tag) {
-                //         .left_paren => {
-                //             try p.pending.pushScope(alloc, .parse_postfix_or_infix, .right_paren);
-                //         },
-                //         else => return Error.UnexpectedToken,
-                //     }
-                // },
 
                 .parse_postfix_or_infix => {
                     switch (p.token.tag) {
@@ -524,25 +514,12 @@ pub const Parser = struct {
                     }
                 },
 
-                .parse_indentation => {
-                    // token = p.tokenizer.nextFrom(.space);
-                    if (p.token.tag == .space) {
-                        if (p.indent.size == 0) {
-                            p.indent.size = @intCast(p.token.len());
-                        }
-                        // check depth integrity
-                    }
-                    p.state = .parse_literal_or_prefix;
-                    // continue;
-                },
-
                 // control structure
                 .parse_past_for => {
                     if (p.token.tag != .left_paren) {
                         return Error.UnexpectedToken;
                     }
-                    const node = try Node.init(alloc, .ctrl_for);
-                    try p.pending.pushOperand(alloc, node);
+                    try p.pending.pushOperand(alloc, .ctrl_for, null);
                     try p.pending.pushScope(alloc, .parse_past_for_condition, .right_paren);
                     p.state = .parse_literal_or_prefix;
                 },
@@ -555,14 +532,11 @@ pub const Parser = struct {
 
                 // node processing
                 .parse_past_dot => {
-                    const node = try Node.init(alloc, .dot);
-                    try p.pending.pushOperand(alloc, node);
+                    try p.pending.pushOperand(alloc, .dot, null);
 
                     switch (p.token.tag) {
                         .identifier => {
-                            const id = try Node.init(alloc, .literal_identifier);
-                            id.data.token = p.token;
-                            try p.pending.pushOperand(alloc, id);
+                            try p.pending.pushOperand(alloc, .literal_identifier, p.token);
                             try p.pending.resolveAs(alloc, .key_name);
                             p.state = .parse_past_dot_id;
                         },
