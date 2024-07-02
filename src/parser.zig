@@ -153,94 +153,11 @@ pub const Node = struct {
 
 const Token = @import("tokenizer.zig").Token;
 const Tokenizer = @import("tokenizer.zig").Tokenizer(
-    .{ .tokenize_spaces = false },
+    .{
+        .tokenize_spaces = false,
+        .tokenize_indents = true,
+    },
 );
-
-const debug = struct {
-    /// Activate dumping parse state to stderr if `pub const
-    /// debug = true` is present in a user file that imports this file
-    const mode = false or @hasDecl(@import("root"), "debug");
-    const color = @import("ansi_colors.zig");
-
-    fn print(comptime fmt: []const u8, args: anytype) void {
-        if (mode) {
-            const stderr = std.io.getStdErr().writer();
-            var bw = std.io.bufferedWriter(stderr);
-
-            std.debug.lockStdErr();
-            defer std.debug.unlockStdErr();
-            bw.writer().print(fmt, args) catch return;
-            bw.flush() catch return;
-        }
-    }
-
-    pub fn stacks(p: *Parser) void {
-        if (mode) {
-            const operators = p.pending.operators.items;
-            const operands = p.pending.operands.items;
-            const scopes = p.pending.scopes.items;
-
-            // stacks width
-            const op_len = 16;
-            const od_len = 16;
-            const sc_len = 18;
-            var i: usize = @max(scopes.len, @max(operands.len, operators.len)) -| 1;
-
-            // border
-            const border = "+" ++ ("-" ** (op_len + od_len + sc_len + 8)) ++ "+";
-
-            debug.print("{s}\n", .{border});
-            while (true) : (i -= 1) { // zip print
-                const operand = if (i >= operands.len) "" else blk: {
-                    const name = @tagName(operands[i].tag);
-                    break :blk if (name.len > op_len) name[0 .. op_len - 2] ++ ".." else name;
-                };
-
-                const operator = if (i >= operators.len) "" else blk: {
-                    const name = @tagName(operators[i]);
-                    break :blk if (name.len > od_len) name[0 .. od_len - 2] ++ ".." else name;
-                };
-
-                const st = if (i >= scopes.len) "" else blk: {
-                    const name = @tagName(scopes[i].next_state)[7..];
-                    break :blk if (name.len > sc_len) name[0 .. sc_len - 2] ++ ".." else name;
-                };
-
-                const bracket = if (i >= scopes.len) "" else blk: {
-                    break :blk switch (scopes[i].closing_token) {
-                        .right_paren => ")",
-                        .right_curly => "}",
-                        .right_square => "]",
-                        else => unreachable,
-                    };
-                };
-
-                debug.print("|{s: <16}| |{s: <16}| |{s: <18}{s: >2}|\n", .{ operand, operator, st, bracket });
-
-                if (i == 0) break;
-            }
-            debug.print("{s}\n", .{border});
-        }
-    }
-
-    pub fn cursor(p: *Parser) void {
-        if (mode) {
-            print("[state:  " ++ color.ctEscape(.{.bold}, "{s}") ++ " at .{s}]\n", .{ @tagName(p.state), @tagName(p.token.tag) });
-        }
-    }
-
-    pub fn action(name: []const u8, arg: []const u8) void {
-        if (mode) {
-            if (arg.len == 0)
-                print("[action: {s}]\n", .{name})
-            else
-                print("[action: {s} .{s}]\n", .{ name, arg });
-        }
-    }
-    pub fn end() void {
-        if (mode) print("END\n\n", .{});
-    }
-};
 
 pub const Parser = struct {
     tokenizer: Tokenizer, // input
@@ -415,16 +332,13 @@ pub const Parser = struct {
             switch (p.state) {
                 // initialization state
                 .parse_leading_space => {
-                    switch (p.token.tag) {
-                        .space => p.indent.lead_size = @intCast(p.token.len()),
-                        .newline => p.indent.lead_size = 0,
-                        else => {
-                            p.state = .parse_literal_or_prefix;
-                            continue;
-                        },
+                    if (p.token.tag == .indent) {
+                        p.indent.lead_size = @intCast(p.token.len());
+                        p.state = .parse_literal_or_prefix;
+                    } else {
+                        p.state = .parse_literal_or_prefix;
+                        continue;
                     }
-                    p.token = p.tokenizer.nextFrom(.space);
-                    continue;
                 },
 
                 // main state
@@ -458,7 +372,15 @@ pub const Parser = struct {
                 .parse_postfix_or_infix => {
                     switch (p.token.tag) {
                         .eof => break,
-                        // .newline => p.state = .end_parse_scope,
+                        .indent => {
+                            try p.pending.resolveAll(alloc);
+                            // check the length; if as parent -> enum_and; else -> key_val
+                            if (p.pending.operators.getLastOrNull() == .enum_and) {
+                                try p.pending.resolveOnce(alloc);
+                            }
+                            try p.pending.pushOperator(alloc, .enum_and);
+                            p.state = .parse_literal_or_prefix;
+                        },
 
                         inline .plus,
                         .minus,
@@ -617,7 +539,8 @@ pub const Parser = struct {
             },
             Error.InvalidOperandStack => {
                 return std.fmt.allocPrint(alloc, "unexpected number of operands for .{s} operation (expected {d}, got {d})", .{
-                    @tagName(p.pending.operators.items[p.pending.operators.items.len -| 1]),
+                    // @tagName(p.pending.operators.items[p.pending.operators.items.len -| 1]),
+                    "X",
                     p.pending.operands.items.len,
                     p.pending.operands.items.len,
                 });
@@ -626,6 +549,92 @@ pub const Parser = struct {
                 return error.UnsupportedErrorMessage;
             },
         }
+    }
+};
+
+const debug = struct {
+    /// Activate dumping parse state to stderr if `pub const
+    /// debug = true` is present in a user file that imports this file
+    const mode = false or @hasDecl(@import("root"), "debug");
+    const color = @import("ansi_colors.zig");
+
+    fn print(comptime fmt: []const u8, args: anytype) void {
+        if (mode) {
+            const stderr = std.io.getStdErr().writer();
+            var bw = std.io.bufferedWriter(stderr);
+
+            std.debug.lockStdErr();
+            defer std.debug.unlockStdErr();
+            bw.writer().print(fmt, args) catch return;
+            bw.flush() catch return;
+        }
+    }
+
+    pub fn stacks(p: *Parser) void {
+        if (mode) {
+            const operators = p.pending.operators.items;
+            const operands = p.pending.operands.items;
+            const scopes = p.pending.scopes.items;
+
+            // stacks width
+            const op_len = 16;
+            const od_len = 16;
+            const sc_len = 18;
+            var i: usize = @max(scopes.len, @max(operands.len, operators.len)) -| 1;
+
+            // border
+            const border = "+" ++ ("-" ** (op_len + od_len + sc_len + 8)) ++ "+";
+
+            debug.print("{s}\n", .{border});
+            while (true) : (i -= 1) { // zip print
+                const operand = if (i >= operands.len) "" else blk: {
+                    const name = @tagName(operands[i].tag);
+                    break :blk if (name.len > op_len) name[0 .. op_len - 2] ++ ".." else name;
+                };
+
+                const operator = if (i >= operators.len) "" else blk: {
+                    const name = @tagName(operators[i]);
+                    break :blk if (name.len > od_len) name[0 .. od_len - 2] ++ ".." else name;
+                };
+
+                const st = if (i >= scopes.len) "" else blk: {
+                    const name = @tagName(scopes[i].next_state)[7..];
+                    break :blk if (name.len > sc_len) name[0 .. sc_len - 2] ++ ".." else name;
+                };
+
+                const bracket = if (i >= scopes.len) "" else blk: {
+                    break :blk switch (scopes[i].closing_token) {
+                        .right_paren => ")",
+                        .right_curly => "}",
+                        .right_square => "]",
+                        else => unreachable,
+                    };
+                };
+
+                debug.print("|{s: <16}| |{s: <16}| |{s: <18}{s: >2}|\n", .{ operand, operator, st, bracket });
+
+                if (i == 0) break;
+            }
+            debug.print("{s}\n", .{border});
+        }
+    }
+
+    pub fn cursor(p: *Parser) void {
+        if (mode) {
+            print("[state:  " ++ color.ctEscape(.{.bold}, "{s}") ++ " at .{s}]\n", .{ @tagName(p.state), @tagName(p.token.tag) });
+        }
+    }
+
+    pub fn action(name: []const u8, arg: []const u8) void {
+        if (mode) {
+            if (arg.len == 0)
+                print("[action: {s}]\n", .{name})
+            else
+                print("[action: {s} .{s}]\n", .{ name, arg });
+        }
+    }
+    pub fn end() void {
+        if (mode) print("END\n\n", .{});
     }
 };
 
