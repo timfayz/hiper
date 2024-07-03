@@ -63,11 +63,11 @@ pub const Node = struct {
 
         // pseudo
         scope,
-        key_body,
-        key_cond,
-        key_value,
-        key_attr,
-        key_name,
+        scope_body,
+        scope_cond,
+        scope_value,
+        scope_attr,
+        scope_name,
 
         pub fn dataTag(node_tag: Tag) Data.Tag {
             return switch (node_tag) {
@@ -98,22 +98,22 @@ pub const Node = struct {
 
                 // has no data representation
                 .scope,
-                .key_body,
-                .key_cond,
-                .key_value,
-                .key_attr,
-                .key_name,
+                .scope_body,
+                .scope_cond,
+                .scope_value,
+                .scope_attr,
+                .scope_name,
                 => .void,
             };
         }
 
         pub fn keyName(node_tag: Tag) []const u8 {
             return switch (node_tag) {
-                .key_body => "body",
-                .key_cond => "cond",
-                .key_value => "val",
-                .key_attr => "attr",
-                .key_name => "name",
+                .scope_body => "body",
+                .scope_cond => "cond",
+                .scope_value => "val",
+                .scope_attr => "attr",
+                .scope_name => "name",
                 else => unreachable,
             };
         }
@@ -162,17 +162,18 @@ const Tokenizer = @import("tokenizer.zig").Tokenizer(
 pub const Parser = struct {
     tokenizer: Tokenizer, // input
     token: Token = undefined, // cursor
-    indent: Indent = .{}, // params
-    pending: Stack = .{}, // scratchpad
-    state: State = .parse_leading_space,
+    indent: Indent = .{},
+    pending: Pending = .{},
+    state: State = .parse_first_indent,
 
     pub const Indent = struct {
-        lead_size: u16 = 0, // --code   (-- space before indentation)
-        size: u16 = 0, //      --++code (++ indentation size)
+        trim_size: u16 = 0, // --code    (--  lead size before indentation = 2)
+        size: u16 = 0, //      --+++code (+++ indentation size = 3)
+        level: u16 = 0, //     --+++code (indent level = 1; starts from 0)
     };
 
     pub const State = enum {
-        parse_leading_space,
+        parse_first_indent,
 
         parse_literal_or_prefix,
         parse_postfix_or_infix,
@@ -188,35 +189,38 @@ pub const Parser = struct {
     pub const Error = error{
         OutOfMemory,
         InvalidToken,
-        InvalidOperandStack,
+        InvalidOperandStack1,
+        InvalidOperandStack2,
+        UnalignedIndentSize,
+        IndentationTooDeep,
         UnexpectedToken,
         UnreachableCode, // TODO temporarily?
         UnbalancedClosingBracket,
     };
 
-    const Stack = struct {
+    const Pending = struct {
         operands: List(*Node) = .{},
         operators: List(Node.Tag) = .{},
         scopes: List(struct { next_state: Parser.State, closing_token: Token.Tag }) = .{},
 
-        pub inline fn pushScope(s: *Stack, alloc: std.mem.Allocator, next_state: Parser.State, closing_token: Token.Tag) Error!void {
+        pub inline fn pushScope(s: *Pending, alloc: std.mem.Allocator, next_state: Parser.State, closing_token: Token.Tag) Error!void {
             try s.operators.append(alloc, .scope);
             try s.scopes.append(alloc, .{ .next_state = next_state, .closing_token = closing_token });
         }
 
-        pub inline fn pushOperand(s: *Stack, alloc: std.mem.Allocator, comptime op_tag: Node.Tag, token: ?Token) !void {
+        pub inline fn pushOperand(s: *Pending, alloc: std.mem.Allocator, comptime op_tag: Node.Tag, token: ?Token) !void {
             debug.action(@src().fn_name, @tagName(op_tag));
             const node = try Node.init(alloc, op_tag);
             if (token) |t| node.data.token = t;
             try s.operands.append(alloc, node);
         }
 
-        pub inline fn pushOperator(s: *Stack, alloc: std.mem.Allocator, op_tag: Node.Tag) !void {
+        pub inline fn pushOperator(s: *Pending, alloc: std.mem.Allocator, op_tag: Node.Tag) !void {
             debug.action(@src().fn_name, @tagName(op_tag));
             try s.operators.append(alloc, op_tag);
         }
 
-        pub inline fn resolveAllIfPrecedenceHigher(s: *Stack, alloc: std.mem.Allocator, op_tag: Node.Tag) Error!void {
+        pub inline fn resolveAllIfPrecedenceHigher(s: *Pending, alloc: std.mem.Allocator, op_tag: Node.Tag) Error!void {
             debug.action(@src().fn_name, @tagName(op_tag));
             const current = op_tag;
             while (s.operators.getLastOrNull()) |pending| {
@@ -228,7 +232,7 @@ pub const Parser = struct {
             }
         }
 
-        pub inline fn resolveAllUntil(s: *Stack, alloc: std.mem.Allocator, op_tag: Node.Tag) Error!void {
+        pub inline fn resolveAllUntilIncluding(s: *Pending, alloc: std.mem.Allocator, op_tag: Node.Tag) Error!void {
             debug.action(@src().fn_name, @tagName(op_tag));
             while (s.operators.popOrNull()) |operator| {
                 try s.resolveAs(alloc, operator);
@@ -236,14 +240,23 @@ pub const Parser = struct {
             }
         }
 
-        pub inline fn resolveAll(s: *Stack, alloc: std.mem.Allocator) Error!void {
+        pub inline fn resolveAllUntilExcluding(s: *Pending, alloc: std.mem.Allocator, op_tag: Node.Tag) Error!void {
+            debug.action(@src().fn_name, @tagName(op_tag));
+            while (s.operators.getLastOrNull()) |operator| {
+                if (operator == op_tag) break;
+                const op = s.operators.pop();
+                try s.resolveAs(alloc, op);
+            }
+        }
+
+        pub inline fn resolveAll(s: *Pending, alloc: std.mem.Allocator) Error!void {
             debug.action(@src().fn_name, "");
             while (s.operators.popOrNull()) |operator| {
                 try s.resolveAs(alloc, operator);
             }
         }
 
-        pub fn resolveOnce(s: *Stack, alloc: std.mem.Allocator) Error!void {
+        pub fn resolveOnce(s: *Pending, alloc: std.mem.Allocator) Error!void {
             debug.action(@src().fn_name, "");
             if (s.operators.popOrNull()) |op_tag| {
                 try s.resolveAs(alloc, op_tag);
@@ -252,7 +265,7 @@ pub const Parser = struct {
 
         // pub fn resolveImmediateAs(s: *Stack, alloc: std.mem.Allocator, node: *Node, op_tag: Node.Tag) Error!void { }
 
-        pub fn resolveAs(s: *Stack, alloc: std.mem.Allocator, op_tag: Node.Tag) Error!void {
+        pub fn resolveAs(s: *Pending, alloc: std.mem.Allocator, op_tag: Node.Tag) Error!void {
             debug.action(@src().fn_name, @tagName(op_tag));
             switch (op_tag) {
                 // discarding operators
@@ -260,7 +273,7 @@ pub const Parser = struct {
 
                 // single-operand operators
                 .arith_neg => {
-                    if (s.operands.items.len < 1) return Error.InvalidOperandStack;
+                    if (s.operands.items.len < 1) return Error.InvalidOperandStack1;
 
                     var node = try Node.init(alloc, op_tag);
                     node.data.single = s.operands.pop();
@@ -274,7 +287,7 @@ pub const Parser = struct {
                 .arith_mul,
                 .arith_sub,
                 => {
-                    if (s.operands.items.len < 2) return Error.InvalidOperandStack;
+                    if (s.operands.items.len < 2) return Error.InvalidOperandStack2;
 
                     var node = try Node.init(alloc, op_tag);
                     node.data.pair.right = s.operands.pop();
@@ -286,7 +299,7 @@ pub const Parser = struct {
                 .enum_and,
                 .enum_or,
                 => {
-                    if (s.operands.items.len < 2) return Error.InvalidOperandStack;
+                    if (s.operands.items.len < 2) return Error.InvalidOperandStack2;
 
                     const right = s.operands.pop();
                     const left = s.operands.pop();
@@ -302,13 +315,13 @@ pub const Parser = struct {
                 },
 
                 // operands-mapping operators
-                inline .key_body,
-                .key_cond,
-                .key_value,
-                .key_attr,
-                .key_name,
+                inline .scope_body,
+                .scope_cond,
+                .scope_value,
+                .scope_attr,
+                .scope_name,
                 => |key| {
-                    if (s.operands.items.len < 2) return Error.InvalidOperandStack;
+                    if (s.operands.items.len < 2) return Error.InvalidOperandStack2;
 
                     const val = s.operands.pop();
                     const node = s.operands.getLast();
@@ -331,9 +344,9 @@ pub const Parser = struct {
             debug.cursor(p);
             switch (p.state) {
                 // initialization state
-                .parse_leading_space => {
+                .parse_first_indent => {
                     if (p.token.tag == .indent) {
-                        p.indent.lead_size = @intCast(p.token.len());
+                        p.indent.trim_size = @intCast(p.token.len());
                         p.state = .parse_literal_or_prefix;
                     } else {
                         p.state = .parse_literal_or_prefix;
@@ -348,12 +361,17 @@ pub const Parser = struct {
                         .left_paren => {
                             try p.pending.pushScope(alloc, .parse_postfix_or_infix, .right_paren);
                         },
-                        .identifier => {
-                            try p.pending.pushOperand(alloc, .literal_identifier, p.token);
-                            p.state = .parse_postfix_or_infix;
-                        },
-                        .number => {
-                            try p.pending.pushOperand(alloc, .literal_number, p.token);
+                        inline .number,
+                        .identifier,
+                        .string,
+                        => |tag| {
+                            const node_tag = comptime switch (tag) {
+                                .number => .literal_number,
+                                .identifier => .literal_identifier,
+                                .string => .literal_string,
+                                else => unreachable,
+                            };
+                            try p.pending.pushOperand(alloc, node_tag, p.token);
                             p.state = .parse_postfix_or_infix;
                         },
                         .keyword_for => {
@@ -373,12 +391,39 @@ pub const Parser = struct {
                     switch (p.token.tag) {
                         .eof => break,
                         .indent => {
-                            try p.pending.resolveAll(alloc);
-                            // check the length; if as parent -> enum_and; else -> key_val
-                            if (p.pending.operators.getLastOrNull() == .enum_and) {
-                                try p.pending.resolveOnce(alloc);
+                            const last_indent_level = p.indent.level;
+                            const indent_size: u16 = @intCast(p.token.len());
+
+                            if (indent_size > 0) {
+                                if (p.indent.size == 0) { // initialize indent size
+                                    p.indent.size = indent_size;
+                                    p.indent.level = 1;
+                                } else { // already initialized
+                                    if (indent_size % p.indent.size != 0) { // assert proper alignment
+                                        return Error.UnalignedIndentSize;
+                                    } else if (indent_size > p.indent.size * (p.indent.level + 1)) { // assert proper nesting (same or +1)
+                                        return Error.IndentationTooDeep;
+                                    } else { // update current level
+                                        p.indent.level = indent_size / p.indent.size;
+                                    }
+                                }
                             }
-                            try p.pending.pushOperator(alloc, .enum_and);
+                            // std.log.err("indent_size: {}", .{indent_size});
+                            // std.log.err("last_indent_level: {}", .{last_indent_level});
+                            // std.log.err("current p.indent.level: {}", .{p.indent.level});
+
+                            // assign (if indentation level increased)
+                            if (p.indent.level > last_indent_level) {
+                                try p.pending.pushOperator(alloc, .scope_value);
+                            }
+                            // enumerate (if indentation is the same)
+                            else {
+                                try p.pending.resolveAllUntilExcluding(alloc, .scope_value);
+                                if (p.pending.operators.getLastOrNull() == .enum_and) {
+                                    try p.pending.resolveOnce(alloc);
+                                }
+                                try p.pending.pushOperator(alloc, .enum_and);
+                            }
                             p.state = .parse_literal_or_prefix;
                         },
 
@@ -425,7 +470,7 @@ pub const Parser = struct {
                                 if (scope.closing_token != bracket) {
                                     return Error.UnbalancedClosingBracket;
                                 }
-                                try p.pending.resolveAllUntil(alloc, .scope);
+                                try p.pending.resolveAllUntilIncluding(alloc, .scope);
                                 p.state = scope.next_state;
                             } else {
                                 return Error.UnexpectedToken;
@@ -446,8 +491,8 @@ pub const Parser = struct {
                     p.state = .parse_literal_or_prefix;
                 },
                 .parse_past_for_condition => {
-                    try p.pending.resolveAs(alloc, .key_cond);
-                    try p.pending.pushOperator(alloc, .key_body);
+                    try p.pending.resolveAs(alloc, .scope_cond);
+                    try p.pending.pushOperator(alloc, .scope_body);
                     p.state = .parse_literal_or_prefix;
                     continue;
                 },
@@ -459,7 +504,7 @@ pub const Parser = struct {
                     switch (p.token.tag) {
                         .identifier => {
                             try p.pending.pushOperand(alloc, .literal_identifier, p.token);
-                            try p.pending.resolveAs(alloc, .key_name);
+                            try p.pending.resolveAs(alloc, .scope_name);
                             p.state = .parse_past_dot_id;
                         },
                         else => {
@@ -474,7 +519,7 @@ pub const Parser = struct {
                             p.state = .parse_literal_or_prefix;
                         },
                         .equal => {
-                            try p.pending.pushOperator(alloc, .key_value);
+                            try p.pending.pushOperator(alloc, .scope_value);
                             p.state = .parse_literal_or_prefix;
                         },
                         else => {
@@ -484,10 +529,10 @@ pub const Parser = struct {
                     }
                 },
                 .parse_past_dot_id_attr => {
-                    try p.pending.resolveAs(alloc, .key_attr);
+                    try p.pending.resolveAs(alloc, .scope_attr);
                     switch (p.token.tag) {
                         .equal => {
-                            try p.pending.pushOperator(alloc, .key_value);
+                            try p.pending.pushOperator(alloc, .scope_value);
                             p.state = .parse_literal_or_prefix;
                         },
                         else => {
@@ -518,7 +563,7 @@ pub const Parser = struct {
     /// Deprecated.
     pub fn parseFromInput(alloc: std.mem.Allocator, input: [:0]const u8) Error!?*Node {
         var p = Parser.init(input);
-        return p.parse(alloc, .parse_leading_space);
+        return p.parse(alloc, .parse_first_indent);
     }
 
     pub fn at(p: *Parser, alloc: std.mem.Allocator) ![]u8 {
@@ -532,21 +577,31 @@ pub const Parser = struct {
     pub fn errMessage(p: *Parser, alloc: std.mem.Allocator, err: Error) ![]u8 {
         switch (err) {
             Error.UnexpectedToken => {
-                return std.fmt.allocPrint(alloc, "unexpected token '{s}' (.{s})", .{
+                return std.fmt.allocPrint(alloc, "unexpected token '{s}' (.{s})\n", .{
                     p.token.sliceFrom(p.tokenizer.input),
                     @tagName(p.token.tag),
                 });
             },
-            Error.InvalidOperandStack => {
-                return std.fmt.allocPrint(alloc, "unexpected number of operands for .{s} operation (expected {d}, got {d})", .{
-                    // @tagName(p.pending.operators.items[p.pending.operators.items.len -| 1]),
-                    "X",
-                    p.pending.operands.items.len,
+            inline Error.InvalidOperandStack1,
+            Error.InvalidOperandStack2,
+            => |code| {
+                const expected = switch (code) {
+                    Error.InvalidOperandStack1 => 1,
+                    Error.InvalidOperandStack2 => 2,
+                    else => unreachable,
+                };
+                if (p.pending.operators.items.len == 0) {
+                    return error.OperatorStackIsEmpty;
+                }
+                const operator = p.pending.operators.items[p.pending.operators.items.len -| 1];
+                return std.fmt.allocPrint(alloc, "unexpected number of operands for .{s} operation (expected {d}, got {d})\n", .{
+                    @tagName(operator),
+                    expected,
                     p.pending.operands.items.len,
                 });
             },
             else => {
-                return error.UnsupportedErrorMessage;
+                return std.fmt.allocPrint(alloc, "{s}\n", .{@errorName(err)});
             },
         }
     }
@@ -709,5 +764,21 @@ test "Parser" {
         \\    .enum_and
         \\      .literal_identifier -> "attr1"
         \\      .literal_identifier -> "attr2"
+    );
+
+    try case.run(
+        \\.a
+        \\  1
+        \\  2
+        \\  3
+    ,
+        \\.dot
+        \\  "name":
+        \\    .literal_identifier -> "a"
+        \\  "val":
+        \\    .enum_and
+        \\      .literal_number -> "1"
+        \\      .literal_number -> "2"
+        \\      .literal_number -> "3"
     );
 }
