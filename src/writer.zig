@@ -55,3 +55,61 @@ pub fn writeDebugTree(alloc: std.mem.Allocator, input: [:0]const u8, tree: ?*Nod
     return "";
 }
 
+const Options = struct {
+    indent_size: usize = 2,
+    executable_nodes: enum {
+        evaluate,
+        ignore,
+        render_literally,
+        throw_error,
+    } = .ignore,
+    unknown_nodes: enum {
+        ignore,
+        render_literally,
+        throw_error,
+    } = .ignore,
+};
+
+pub fn writeHTMLImpl(arena: std.mem.Allocator, input: [:0]const u8, tree: ?*Node, lvl: usize, opt: Options) ![]u8 {
+    var out = std.ArrayList(u8).init(arena);
+    const out_w = out.writer();
+    if (tree) |node| {
+        switch (node.tag) {
+            .literal_number,
+            .literal_string,
+            => {
+                const literal = node.data.token.sliceFrom(input);
+                try out.appendNTimes(' ', opt.indent_size * lvl);
+                try out_w.print("{s}\n", .{literal});
+                return out.items;
+            },
+            .enum_and => {
+                for (node.data.list.items) |item| {
+                    const str = try writeHTMLImpl(arena, input, item, lvl, opt);
+                    try out_w.print("{s}", .{str});
+                }
+                return out.items;
+            },
+            .dot => {
+                const next = node.data.map.get("name").?;
+                const literal = next.data.token.sliceFrom(input);
+                try out.appendNTimes(' ', opt.indent_size * lvl);
+                try out_w.print("<{0s}>\n", .{literal});
+                if (node.data.map.get("val")) |val| {
+                    const str = try writeHTMLImpl(arena, input, val, lvl + 1, opt);
+                    try out_w.print("{s}", .{str});
+                }
+                try out.appendNTimes(' ', opt.indent_size * lvl);
+                try out_w.print("</{0s}>\n", .{literal});
+            },
+            .literal_identifier => {
+                // resolve from scope, error or ignore otherwise
+            },
+            .ctrl_for => {
+                // evaluate
+            },
+            else => return error.UnsupportedOperator,
+        }
+    }
+    return out.items;
+}
