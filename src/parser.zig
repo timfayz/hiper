@@ -21,20 +21,6 @@ pub const Node = struct {
         pub const Tag = std.meta.Tag(Data);
     };
 
-    pub fn init(alloc: std.mem.Allocator, tag: Tag) !*Node {
-        const node = try alloc.create(Node);
-        node.tag = tag;
-        node.data = switch (tag.dataTag()) {
-            .void => .{ .void = {} },
-            .token => .{ .token = undefined },
-            .single => .{ .single = undefined },
-            .pair => .{ .pair = .{ .left = undefined, .right = undefined } },
-            .list => .{ .list = List(*Node){} },
-            .map => .{ .map = Map(*Node){} },
-        };
-        return node;
-    }
-
     pub const Tag = enum(u5) {
         // primitives
         literal_number,
@@ -62,10 +48,11 @@ pub const Node = struct {
         ctrl_if,
 
         // pseudo
+        assign_equal,
+        assign_indent,
         scope,
         scope_body,
         scope_cond,
-        scope_value,
         scope_attr,
         scope_name,
 
@@ -100,7 +87,8 @@ pub const Node = struct {
                 .scope,
                 .scope_body,
                 .scope_cond,
-                .scope_value,
+                .assign_equal,
+                .assign_indent,
                 .scope_attr,
                 .scope_name,
                 => .void,
@@ -111,7 +99,8 @@ pub const Node = struct {
             return switch (node_tag) {
                 .scope_body => "body",
                 .scope_cond => "cond",
-                .scope_value => "val",
+                .assign_equal => "val",
+                .assign_indent => "val",
                 .scope_attr => "attr",
                 .scope_name => "name",
                 else => unreachable,
@@ -149,6 +138,20 @@ pub const Node = struct {
                 @intFromEnum(node_tag) <= @intFromEnum(Tag.arith_exp);
         }
     };
+
+    pub fn init(alloc: std.mem.Allocator, tag: Tag) !*Node {
+        const node = try alloc.create(Node);
+        node.tag = tag;
+        node.data = switch (tag.dataTag()) {
+            .void => .{ .void = {} },
+            .token => .{ .token = undefined },
+            .single => .{ .single = undefined },
+            .pair => .{ .pair = .{ .left = undefined, .right = undefined } },
+            .list => .{ .list = List(*Node){} },
+            .map => .{ .map = Map(*Node){} },
+        };
+        return node;
+    }
 };
 
 const Token = @import("tokenizer.zig").Token;
@@ -175,8 +178,8 @@ pub const Parser = struct {
     pub const State = enum {
         parse_first_indent,
 
-        parse_literal_or_prefix,
-        parse_postfix_or_infix,
+        parser_prefix,
+        parse_postfix,
 
         parse_past_for,
         parse_past_for_condition,
@@ -187,6 +190,7 @@ pub const Parser = struct {
     };
 
     pub const Error = error{
+        SyntaxDoubleAssignment,
         OutOfMemory,
         InvalidToken,
         InvalidOperandStack1,
@@ -317,7 +321,8 @@ pub const Parser = struct {
                 // operands-mapping operators
                 inline .scope_body,
                 .scope_cond,
-                .scope_value,
+                .assign_equal,
+                .assign_indent,
                 .scope_attr,
                 .scope_name,
                 => |key| {
@@ -347,19 +352,19 @@ pub const Parser = struct {
                 .parse_first_indent => {
                     if (p.token.tag == .indent) {
                         p.indent.trim_size = @intCast(p.token.len());
-                        p.state = .parse_literal_or_prefix;
+                        p.state = .parser_prefix;
                     } else {
-                        p.state = .parse_literal_or_prefix;
+                        p.state = .parser_prefix;
                         continue;
                     }
                 },
 
                 // main state
-                .parse_literal_or_prefix => {
+                .parser_prefix => {
                     switch (p.token.tag) {
                         .eof => break,
                         .left_paren => {
-                            try p.pending.pushScope(alloc, .parse_postfix_or_infix, .right_paren);
+                            try p.pending.pushScope(alloc, .parse_postfix, .right_paren);
                         },
                         inline .number,
                         .identifier,
@@ -372,7 +377,7 @@ pub const Parser = struct {
                                 else => unreachable,
                             };
                             try p.pending.pushOperand(alloc, node_tag, p.token);
-                            p.state = .parse_postfix_or_infix;
+                            p.state = .parse_postfix;
                         },
                         .keyword_for => {
                             p.state = .parse_past_for;
@@ -387,7 +392,7 @@ pub const Parser = struct {
                     }
                 },
 
-                .parse_postfix_or_infix => {
+                .parse_postfix => {
                     switch (p.token.tag) {
                         .eof => break,
                         .indent => {
@@ -399,11 +404,14 @@ pub const Parser = struct {
                                     p.indent.size = indent_size;
                                     p.indent.level = 1;
                                 } else { // already initialized
-                                    if (indent_size % p.indent.size != 0) { // assert proper alignment
+                                    if (indent_size % p.indent.size != 0) {
+                                        // assert proper alignment
                                         return Error.UnalignedIndentSize;
-                                    } else if (indent_size > p.indent.size * (p.indent.level + 1)) { // assert proper nesting (same or +1)
+                                    } else if (indent_size > p.indent.size * (p.indent.level + 1)) {
+                                        // assert proper nesting (same or +1)
                                         return Error.IndentationTooDeep;
-                                    } else { // update current level
+                                    } else {
+                                        // update current level
                                         p.indent.level = indent_size / p.indent.size;
                                     }
                                 }
@@ -414,17 +422,21 @@ pub const Parser = struct {
 
                             // assign (if indentation level increased)
                             if (p.indent.level > last_indent_level) {
-                                try p.pending.pushOperator(alloc, .scope_value);
+                                try p.pending.resolveAllUntilExcluding(alloc, .assign_equal);
+                                if (p.pending.operators.getLastOrNull() == .assign_equal) {
+                                    return Error.SyntaxDoubleAssignment;
+                                }
+                                try p.pending.pushOperator(alloc, .assign_indent);
                             }
                             // enumerate (if indentation is the same)
                             else {
-                                try p.pending.resolveAllUntilExcluding(alloc, .scope_value);
+                                try p.pending.resolveAllUntilExcluding(alloc, .assign_indent);
                                 if (p.pending.operators.getLastOrNull() == .enum_and) {
                                     try p.pending.resolveOnce(alloc);
                                 }
                                 try p.pending.pushOperator(alloc, .enum_and);
                             }
-                            p.state = .parse_literal_or_prefix;
+                            p.state = .parser_prefix;
                         },
 
                         inline .plus,
@@ -443,7 +455,7 @@ pub const Parser = struct {
                             };
                             try p.pending.resolveAllIfPrecedenceHigher(alloc, operator);
                             try p.pending.pushOperator(alloc, operator);
-                            p.state = .parse_literal_or_prefix;
+                            p.state = .parser_prefix;
                         },
 
                         inline .comma,
@@ -459,7 +471,7 @@ pub const Parser = struct {
                                 try p.pending.resolveOnce(alloc);
                             }
                             try p.pending.pushOperator(alloc, operator);
-                            p.state = .parse_literal_or_prefix;
+                            p.state = .parser_prefix;
                         },
 
                         .right_square,
@@ -488,12 +500,12 @@ pub const Parser = struct {
                     }
                     try p.pending.pushOperand(alloc, .ctrl_for, null);
                     try p.pending.pushScope(alloc, .parse_past_for_condition, .right_paren);
-                    p.state = .parse_literal_or_prefix;
+                    p.state = .parser_prefix;
                 },
                 .parse_past_for_condition => {
                     try p.pending.resolveAs(alloc, .scope_cond);
                     try p.pending.pushOperator(alloc, .scope_body);
-                    p.state = .parse_literal_or_prefix;
+                    p.state = .parser_prefix;
                     continue;
                 },
 
@@ -516,14 +528,14 @@ pub const Parser = struct {
                     switch (p.token.tag) {
                         .left_square => {
                             try p.pending.pushScope(alloc, .parse_past_dot_id_attr, .right_square);
-                            p.state = .parse_literal_or_prefix;
+                            p.state = .parser_prefix;
                         },
                         .equal => {
-                            try p.pending.pushOperator(alloc, .scope_value);
-                            p.state = .parse_literal_or_prefix;
+                            try p.pending.pushOperator(alloc, .assign_equal);
+                            p.state = .parser_prefix;
                         },
                         else => {
-                            p.state = .parse_postfix_or_infix;
+                            p.state = .parse_postfix;
                             continue;
                         },
                     }
@@ -532,11 +544,11 @@ pub const Parser = struct {
                     try p.pending.resolveAs(alloc, .scope_attr);
                     switch (p.token.tag) {
                         .equal => {
-                            try p.pending.pushOperator(alloc, .scope_value);
-                            p.state = .parse_literal_or_prefix;
+                            try p.pending.pushOperator(alloc, .assign_equal);
+                            p.state = .parser_prefix;
                         },
                         else => {
-                            p.state = .parse_postfix_or_infix;
+                            p.state = .parse_postfix;
                             continue;
                         },
                     }
@@ -780,5 +792,43 @@ test "Parser" {
         \\      .literal_number -> "1"
         \\      .literal_number -> "2"
         \\      .literal_number -> "3"
+    );
+
+    try case.run(
+        \\.div [.width = 100]
+        \\  .h1 = 0o755
+        \\  .p = .span = "hello world"
+        \\  .h2 = 0x103.70p-5
+    ,
+        \\.dot
+        \\  "name":
+        \\    .literal_identifier -> "div"
+        \\  "val":
+        \\    .enum_and
+        \\      .dot
+        \\        "name":
+        \\          .literal_identifier -> "h1"
+        \\        "val":
+        \\          .literal_number -> "0o755"
+        \\      .dot
+        \\        "name":
+        \\          .literal_identifier -> "p"
+        \\        "val":
+        \\          .dot
+        \\            "name":
+        \\              .literal_identifier -> "span"
+        \\            "val":
+        \\              .literal_string -> ""hello world""
+        \\      .dot
+        \\        "name":
+        \\          .literal_identifier -> "h2"
+        \\        "val":
+        \\          .literal_number -> "0x103.70p-5"
+        \\  "attr":
+        \\    .dot
+        \\      "name":
+        \\        .literal_identifier -> "width"
+        \\      "val":
+        \\        .literal_number -> "100"
     );
 }
