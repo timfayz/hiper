@@ -213,19 +213,19 @@ pub const Parser = struct {
         }
 
         pub inline fn pushOperand(s: *Pending, alloc: std.mem.Allocator, comptime op_tag: Node.Tag, token: ?Token) !void {
-            debug.action(@src().fn_name, @tagName(op_tag));
+            log.action(@src().fn_name, @tagName(op_tag));
             const node = try Node.init(alloc, op_tag);
             if (token) |t| node.data.token = t;
             try s.operands.append(alloc, node);
         }
 
         pub inline fn pushOperator(s: *Pending, alloc: std.mem.Allocator, op_tag: Node.Tag) !void {
-            debug.action(@src().fn_name, @tagName(op_tag));
+            log.action(@src().fn_name, @tagName(op_tag));
             try s.operators.append(alloc, op_tag);
         }
 
         pub inline fn resolveAllIfPrecedenceHigher(s: *Pending, alloc: std.mem.Allocator, op_tag: Node.Tag) Error!void {
-            debug.action(@src().fn_name, @tagName(op_tag));
+            log.action(@src().fn_name, @tagName(op_tag));
             const current = op_tag;
             while (s.operators.getLastOrNull()) |pending| {
                 if (pending.precedence() > current.precedence() or
@@ -237,7 +237,7 @@ pub const Parser = struct {
         }
 
         pub inline fn resolveAllUntilIncluding(s: *Pending, alloc: std.mem.Allocator, op_tag: Node.Tag) Error!void {
-            debug.action(@src().fn_name, @tagName(op_tag));
+            log.action(@src().fn_name, @tagName(op_tag));
             while (s.operators.popOrNull()) |operator| {
                 try s.resolveAs(alloc, operator);
                 if (operator == op_tag) break;
@@ -245,7 +245,7 @@ pub const Parser = struct {
         }
 
         pub inline fn resolveAllUntilExcluding(s: *Pending, alloc: std.mem.Allocator, op_tag: Node.Tag) Error!void {
-            debug.action(@src().fn_name, @tagName(op_tag));
+            log.action(@src().fn_name, @tagName(op_tag));
             while (s.operators.getLastOrNull()) |operator| {
                 if (operator == op_tag) break;
                 const op = s.operators.pop();
@@ -254,14 +254,14 @@ pub const Parser = struct {
         }
 
         pub inline fn resolveAll(s: *Pending, alloc: std.mem.Allocator) Error!void {
-            debug.action(@src().fn_name, "");
+            log.action(@src().fn_name, "");
             while (s.operators.popOrNull()) |operator| {
                 try s.resolveAs(alloc, operator);
             }
         }
 
         pub fn resolveOnce(s: *Pending, alloc: std.mem.Allocator) Error!void {
-            debug.action(@src().fn_name, "");
+            log.action(@src().fn_name, "");
             if (s.operators.popOrNull()) |op_tag| {
                 try s.resolveAs(alloc, op_tag);
             }
@@ -270,7 +270,7 @@ pub const Parser = struct {
         // pub fn resolveImmediateAs(s: *Stack, alloc: std.mem.Allocator, node: *Node, op_tag: Node.Tag) Error!void { }
 
         pub fn resolveAs(s: *Pending, alloc: std.mem.Allocator, op_tag: Node.Tag) Error!void {
-            debug.action(@src().fn_name, @tagName(op_tag));
+            log.action(@src().fn_name, @tagName(op_tag));
             switch (op_tag) {
                 // discarding operators
                 .scope => {},
@@ -346,7 +346,7 @@ pub const Parser = struct {
         p.token = p.tokenizer.nextFrom(.space);
         p.state = from;
         while (true) {
-            debug.cursor(p);
+            log.cursor(p);
             switch (p.state) {
                 // initialization state
                 .parse_first_indent => {
@@ -556,12 +556,12 @@ pub const Parser = struct {
 
                 // else => return error.UnexpectedState,
             }
-            debug.stacks(p);
+            log.stacks(p);
             p.token = p.tokenizer.next();
         }
 
         try p.pending.resolveAll(alloc);
-        debug.end();
+        log.end();
 
         if (p.pending.operands.popOrNull()) |node| {
             return node;
@@ -619,89 +619,74 @@ pub const Parser = struct {
     }
 };
 
-const debug = struct {
-    /// Activate dumping parse state to stderr if `pub const
-    /// debug = true` is present in a user file that imports this file
-    const mode = false or @hasDecl(@import("root"), "debug");
+const log = struct {
     const color = @import("ansi_colors.zig");
-
-    fn print(comptime fmt: []const u8, args: anytype) void {
-        if (mode) {
-            const stderr = std.io.getStdErr().writer();
-            var bw = std.io.bufferedWriter(stderr);
-
-            std.debug.lockStdErr();
-            defer std.debug.unlockStdErr();
-            bw.writer().print(fmt, args) catch return;
-            bw.flush() catch return;
-        }
-    }
+    const scope = @import("log.zig").scope(.parser);
+    const scopeActive = @import("log.zig").scopeActive;
 
     pub fn stacks(p: *Parser) void {
-        if (mode) {
-            const operators = p.pending.operators.items;
-            const operands = p.pending.operands.items;
-            const scopes = p.pending.scopes.items;
+        if (!scopeActive(.parser)) return;
+        const operators = p.pending.operators.items;
+        const operands = p.pending.operands.items;
+        const scopes = p.pending.scopes.items;
 
-            // stacks width
-            const op_len = 16;
-            const od_len = 16;
-            const sc_len = 18;
-            var i: usize = @max(scopes.len, @max(operands.len, operators.len)) -| 1;
+        // stacks width
+        const op_len = 16;
+        const od_len = 16;
+        const sc_len = 18;
+        var i: usize = @max(scopes.len, @max(operands.len, operators.len)) -| 1;
 
-            // border
-            const border = "+" ++ ("-" ** (op_len + od_len + sc_len + 8)) ++ "+";
+        // border
+        const border = "+" ++ ("-" ** (op_len + od_len + sc_len + 8)) ++ "+";
 
-            debug.print("{s}\n", .{border});
-            while (true) : (i -= 1) { // zip print
-                const operand = if (i >= operands.len) "" else blk: {
-                    const name = @tagName(operands[i].tag);
-                    break :blk if (name.len > op_len) name[0 .. op_len - 2] ++ ".." else name;
+        scope.print("{s}\n", .{border});
+        while (true) : (i -= 1) { // zip print
+            const operand = if (i >= operands.len) "" else blk: {
+                const name = @tagName(operands[i].tag);
+                break :blk if (name.len > op_len) name[0 .. op_len - 2] ++ ".." else name;
+            };
+
+            const operator = if (i >= operators.len) "" else blk: {
+                const name = @tagName(operators[i]);
+                break :blk if (name.len > od_len) name[0 .. od_len - 2] ++ ".." else name;
+            };
+
+            const st = if (i >= scopes.len) "" else blk: {
+                const name = @tagName(scopes[i].next_state)[7..];
+                break :blk if (name.len > sc_len) name[0 .. sc_len - 2] ++ ".." else name;
+            };
+
+            const bracket = if (i >= scopes.len) "" else blk: {
+                break :blk switch (scopes[i].closing_token) {
+                    .right_paren => ")",
+                    .right_curly => "}",
+                    .right_square => "]",
+                    else => unreachable,
                 };
+            };
 
-                const operator = if (i >= operators.len) "" else blk: {
-                    const name = @tagName(operators[i]);
-                    break :blk if (name.len > od_len) name[0 .. od_len - 2] ++ ".." else name;
-                };
+            scope.print("|{s: <16}| |{s: <16}| |{s: <18}{s: >2}|\n", .{ operand, operator, st, bracket });
 
-                const st = if (i >= scopes.len) "" else blk: {
-                    const name = @tagName(scopes[i].next_state)[7..];
-                    break :blk if (name.len > sc_len) name[0 .. sc_len - 2] ++ ".." else name;
-                };
-
-                const bracket = if (i >= scopes.len) "" else blk: {
-                    break :blk switch (scopes[i].closing_token) {
-                        .right_paren => ")",
-                        .right_curly => "}",
-                        .right_square => "]",
-                        else => unreachable,
-                    };
-                };
-
-                debug.print("|{s: <16}| |{s: <16}| |{s: <18}{s: >2}|\n", .{ operand, operator, st, bracket });
-
-                if (i == 0) break;
-            }
-            debug.print("{s}\n", .{border});
+            if (i == 0) break;
         }
+        scope.print("{s}\n", .{border});
     }
 
     pub fn cursor(p: *Parser) void {
-        if (mode) {
-            print("[state:  " ++ color.ctEscape(.{.bold}, "{s}") ++ " at .{s}]\n", .{ @tagName(p.state), @tagName(p.token.tag) });
-        }
+        if (!scopeActive(.parser)) return;
+        scope.print("[state:  " ++ color.ctEscape(.{.bold}, "{s}") ++ " at .{s}]\n", .{ @tagName(p.state), @tagName(p.token.tag) });
     }
 
     pub fn action(name: []const u8, arg: []const u8) void {
-        if (mode) {
-            if (arg.len == 0)
-                print("[action: {s}]\n", .{name})
-            else
-                print("[action: {s} .{s}]\n", .{ name, arg });
-        }
+        if (!scopeActive(.parser)) return;
+        if (arg.len == 0)
+            scope.print("[action: {s}]\n", .{name})
+        else
+            scope.print("[action: {s} .{s}]\n", .{ name, arg });
     }
+
     pub fn end() void {
-        if (mode) print("END\n\n", .{});
+        scope.print("END\n\n", .{});
     }
 };
 
