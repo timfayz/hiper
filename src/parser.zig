@@ -621,7 +621,7 @@ pub const Parser = struct {
 
 const log = struct {
     const color = @import("ansi_colors.zig");
-    const scope = @import("log.zig").scope(.parser);
+    const scope = @import("log.zig").scope(.{ .tag = .parser, .prefix = "parser: " });
     const scopeActive = @import("log.zig").scopeActive;
 
     pub fn stacks(p: *Parser) void {

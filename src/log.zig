@@ -5,12 +5,12 @@ const std = @import("std");
 
 /// Prints under the `.unscoped` scope using `defaults.logFn`.
 /// Use `defaults.logFn` for raw, unconditional logging.
-pub const print = scope(.unscoped).print;
+pub const print = scope(.{ .tag = .unscoped }).print;
 
 /// Default log options.
 pub const defaults = struct {
     pub const options_identifier = "hi_options";
-    pub const log_prefix = if (rootHas("log_prefix")) rootGet("log_prefix") else "";
+    pub const log_fn_prefix = if (rootHas("log_fn_prefix")) rootGet("log_fn_prefix") else "";
     pub const log_scopes = blk: {
         if (rootHas("log_scopes")) {
             const scopes = rootGet("log_scopes");
@@ -29,7 +29,7 @@ pub const defaults = struct {
         const stderr = std.io.getStdErr().writer();
         var bw = std.io.bufferedWriter(stderr);
         nosuspend {
-            bw.writer().print(format, args) catch return;
+            bw.writer().print(log_fn_prefix ++ format, args) catch return;
             bw.flush() catch return;
         }
     }
@@ -61,11 +61,11 @@ pub fn scopeActive(tag: @TypeOf(.Enum)) bool {
 
 /// Initializes a print function under the `.tag` scope.
 /// Ensure the tag is present in `.log_scopes` for the print to function.
-pub fn scope(tag: @TypeOf(.Enum)) type {
+pub fn scope(s: struct { tag: @TypeOf(.Enum), prefix: []const u8 = "" }) type {
     return struct {
         pub fn print(comptime fmt: []const u8, args: anytype) void {
-            if (!scopeActive(tag)) return;
-            defaults.logFn(defaults.log_prefix ++ fmt, args);
+            if (!scopeActive(s.tag)) return;
+            defaults.logFn(s.prefix ++ fmt, args);
         }
     };
 }
