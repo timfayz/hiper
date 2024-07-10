@@ -708,6 +708,12 @@ test "Parser" {
         \\.literal_number -> "1"
     );
 
+    try case.run("1, 2",
+        \\.enum_and
+        \\  .literal_number -> "1"
+        \\  .literal_number -> "2"
+    );
+
     try case.run("1 + 2",
         \\.arith_add
         \\  .literal_number -> "1"
