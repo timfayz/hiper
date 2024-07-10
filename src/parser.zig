@@ -436,6 +436,7 @@ pub const Parser = struct {
                                 }
                                 try p.pending.pushOperator(alloc, .enum_and);
                             }
+                            try p.pending.pushOperator(alloc, .scope);
                             p.state = .parser_prefix;
                         },
 
@@ -471,6 +472,15 @@ pub const Parser = struct {
                                 try p.pending.resolveOnce(alloc);
                             }
                             try p.pending.pushOperator(alloc, operator);
+                            p.state = .parser_prefix;
+                        },
+
+                        .semicolon => {
+                            try p.pending.resolveAllUntilExcluding(alloc, .scope);
+                            if (p.pending.operators.getLastOrNull() == .enum_and) {
+                                try p.pending.resolveOnce(alloc);
+                            }
+                            try p.pending.pushOperator(alloc, .enum_and);
                             p.state = .parser_prefix;
                         },
 
@@ -652,7 +662,7 @@ const log = struct {
             };
 
             const st = if (i >= scopes.len) "" else blk: {
-                const name = @tagName(scopes[i].next_state)[7..];
+                const name = @tagName(scopes[i].next_state)[0..];
                 break :blk if (name.len > sc_len) name[0 .. sc_len - 2] ++ ".." else name;
             };
 
@@ -686,7 +696,7 @@ const log = struct {
     }
 
     pub fn end() void {
-        scope.print("END\n\n", .{});
+        scope.print("[end]\n\n", .{});
     }
 };
 
@@ -757,16 +767,36 @@ test "Parser" {
         \\      .literal_number -> "3"
     );
 
-    try case.run(".name [attr1, attr2] = 5",
+    try case.run(".name [attr1, attr2] = 3",
         \\.dot
         \\  "name":
         \\    .literal_identifier -> "name"
         \\  "val":
-        \\    .literal_number -> "5"
+        \\    .literal_number -> "3"
         \\  "attr":
         \\    .enum_and
         \\      .literal_identifier -> "attr1"
         \\      .literal_identifier -> "attr2"
+    );
+
+    try case.run(".name [.attr1 = 1; .attr2 = 2] = 3",
+        \\.dot
+        \\  "name":
+        \\    .literal_identifier -> "name"
+        \\  "val":
+        \\    .literal_number -> "3"
+        \\  "attr":
+        \\    .enum_and
+        \\      .dot
+        \\        "name":
+        \\          .literal_identifier -> "attr1"
+        \\        "val":
+        \\          .literal_number -> "1"
+        \\      .dot
+        \\        "name":
+        \\          .literal_identifier -> "attr2"
+        \\        "val":
+        \\          .literal_number -> "2"
     );
 
     try case.run(
