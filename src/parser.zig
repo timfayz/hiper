@@ -173,6 +173,34 @@ pub const Parser = struct {
         trim_size: u16 = 0, // --code    (--  lead size before indentation = 2)
         size: u16 = 0, //      --+++code (+++ indentation size = 3)
         level: u16 = 0, //     --+++code (indent level = 1; starts from 0)
+
+        pub fn isIncreased(indent: *Indent, indent_size: usize) !bool {
+            // std.log.err("indent_size: {}", .{indent_size});
+            // std.log.err("last_indent_level: {}", .{last_indent_level});
+            // std.log.err("current p.indent.level: {}", .{p.indent.level});
+            const last_indent_level = indent.level;
+            const new_indent_size: u16 = @intCast(indent_size);
+
+            if (new_indent_size > 0) {
+                if (indent.size == 0) { // initialize indent size
+                    indent.size = new_indent_size;
+                    indent.level = 1;
+                } else { // already initialized
+                    if (new_indent_size % indent.size != 0) {
+                        // assert proper alignment
+                        return Error.UnalignedIndentSize;
+                    } else if (new_indent_size > indent.size * (indent.level + 1)) {
+                        // assert proper nesting (same or +1)
+                        return Error.IndentationTooDeep;
+                    } else {
+                        // update current level
+                        indent.level = new_indent_size / indent.size;
+                    }
+                }
+            }
+
+            return indent.level > last_indent_level;
+        }
     };
 
     pub const State = enum {
@@ -396,32 +424,8 @@ pub const Parser = struct {
                     switch (p.token.tag) {
                         .eof => break,
                         .indent => {
-                            const last_indent_level = p.indent.level;
-                            const indent_size: u16 = @intCast(p.token.len());
-
-                            if (indent_size > 0) {
-                                if (p.indent.size == 0) { // initialize indent size
-                                    p.indent.size = indent_size;
-                                    p.indent.level = 1;
-                                } else { // already initialized
-                                    if (indent_size % p.indent.size != 0) {
-                                        // assert proper alignment
-                                        return Error.UnalignedIndentSize;
-                                    } else if (indent_size > p.indent.size * (p.indent.level + 1)) {
-                                        // assert proper nesting (same or +1)
-                                        return Error.IndentationTooDeep;
-                                    } else {
-                                        // update current level
-                                        p.indent.level = indent_size / p.indent.size;
-                                    }
-                                }
-                            }
-                            // std.log.err("indent_size: {}", .{indent_size});
-                            // std.log.err("last_indent_level: {}", .{last_indent_level});
-                            // std.log.err("current p.indent.level: {}", .{p.indent.level});
-
                             // assign (if indentation level increased)
-                            if (p.indent.level > last_indent_level) {
+                            if (try p.indent.isIncreased(p.token.len())) {
                                 try p.pending.resolveAllUntilExcluding(alloc, .assign_equal);
                                 if (p.pending.operators.getLastOrNull() == .assign_equal) {
                                     return Error.SyntaxDoubleAssignment;
