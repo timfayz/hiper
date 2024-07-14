@@ -542,7 +542,11 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                         }
                     },
 
-                    .indent, .post_newline => {
+                    // use nextFrom(.indent) to recognize indents even if
+                    // .tokenize_indents is false
+                    .indent,
+                    .post_newline,
+                    => {
                         switch (c) {
                             ' ' => {}, // continue
                             '\n' => {
