@@ -247,19 +247,28 @@ const TokenizerOptions = struct {
     track_location: bool = true,
 };
 
-/// Tokenizer splits input into a stream of tokens.
-/// To retrieve a token, use the `next()` function. Several invariants apply on every `next()` call:
-/// * An invalid token always contains the character that caused it, see token[token.len - 1].
-/// * Returned token has 4 possible conditions:
+/// Tokenizer splits input into a stream of tokens. To retrieve a token, use
+/// the `next()` function. Several invariants apply on every `next()` call:
+/// * An invalid token always contains the character that caused it, see
+///   `token[token.len - 1]`.
+/// * A returned token has 4 possible conditions:
+/// ```
 ///   Tag          State
-///  .[tag],      .complete   -- Completed and valid token (next token will be of a different tag).
-///  .[tag],      .[state]    -- Valid token but potentially extendable if stream continues.
-///  .invalid,    .[state]    -- Invalid and unrecoverable token regardless of whether the stream continues.
-///  .incomplete, .[state]    -- Invalid token (at this EOF-moment) but potentially completable if the stream continues.
-/// * Tokens with tag .number do not have specific states to represent different bases.
-///   (instead, check token[1] for 'b', 'o', or 'x', representing binary, octal, or hex accordingly)
-/// * Tokens with tag .number do not have specific states to represent separators between digits.
-///   (instead, check if the current token[token.len-1] == '_' and the next token[0] != '_')
+///  .[tag],      .complete    Completed and valid token (the next one will
+///                            be of a different tag).
+///  .[tag],      .[state]     Valid token but potentially extendable if
+///                            stream continues.
+///  .invalid,    .[state]     Invalid and unrecoverable token regardless of
+///                            whether the stream continues.
+///  .incomplete, .[state]     Invalid token (at this EOF-moment) but potentially
+///                            completable if the stream continues.
+/// ```
+/// * Tokens with .number tag do not have specific states to represent their base.
+///   Instead, check `token[1]` for `b`, `o`, or `x`, which represent binary, octal,
+///   or hexadecimal, respectively. If `token.len < 2` or none match, it is decimal.
+/// * Tokens with .number tag do not have specific states to represent separators
+///   between digits. Instead, check if `current_token[token.len-1] == '_' and
+///   next_token[0] != '_'`.
 pub fn Tokenizer(opt: TokenizerOptions) type {
     return struct {
         input: [:0]const u8,
@@ -391,6 +400,8 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             return self.nextFrom(.complete);
         }
 
+        /// Similar to `next()`, but starts with a specific state.
+        /// Used to continue tokenization for streamed input.
         pub inline fn nextFrom(s: *Self, from: State) Token {
             var token = Token{
                 .tag = .eof,
