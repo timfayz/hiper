@@ -3,14 +3,14 @@
 
 const std = @import("std");
 
-/// Prints under the `.unscoped` scope using `defaults.logFn`.
-/// Use `defaults.logFn` for raw, unconditional logging.
+/// Prints under the `.unscoped` scope using `defaults.log_fn`.
+/// Use `defaults.logFn()` for raw, unconditional logging.
 pub const print = scope(.{ .tag = .unscoped }).print;
 
 /// Default log options.
 pub const defaults = struct {
     pub const options_identifier = "hi_options";
-    pub const log_fn_prefix = if (rootHas("log_fn_prefix")) rootGet("log_fn_prefix") else "";
+    pub const log_fn = if (rootHas("log_fn")) rootGet("log_fn") else logFn;
     pub const log_scopes = blk: {
         if (rootHas("log_scopes")) {
             const scopes = rootGet("log_scopes");
@@ -29,7 +29,7 @@ pub const defaults = struct {
         const stderr = std.io.getStdErr().writer();
         var bw = std.io.bufferedWriter(stderr);
         nosuspend {
-            bw.writer().print(log_fn_prefix ++ format, args) catch return;
+            bw.writer().print(format, args) catch return;
             bw.flush() catch return;
         }
     }
@@ -59,13 +59,41 @@ pub fn scopeActive(tag: @TypeOf(.Enum)) bool {
     return false;
 }
 
-/// Initializes a print function under the `.tag` scope.
-/// Ensure the tag is present in `.log_scopes` for the print to function.
+/// Initializes print functions under the `.tag` scope.
+/// Ensure the tag is present in `.log_scopes` for prints to function.
 pub fn scope(s: struct { tag: @TypeOf(.Enum), prefix: []const u8 = "" }) type {
     return struct {
+        /// Prints a formatted string using `.log_fn` within a given scope.
         pub fn print(comptime fmt: []const u8, args: anytype) void {
             if (!scopeActive(s.tag)) return;
-            defaults.logFn(s.prefix ++ fmt, args);
+            defaults.log_fn(s.prefix ++ fmt, args);
+        }
+
+        /// Formats a string, splits it by lines, and prints each line within
+        /// a given scope.
+        pub fn printPerLine(alloc: std.mem.Allocator, comptime fmt: []const u8, args: anytype) !void {
+            if (!scopeActive(s.tag)) return;
+            const res = try std.fmt.allocPrint(alloc, fmt, args);
+            defer alloc.free(res);
+            var iter = std.mem.splitScalar(u8, res, '\n');
+            while (iter.next()) |line| {
+                defaults.log_fn(s.prefix ++ "{s}\n", .{line});
+            }
+        }
+
+        /// Prints a string using `.log_fn` within a given scope.
+        pub fn printString(str: []const u8) void {
+            if (!scopeActive(s.tag)) return;
+            defaults.log_fn(s.prefix ++ "{s}", .{str});
+        }
+
+        /// Splits a string and prints each line within a given scope.
+        pub fn printStringPerLine(str: []const u8) void {
+            if (!scopeActive(s.tag)) return;
+            var iter = std.mem.splitScalar(u8, str, '\n');
+            while (iter.next()) |line| {
+                defaults.log_fn(s.prefix ++ "{s}\n", .{line});
+            }
         }
     };
 }
