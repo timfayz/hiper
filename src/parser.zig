@@ -653,7 +653,7 @@ const log = struct {
         // border
         const border = "+" ++ ("-" ** (op_len + od_len + sc_len + 8)) ++ "+";
 
-        scope.print("{s}\n", .{border});
+        scope.print("{s}\n", .{border}) catch return;
         while (true) : (i -= 1) { // zip print
             const operand = if (i >= operands.len) "" else blk: {
                 const name = @tagName(operands[i].tag);
@@ -679,28 +679,28 @@ const log = struct {
                 };
             };
 
-            scope.print("|{s: <16}| |{s: <16}| |{s: <18}{s: >2}|\n", .{ operand, operator, st, bracket });
+            scope.print("|{s: <16}| |{s: <16}| |{s: <18}{s: >2}|\n", .{ operand, operator, st, bracket }) catch return;
 
             if (i == 0) break;
         }
-        scope.print("{s}\n", .{border});
+        scope.print("{s}\n", .{border}) catch return;
     }
 
     pub fn cursor(p: *Parser) void {
         if (!scopeActive(.parser)) return;
-        scope.print("[state:  " ++ color.ctEscape(.{.bold}, "{s}") ++ " at .{s}]\n", .{ @tagName(p.state), @tagName(p.token.tag) });
+        scope.print("[state:  " ++ color.ctEscape(.{.bold}, "{s}") ++ " at .{s}]\n", .{ @tagName(p.state), @tagName(p.token.tag) }) catch return;
     }
 
     pub fn action(name: []const u8, arg: []const u8) void {
         if (!scopeActive(.parser)) return;
         if (arg.len == 0)
-            scope.print("[action: {s}]\n", .{name})
+            scope.print("[action: {s}]\n", .{name}) catch return
         else
-            scope.print("[action: {s} .{s}]\n", .{ name, arg });
+            scope.print("[action: {s} .{s}]\n", .{ name, arg }) catch return;
     }
 
     pub fn end() void {
-        scope.print("[end]\n\n", .{});
+        scope.print("[end]\n\n", .{}) catch return;
     }
 };
 

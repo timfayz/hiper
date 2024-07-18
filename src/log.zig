@@ -3,10 +3,6 @@
 
 const std = @import("std");
 
-/// Prints under the `.unscoped` scope using `defaults.log_fn`.
-/// Use `defaults.logFn()` for raw, unconditional logging.
-pub const print = scope(.{ .tag = .unscoped }).print;
-
 /// Default log options.
 pub const defaults = struct {
     pub const options_identifier = "hi_options";
@@ -23,7 +19,7 @@ pub const defaults = struct {
     pub fn logFn(
         comptime format: []const u8,
         args: anytype,
-    ) void {
+    ) !void {
         std.debug.lockStdErr();
         defer std.debug.unlockStdErr();
         const stderr = std.io.getStdErr().writer();
@@ -59,47 +55,66 @@ pub fn scopeActive(tag: @TypeOf(.Enum)) bool {
     return false;
 }
 
-/// Initializes print functions under the `.tag` scope.
+/// Initializes print functions under the `.tag` scope using `.log_fn`.
 /// Ensure the tag is present in `.log_scopes` for prints to function.
 pub fn scope(
     s: struct {
         tag: @TypeOf(.Enum),
         prefix: []const u8 = "",
-        log_fn: fn (comptime format: []const u8, args: anytype) void = defaults.log_fn,
+        log_fn: fn (comptime format: []const u8, args: anytype) anyerror!void = defaults.log_fn,
     },
 ) type {
     return struct {
-        /// Prints a formatted string using `.log_fn` within a given scope.
-        pub fn print(comptime fmt: []const u8, args: anytype) void {
+        /// Prints a formatted string within a given scope.
+        pub fn print(comptime fmt: []const u8, args: anytype) !void {
             if (!scopeActive(s.tag)) return;
-            s.log_fn(s.prefix ++ fmt, args);
+            try s.log_fn(s.prefix ++ fmt, args);
         }
 
-        /// Formats a string, splits it by lines, and prints each line within
-        /// a given scope.
+        /// Formats a string, splits it by lines, and prints each line within a
+        /// given scope.
         pub fn printPerLine(alloc: std.mem.Allocator, comptime fmt: []const u8, args: anytype) !void {
             if (!scopeActive(s.tag)) return;
             const res = try std.fmt.allocPrint(alloc, fmt, args);
             defer alloc.free(res);
             var iter = std.mem.splitScalar(u8, res, '\n');
             while (iter.next()) |line| {
-                s.log_fn(s.prefix ++ "{s}\n", .{line});
+                try s.log_fn(s.prefix ++ "{s}\n", .{line});
             }
         }
 
-        /// Prints a string using `.log_fn` within a given scope.
-        pub fn printString(str: []const u8) void {
+        /// Prints a string within a given scope.
+        pub fn printString(str: []const u8) !void {
             if (!scopeActive(s.tag)) return;
-            s.log_fn(s.prefix ++ "{s}", .{str});
+            try s.log_fn(s.prefix ++ "{s}", .{str});
         }
 
         /// Splits a string and prints each line within a given scope.
-        pub fn printStringPerLine(str: []const u8) void {
+        pub fn printStringPerLine(str: []const u8) !void {
             if (!scopeActive(s.tag)) return;
             var iter = std.mem.splitScalar(u8, str, '\n');
             while (iter.next()) |line| {
-                defaults.log_fn(s.prefix ++ "{s}\n", .{line});
+                try s.log_fn(s.prefix ++ "{s}\n", .{line});
             }
         }
     };
 }
+
+/// Default scope for immediate use.
+const unscoped = scope(.{ .tag = .unscoped });
+
+/// Prints a formatted string within `.unscoped` scope using
+/// `defaults.log_fn`. Use `scope(...).print` to initialize your own scope.
+/// Or use `defaults.logFn()` for raw, unconditional logging.
+pub const print = unscoped.print;
+
+/// Formats a string, splits it by lines, and prints each line within
+/// `.unscoped` scope using `defaults.log_fn`.
+pub const printPerLine = unscoped.printPerLine;
+
+/// Prints a string within `.unscoped` scope using `defaults.log_fn`.
+pub const printString = unscoped.printString;
+
+/// Splits a string and prints each line within `.unscoped` scope using
+/// `defaults.log_fn`.
+pub const printStringPerLine = unscoped.printStringPerLine;
