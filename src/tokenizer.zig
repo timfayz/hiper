@@ -217,6 +217,7 @@ pub const Token = struct {
     }
 };
 
+/// Tokenizer options.
 const TokenizerOptions = struct {
     /// Enable strict recognition of tokens:
     /// * `true` - Consume only valid tokens (this is useful if you want to
@@ -283,7 +284,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             line_number: usize = 1,
         };
 
-        /// The state in which tokenizer starts and returns.
+        /// Defines the state in which tokenizer starts and returns.
         pub const State = enum {
             // root state that leads to others
             complete,
@@ -366,6 +367,42 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             }
         };
 
+        /// Defines the number base recognition primitives.
+        pub const Base = enum(u8) {
+            hex = 16,
+            decimal = 10,
+            octal = 8,
+            binary = 2,
+
+            const digit_value = blk: {
+                var table = [1]u8{0xFF} ** 256;
+                for ('0'..'9' + 1) |ch| { // maps to 0..9
+                    table[ch] = ch - '0';
+                }
+                for ('a'..'f' + 1) |ch| { // maps to 10..15
+                    table[ch] = (ch - 'a') + 10;
+                }
+                for ('A'..'F' + 1) |ch| { // maps to 10..15
+                    table[ch] = (ch - 'A') + 10;
+                }
+                break :blk table;
+            };
+
+            /// Applicable only for digits within '0'..'9'
+            pub inline fn hasDigit(base: @This(), digit: u8) bool {
+                return digit_value[digit] < @intFromEnum(base);
+            }
+
+            pub fn fromChar(char: u8) @This() {
+                return switch (char) {
+                    'x' => .hex,
+                    'o' => .octal,
+                    'b' => .binary,
+                    else => .decimal,
+                };
+            }
+        };
+
         pub fn init(input: [:0]const u8) Self {
             std.debug.assert(input[input.len] == 0); // TODO test if zig already makes this check on call
             // Skip UTF-8 BOM if present
@@ -377,25 +414,21 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             };
         }
 
-        /// Starts at 1.
-        pub inline fn atLine(s: *const Self) usize {
-            if (!opt.track_location) @compileError("enable track_location to use this function");
+        /// Returns the current line number the tokenizer is at. Starts at 1.
+        pub inline fn getLine(s: *const Self) usize {
+            if (!opt.track_location) @compileError("enable opt.track_location to use this function");
             return s.loc.line_number;
         }
 
+        /// Returns the column number at the current line the tokenizer is at.
         /// Starts at 1.
-        pub inline fn atCol(s: *const Self) usize {
-            if (!opt.track_location) @compileError("enable track_location to use this function");
+        pub inline fn getCol(s: *const Self) usize {
+            if (!opt.track_location) @compileError("enable opt.track_location to use this function");
             return s.index -% s.loc.line_start;
         }
 
-        pub fn validate(s: *Self, tag: Token.Tag) bool {
-            const token = s.nextImpl(.complete, .{ .strict = true, .ignore_spaces = false });
-            defer s.rewind(token);
-            return token.tag == tag;
-        }
-
-        /// Read the Tokenizer's doc comment.
+        /// Returns the next recognized token. Read the Tokenizer doc comment
+        /// for more details.
         pub inline fn next(self: *Self) Token {
             return self.nextFrom(.complete);
         }
@@ -1019,49 +1052,24 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             s.index = token.loc.start;
         }
 
-        pub fn peekByte(s: *const Self) u8 {
-            // TODO self.index < self.input.len is invariant? no need to check the overflow?
-            return if (s.index < s.input.len) s.input[s.index] else 0;
+        pub inline fn rewindTo(s: *const Self, index: usize) void {
+            s.index = index;
         }
 
-        pub const Base = enum(u8) {
-            hex = 16,
-            decimal = 10,
-            octal = 8,
-            binary = 2,
+        pub fn peek(s: *const Self) Token {
+            const token = s.next();
+            s.rewind(token);
+            return token;
+        }
 
-            const digit_value = blk: {
-                var table = [1]u8{0xFF} ** 256;
-                for ('0'..'9' + 1) |ch| { // maps to 0..9
-                    table[ch] = ch - '0';
-                }
-                for ('a'..'f' + 1) |ch| { // maps to 10..15
-                    table[ch] = (ch - 'a') + 10;
-                }
-                for ('A'..'F' + 1) |ch| { // maps to 10..15
-                    table[ch] = (ch - 'A') + 10;
-                }
-                break :blk table;
-            };
-
-            /// Applicable only for digits within '0'..'9'
-            pub inline fn hasDigit(base: @This(), digit: u8) bool {
-                return digit_value[digit] < @intFromEnum(base);
-            }
-
-            pub fn fromChar(char: u8) @This() {
-                return switch (char) {
-                    'x' => .hex,
-                    'o' => .octal,
-                    'b' => .binary,
-                    else => .decimal,
-                };
-            }
-        };
+        pub fn peekByte(s: *const Self) u8 {
+            // TODO self.index < self.input.len is an invariant?
+            return if (s.index < s.input.len) s.input[s.index] else 0;
+        }
     };
 }
 
-test "test tokenizer" {
+test "test Tokenizer" {
     const t = std.testing;
     @setEvalBranchQuota(2000);
 
@@ -1069,38 +1077,38 @@ test "test tokenizer" {
     {
         var scan = Tokenizer(.{ .track_location = true }).init("\nfoo!\n\n");
         // cold start
-        try t.expectEqual(1, scan.atLine());
-        try t.expectEqual(1, scan.atCol());
+        try t.expectEqual(1, scan.getLine());
+        try t.expectEqual(1, scan.getCol());
 
         // \n
         try t.expectEqual(Token.Tag.newline, scan.next().tag);
         try t.expectEqual(1, scan.index);
-        try t.expectEqual(2, scan.atLine());
-        try t.expectEqual(1, scan.atCol());
+        try t.expectEqual(2, scan.getLine());
+        try t.expectEqual(1, scan.getCol());
 
         // foo
         try t.expectEqual(Token.Tag.identifier, scan.next().tag);
         try t.expectEqual(4, scan.index);
-        try t.expectEqual(2, scan.atLine());
-        try t.expectEqual(4, scan.atCol());
+        try t.expectEqual(2, scan.getLine());
+        try t.expectEqual(4, scan.getCol());
 
         // !
         try t.expectEqual(Token.Tag.exclamation, scan.next().tag);
         try t.expectEqual(5, scan.index);
-        try t.expectEqual(2, scan.atLine());
-        try t.expectEqual(5, scan.atCol());
+        try t.expectEqual(2, scan.getLine());
+        try t.expectEqual(5, scan.getCol());
 
         // \n\n
         try t.expectEqual(Token.Tag.newline, scan.next().tag);
         try t.expectEqual(7, scan.index);
-        try t.expectEqual(4, scan.atLine());
-        try t.expectEqual(1, scan.atCol());
+        try t.expectEqual(4, scan.getLine());
+        try t.expectEqual(1, scan.getCol());
 
         // eof
         try t.expectEqual(Token.Tag.eof, scan.next().tag);
         try t.expectEqual(7, scan.index);
-        try t.expectEqual(4, scan.atLine());
-        try t.expectEqual(1, scan.atCol());
+        try t.expectEqual(4, scan.getLine());
+        try t.expectEqual(1, scan.getCol());
     }
 
     // Test correct token recognition.
@@ -1452,132 +1460,5 @@ test "test tokenizer" {
             try t.expectEqual(.eof, scan.next().tag);
             try t.expectEqual(.eof, scan.next().tag); // make sure we stay the same
         }
-    }
-}
-
-pub fn TokenizerStreaming(read_size: usize, opt: TokenizerOptions) type {
-    return struct {
-        reader: std.io.AnyReader,
-        offset: usize = @as(usize, 0) -% read_size,
-        buffer: [read_size:0]u8,
-        impl: Implementation,
-
-        const Self = @This();
-        pub const Implementation = Tokenizer(opt);
-
-        pub fn init(reader: std.io.AnyReader) !Self {
-            var tokenizer = Self{
-                .reader = reader,
-                .buffer = undefined,
-                .impl = .{
-                    .input = undefined,
-                    .index = 0,
-                    .state = .complete,
-                },
-            };
-            _ = try tokenizer.feedInput();
-
-            // TODO check on new.tokenizer.input.len, if < 3 do refill read
-            const start: usize = if (std.mem.startsWith(u8, &tokenizer.buffer, "\xEF\xBB\xBF")) 3 else 0;
-            tokenizer.impl.index = start;
-
-            return tokenizer;
-        }
-
-        pub inline fn atLine(s: *const Self) usize {
-            return s.impl.atLine();
-        }
-
-        pub inline fn atCol(s: *const Self) usize {
-            return (s.offset + s.impl.index) -% s.impl.loc.line_start;
-        }
-
-        /// Returns the actual index in the stream of data.
-        pub inline fn index(s: *const Self) usize {
-            return s.offset + s.impl.index;
-        }
-
-        pub fn feedInput(s: *Self) !usize {
-            // assert we are done with the last refilled input
-            if (s.impl.index != s.impl.input.len) return error.RefillOfUnreadInput;
-            const written = try s.reader.readAll(&s.buffer);
-            s.buffer[written] = 0;
-            s.impl.input = s.buffer[0..written :0];
-            s.impl.index = 0;
-            s.offset +%= s.buffer.len;
-            return written;
-        }
-
-        pub inline fn next(s: *Self) !Token {
-            return s.nextImpl(.complete, opt.strict_mode);
-        }
-
-        /// Retrieve the next token across (possibly multiple) reads.
-        pub fn nextImpl(s: *Self, from: Implementation.State, comptime strict: bool) !Token {
-            // first run
-            std.log.err("{}", .{s.impl.input.len});
-            var token = s.impl.nextImpl(from, strict);
-            const tag = token.tag; // persistent across reads
-            const start = s.offset + token.loc.start; // persistent across reads
-
-            while (true) {
-                // continuation won't help (token became invalid after refill)
-                if (token.tag == .invalid) break;
-                // continuation not needed (token was completed after refill)
-                if (s.impl.state == .complete) break;
-                // refill
-                const written = try s.feedInput();
-                // continuation not possible, stream has ended
-                if (written == 0) {
-                    if (token.tag == .incomplete) { // refill didn't help completing the token
-                        token.tag = .invalid; // then it was simply invalid
-                    }
-                    break;
-                }
-                // continue
-                token = s.impl.nextImpl(s.impl.state, strict);
-            }
-
-            token.tag = if (token.tag == .invalid) .invalid else tag;
-            token.loc.start = start;
-            token.loc.end = s.offset + token.loc.end;
-            return token;
-        }
-
-        pub fn nextAlloc(s: *Self, alloc: std.mem.Allocator) Token {
-            _ = s; // autofix
-            _ = alloc; // autofix
-        }
-    };
-}
-
-test "test buffered tokenizer" {
-    if (true) return;
-    const t = std.testing;
-    const buffer = std.io.fixedBufferStream;
-
-    var stream = buffer("123,45");
-    // const alc = std.heap.c_allocator;
-
-    var scan = try TokenizerStreaming(1, .{
-        .strict_mode = true,
-        .track_location = true,
-    }).init(stream.reader().any());
-
-    {
-        const token = try scan.next();
-        try t.expectEqual(.number, token.tag);
-        try t.expectEqual(.complete, scan.impl.state);
-    }
-    {
-        const token = try scan.next();
-        try t.expectEqual(.comma, token.tag);
-        try t.expectEqual(.complete, scan.impl.state);
-    }
-
-    {
-        const token = try scan.next();
-        try t.expectEqual(.number, token.tag);
-        try t.expectEqual(.complete, scan.impl.state);
     }
 }
