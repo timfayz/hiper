@@ -65,16 +65,18 @@ pub fn scope(
     },
 ) type {
     return struct {
-        /// Prints a formatted string within a given scope.
+        /// Prints a formatted string with a scope prefix.
         pub fn print(comptime fmt: []const u8, args: anytype) !void {
             if (!scopeActive(s.tag)) return;
             try s.log_fn(s.prefix ++ fmt, args);
         }
 
-        /// Formats a string, splits it by lines, and prints each line within a
-        /// given scope.
+        /// Formats a string, splits it by lines, and prints each line with a
+        /// scope prefix. If prefix is empty, uses `print()` directly instead.
         pub fn printPerLine(alloc: std.mem.Allocator, comptime fmt: []const u8, args: anytype) !void {
             if (!scopeActive(s.tag)) return;
+            if (s.prefix.len == 0) return @This().print(fmt, args);
+
             const res = try std.fmt.allocPrint(alloc, fmt, args);
             defer alloc.free(res);
             var iter = std.mem.splitScalar(u8, res, '\n');
@@ -83,15 +85,18 @@ pub fn scope(
             }
         }
 
-        /// Prints a string within a given scope.
+        /// Prints a string with a scope prefix adding a newline at the end.
         pub fn printString(str: []const u8) !void {
             if (!scopeActive(s.tag)) return;
-            try s.log_fn(s.prefix ++ "{s}", .{str});
+            try s.log_fn(s.prefix ++ "{s}\n", .{str});
         }
 
-        /// Splits a string and prints each line within a given scope.
+        /// Splits a string and prints each line with a scope prefix. If prefix
+        /// is empty, uses `printString()` directly instead.
         pub fn printStringPerLine(str: []const u8) !void {
             if (!scopeActive(s.tag)) return;
+            if (s.prefix.len == 0) return @This().printString(str);
+
             var iter = std.mem.splitScalar(u8, str, '\n');
             while (iter.next()) |line| {
                 try s.log_fn(s.prefix ++ "{s}\n", .{line});
