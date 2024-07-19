@@ -2,6 +2,7 @@
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
 const std = @import("std");
+const This = @This();
 
 pub const Token = struct {
     tag: Tag,
@@ -444,6 +445,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                 },
             };
             s.state = from;
+            s.logState();
             while (true) {
                 const c = s.input[s.index];
                 switch (s.state) {
@@ -1026,8 +1028,11 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                     else => break,
                 }
                 s.index +%= 1;
+                s.logState();
             }
             token.loc.end = s.index;
+            s.logState();
+            Self.logToken(token);
             return token;
         }
 
@@ -1066,8 +1071,39 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             // TODO self.index < self.input.len is an invariant?
             return if (s.index < s.input.len) s.input[s.index] else 0;
         }
+
+        const log = struct {
+            const color = @import("ansi_colors.zig");
+            const tag = if (@hasDecl(This, "log_in_tests")) .unscoped else .tokenizer;
+            const scope = @import("log.zig").scope(.{ .tag = tag, .prefix = "tokenizer: " });
+            const scopeActive = @import("log.zig").scopeActive(tag);
+        };
+
+        fn logState(s: *const Self) void {
+            if (opt.track_location)
+                log.scope.print("[read state .{s} " ++
+                    log.color.ctEscape(.{.faint}, "{d}:{d}:{d}") ++
+                    "]\n", .{
+                    @tagName(s.state),
+                    s.getLine(),
+                    s.getCol(),
+                    s.index,
+                }) catch unreachable;
+        }
+
+        fn logToken(token: Token) void {
+            log.scope.print("[retn token " ++
+                log.color.ctEscape(.{.bold}, ".{s}") ++
+                ":{d}:{d}]\n", .{
+                @tagName(token.tag),
+                token.loc.start,
+                token.loc.end,
+            }) catch unreachable;
+        }
     };
 }
+
+// const log_in_tests = true;
 
 test "test Tokenizer" {
     const t = std.testing;
