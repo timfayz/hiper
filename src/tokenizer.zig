@@ -1088,7 +1088,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                     s.getLine(),
                     s.getCol(),
                     s.index,
-                }) catch unreachable;
+                }) catch {};
         }
 
         fn logToken(token: Token) void {
@@ -1098,7 +1098,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                 @tagName(token.tag),
                 token.loc.start,
                 token.loc.end,
-            }) catch unreachable;
+            }) catch {};
         }
     };
 }
