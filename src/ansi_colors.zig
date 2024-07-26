@@ -1,3 +1,6 @@
+// MIT License (c) Timur Fayzrakhmanov.
+// tim.fayzrakhmanov@gmail.com (github.com/timfayz)
+
 const std = @import("std");
 
 fn collateCodes(comptime codes: anytype) []const u8 {
