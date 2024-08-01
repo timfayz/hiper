@@ -3,14 +3,15 @@
 
 const std = @import("std");
 
-const BufferedPerLineWriterOptions = struct {
+pub const BufferedPerLineWriterOptions = struct {
     Writer: type,
     prefix: []const u8 = "",
     postfix: []const u8 = "\n",
-    buffer_size: usize = 1024,
+    buffer_size: usize = 4096,
+    skip_last_empty_line: bool = true,
 };
 
-fn BufferedPerLineWriter(opt: BufferedPerLineWriterOptions) type {
+pub fn BufferedPerLineWriter(opt: BufferedPerLineWriterOptions) type {
     if (opt.buffer_size < 1) @compileError("buffer_size cannot be less than 1");
     return struct {
         underlying_writer: opt.Writer,
@@ -25,8 +26,16 @@ fn BufferedPerLineWriter(opt: BufferedPerLineWriterOptions) type {
             return Self{ .underlying_writer = underlying_writer };
         }
 
+        /// Returns the portion of the buffer that has been filled with data.
+        pub inline fn slice(s: *Self) []u8 {
+            return s.buf[0..s.idx];
+        }
+
+        /// Writes bytes to the internal buffer. If bytes do not fit, flushes
+        /// the stored bytes except the last line before writing to the remaining
+        /// buffer space.
         pub fn write(s: *Self, bytes: []const u8) Error!usize {
-            // if bytes do not fit, flush stored lines first
+            // if bytes do not fit, parse and flush stored bytes first
             if (s.idx + bytes.len > s.buf.len) {
                 try s.flushExceptLastLine();
             }
@@ -40,29 +49,33 @@ fn BufferedPerLineWriter(opt: BufferedPerLineWriterOptions) type {
             return write_amt;
         }
 
-        /// A direct write of a line with a configured prefix and postfix (newline).
-        pub fn writeLine(s: *Self, line: []const u8) Error!void {
-            try s.underlying_writer.writeAll(opt.prefix);
-            try s.underlying_writer.writeAll(line);
-            try s.underlying_writer.writeAll(opt.postfix);
+        pub fn writer(s: *Self) Writer {
+            return .{ .context = s };
         }
 
         /// Flushes the entire stream buffer line by line. Does not consider
         /// whether the last line is complete. Use it once after writing
         /// process is completed.
         pub fn flush(s: *Self) Error!void {
-            var iter = std.mem.splitScalar(u8, s.slice(), '\n');
+            const buf = s.slice();
+
+            // print an empty buffer as "prefix: "
+            if (buf.len == 0) try s.writeLineImpl("");
+
+            var iter = std.mem.splitScalar(u8, buf, '\n');
             while (iter.next()) |line| {
-                try s.writeLine(line);
+                if (opt.skip_last_empty_line and
+                    iter.index == null and line.len == 0)
+                    break;
+                try s.writeLineImpl(line);
             }
             s.idx = 0;
-            return;
         }
 
         /// Flushes the entire stream buffer line by line up to the last
         /// complete line. The last line is always assumed incomplete and
         /// is moved to the beginning of the buffer to allow continuation.
-        pub fn flushExceptLastLine(s: *Self) Error!void {
+        fn flushExceptLastLine(s: *Self) Error!void {
             if (s.idx == 0) return;
             var iter = std.mem.splitScalar(u8, s.slice(), '\n');
             while (iter.next()) |line| {
@@ -77,17 +90,16 @@ fn BufferedPerLineWriter(opt: BufferedPerLineWriterOptions) type {
                         break;
                     }
                 }
-                try s.writeLine(line);
+                try s.writeLineImpl(line);
             }
         }
 
-        /// Returns the portion of the buffer that has been filled with data.
-        pub fn slice(s: *Self) []u8 {
-            return s.buf[0..s.idx];
-        }
-
-        pub fn writer(s: *Self) Writer {
-            return .{ .context = s };
+        /// A direct write of a line with a configured prefix and postfix.
+        /// Should not be used directly.
+        inline fn writeLineImpl(s: *Self, line: []const u8) Error!void {
+            if (opt.prefix.len > 0) try s.underlying_writer.writeAll(opt.prefix);
+            try s.underlying_writer.writeAll(line);
+            if (opt.postfix.len > 0) try s.underlying_writer.writeAll(opt.postfix);
         }
     };
 }
@@ -102,7 +114,12 @@ test {
         defer buf.deinit();
 
         {
-            var plw = BufferedPerLineWriter(.{ .Writer = WT, .buffer_size = 4, .prefix = "p: " }).init(buf.writer());
+            var plw = BufferedPerLineWriter(.{
+                .Writer = WT,
+                .prefix = "p: ",
+                .buffer_size = 4,
+                .skip_last_empty_line = false,
+            }).init(buf.writer());
 
             try t.expectEqual(plw.slice().len, 0); // (!) assert the slice is empty by default
 
@@ -189,38 +206,66 @@ test {
     // test normal usage
     {
         const case = struct {
-            pub fn run(input: []const u8, comptime expect: []const u8) !void {
+            pub fn run(
+                input: []const u8,
+                comptime expect_prefixed: []const u8,
+                comptime expect_unprefixed: []const u8,
+            ) !void {
                 var buf = std.ArrayList(u8).init(t.allocator);
                 defer buf.deinit();
+                {
+                    var plw = BufferedPerLineWriter(.{
+                        .Writer = @TypeOf(buf.writer()),
+                        .prefix = "p: ",
+                        .buffer_size = 4, // (!) 4-byte size buffer
+                        .skip_last_empty_line = true,
+                    }).init(buf.writer());
 
-                var plw = BufferedPerLineWriter(.{
-                    .Writer = @TypeOf(buf.writer()),
-                    .buffer_size = 4, // (!) 4-byte size buffer
-                    .prefix = "p: ",
-                }).init(buf.writer());
+                    try plw.writer().writeAll(input);
+                    try plw.flush();
 
-                // try plw.writer().writeAll(input); // the same
-                try plw.writer().print("{s}", .{input});
-                try plw.flush();
+                    try t.expectEqualStrings(expect_prefixed, buf.items);
+                    buf.clearAndFree();
+                }
+                {
+                    var plw = BufferedPerLineWriter(.{
+                        .Writer = @TypeOf(buf.writer()),
+                        .prefix = "",
+                        .buffer_size = 4,
+                        .skip_last_empty_line = true,
+                    }).init(buf.writer());
 
-                try t.expectEqualStrings(expect, buf.items);
+                    try plw.writer().writeAll(input);
+                    try plw.flush();
+
+                    try t.expectEqualStrings(expect_unprefixed, buf.items);
+                }
             }
         };
 
         try case.run("",
             \\p: 
             \\
+        ,
+            \\
+            \\
         );
 
         try case.run("\n",
             \\p: 
-            \\p: 
+            \\
+        ,
+            \\
             \\
         );
 
         try case.run("1\n2",
             \\p: 1
             \\p: 2
+            \\
+        ,
+            \\1
+            \\2
             \\
         );
 
@@ -229,15 +274,29 @@ test {
             \\p: 222
             \\p: 333
             \\
+        ,
+            \\111
+            \\222
+            \\333
+            \\
         );
 
-        // (!) a 4-byte size buffer can fit only 3-byte lines
-        try case.run("1111\n2222\n3333",
+        // (!) a 4-byte size buffer cannot split correctly 3+ byte lines
+        try case.run("11111\n22222\n33333",
             \\p: 1111
-            \\p: 
+            \\p: 1
             \\p: 2222
-            \\p: 
+            \\p: 2
             \\p: 3333
+            \\p: 3
+            \\
+        ,
+            \\1111
+            \\1
+            \\2222
+            \\2
+            \\3333
+            \\3
             \\
         );
     }
