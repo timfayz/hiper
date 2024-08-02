@@ -9,6 +9,7 @@ pub const BufferedPerLineWriterOptions = struct {
     postfix: []const u8 = "\n",
     buffer_size: usize = 4096,
     skip_last_empty_line: bool = true,
+    lock_stderr_on_flush: bool = false,
 };
 
 pub fn BufferedPerLineWriter(opt: BufferedPerLineWriterOptions) type {
@@ -57,10 +58,13 @@ pub fn BufferedPerLineWriter(opt: BufferedPerLineWriterOptions) type {
         /// whether the last line is complete. Use it once after writing
         /// process is completed.
         pub fn flush(s: *Self) Error!void {
+            if (opt.lock_stderr_on_flush) std.debug.lockStdErr();
+            defer if (opt.lock_stderr_on_flush) std.debug.unlockStdErr();
+
             const buf = s.slice();
 
-            // print an empty buffer as "prefix: "
-            if (buf.len == 0) try s.writeLineImpl("");
+            // print an empty buffer as prefix + "" (s.idx = 0 is invariant)
+            if (buf.len == 0) return s.writeLineImpl("");
 
             var iter = std.mem.splitScalar(u8, buf, '\n');
             while (iter.next()) |line| {
@@ -76,6 +80,9 @@ pub fn BufferedPerLineWriter(opt: BufferedPerLineWriterOptions) type {
         /// complete line. The last line is always assumed incomplete and
         /// is moved to the beginning of the buffer to allow continuation.
         fn flushExceptLastLine(s: *Self) Error!void {
+            if (opt.lock_stderr_on_flush) std.debug.lockStdErr();
+            defer if (opt.lock_stderr_on_flush) std.debug.unlockStdErr();
+
             if (s.idx == 0) return;
             var iter = std.mem.splitScalar(u8, s.slice(), '\n');
             while (iter.next()) |line| {
