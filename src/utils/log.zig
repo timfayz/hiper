@@ -83,7 +83,7 @@ pub fn scope(
         Writer: ?type = null,
     },
 ) type {
-    const PLW = @import("utils/per_line.zig").BufferedPerLineWriter(.{
+    const PLW = @import("per_line.zig").BufferedPerLineWriter(.{
         .prefix = defaults.log_prefix_all_scopes ++ opt.prefix,
         .postfix = opt.postfix,
         .buffer_size = opt.buffer_size,

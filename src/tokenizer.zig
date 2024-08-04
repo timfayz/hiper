@@ -1073,8 +1073,8 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
         }
 
         const log = struct {
-            const _log = @import("log.zig");
-            const color = @import("ansi_colors.zig");
+            const _log = @import("utils/log.zig");
+            const color = @import("utils/ansi_colors.zig");
             var scope = _log.scope(.tokenizer, .{}){};
             const scopeActive = if (@hasDecl(ThisFile, "log_in_tests")) true else _log.scopeActive(.tokenizer);
         };
