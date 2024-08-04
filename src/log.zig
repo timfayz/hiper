@@ -2,33 +2,31 @@
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// Default log options.
 pub const defaults = struct {
     pub const options_identifier = "hi_options";
-    pub const log_fn = if (rootHas("log_fn")) rootGet("log_fn") else logFn;
+    /// Default's log_writer. If not set, it will default to `std.io.getStdErr().writer()`.
+    pub const log_writer = if (rootHas("log_writer")) rootGet("log_writer") else std.io.getStdErr().writer();
+    /// Buffer size for the log writer. If the buffer is full, it will be
+    /// flushed, meaning that the max line size is `log_buffer_size - 1`.
+    pub const log_buffer_size = if (rootHas("log_buffer_size")) rootGet("log_buffer_size") else 4096;
+    /// Does `std.debug.un/lockStdErr()` on buffer flushes.
+    pub const log_lock_stderr_on_flush = if (rootHas("log_lock_stderr_on_flush")) rootGet("log_lock_stderr_on_flush") else true;
+    /// Prefix for the default scope.
+    pub const log_prefix_default_scope = if (rootHas("log_prefix_default_scope")) rootGet("log_prefix_default_scope") else "log: ";
+    /// Forced prefix for all scopes.
+    pub const log_prefix_all_scopes = if (rootHas("log_prefix_all_scopes")) rootGet("log_prefix_all_scopes") else "";
+    /// Active log scopes. If not set, it will default to `.log`.
     pub const log_scopes = blk: {
         if (rootHas("log_scopes")) {
             const scopes = rootGet("log_scopes");
             if (@typeInfo(@TypeOf(scopes)) != .Struct)
                 @compileError("log_scopes must be a tuple");
             break :blk scopes;
-        } else break :blk .{.unscoped}; // default value
+        } else break :blk .{.log}; // default scope
     };
-
-    pub fn logFn(
-        comptime format: []const u8,
-        args: anytype,
-    ) !void {
-        std.debug.lockStdErr();
-        defer std.debug.unlockStdErr();
-        const stderr = std.io.getStdErr().writer();
-        var bw = std.io.bufferedWriter(stderr);
-        nosuspend {
-            bw.writer().print(format, args) catch return;
-            bw.flush() catch return;
-        }
-    }
 
     const root = @import("root");
 
@@ -55,71 +53,136 @@ pub fn scopeActive(tag: @TypeOf(.Enum)) bool {
     return false;
 }
 
-/// Initializes print functions under the `.tag` scope using `.log_fn`.
-/// Ensure the tag is present in `.log_scopes` for prints to function.
+/// Initializes print and writer interface functions under the `tag` scope. Thin
+/// wrapper around PerLineWriter, meaning it writes line by line adding pre/postfix
+/// around. If `opt.Writer` type is not specified, the `defaults.log_writer` is used.
+/// Ensure the tag is present in `.log_scopes` for the scope to function.
+///
+/// Use cases:
+/// ```
+/// // New scope with `defaults.log_writer`
+/// var my_scope = scope(.scope_name, .{}){}; // no need to use .init()
+/// try my_scope.print("hello world!", .{}); // `scope_name: hello world!`
+///
+/// // New scope with custom prefix
+/// var my_scope = scope(.scope_name, .{.prefix = "p -> "}){};
+/// try my_scope.print("hello world!", .{}); // `p -> hello world!`
+///
+/// // New scope with custom writer
+/// const my_writer = std.io.getStdOut().writer();
+/// var my_scope = scope(.scope_name, .{.Writer = @TypeOf(my_writer)}).init(my_writer);
+/// try my_scope.print("hello world!", .{});
+/// ```
 pub fn scope(
-    s: struct {
-        tag: @TypeOf(.Enum),
-        prefix: []const u8 = "",
-        log_fn: fn (comptime format: []const u8, args: anytype) anyerror!void = defaults.log_fn,
+    tag: @TypeOf(.Enum),
+    opt: struct {
+        prefix: []const u8 = @tagName(tag) ++ ": ",
+        postfix: []const u8 = "",
+        buffer_size: usize = defaults.log_buffer_size,
+        lock_stderr_on_flush: bool = defaults.log_lock_stderr_on_flush,
+        Writer: ?type = null,
     },
 ) type {
+    const PLW = @import("utils/per_line.zig").BufferedPerLineWriter(.{
+        .prefix = defaults.log_prefix_all_scopes ++ opt.prefix,
+        .postfix = opt.postfix,
+        .buffer_size = opt.buffer_size,
+        .lock_stderr_on_flush = opt.lock_stderr_on_flush,
+        .Writer = if (opt.Writer) |W| W else @TypeOf(defaults.log_writer),
+    });
+
     return struct {
-        /// Prints a formatted string with a scope prefix.
-        pub fn print(comptime fmt: []const u8, args: anytype) !void {
-            if (!scopeActive(s.tag)) return;
-            try s.log_fn(s.prefix ++ fmt, args);
+        underlying_writer: PLW = PLW.init(if (opt.Writer) |_| undefined else defaults.log_writer),
+
+        const Self = @This();
+        const Error = PLW.Error;
+        const Writer = std.io.Writer(*Self, Error, write);
+
+        pub fn init(underlying_writer: anytype) Self {
+            if (opt.Writer == null) @compileError("no .Writer was specified, init with scope(...){} instead");
+            return Self{ .underlying_writer = PLW.init(underlying_writer) };
         }
 
-        /// Formats a string, splits it by lines, and prints each line with a
-        /// scope prefix. If prefix is empty, uses `print()` directly instead.
-        pub fn printPerLine(alloc: std.mem.Allocator, comptime fmt: []const u8, args: anytype) !void {
-            if (!scopeActive(s.tag)) return;
-            if (s.prefix.len == 0) return @This().print(fmt, args);
-
-            const res = try std.fmt.allocPrint(alloc, fmt, args);
-            defer alloc.free(res);
-            var iter = std.mem.splitScalar(u8, res, '\n');
-            while (iter.next()) |line| {
-                try s.log_fn(s.prefix ++ "{s}\n", .{line});
-            }
+        /// Prints a formatted string within the specified `tag` scope using
+        /// `defaults.log_writer`.
+        pub fn print(s: *Self, comptime format: []const u8, args: anytype) Error!void {
+            if (!builtin.is_test and !scopeActive(tag)) return;
+            try s.underlying_writer.writer().print(format, args);
+            try s.underlying_writer.flush();
         }
 
-        /// Prints a string with a scope prefix adding a newline at the end.
-        pub fn printString(str: []const u8) !void {
-            if (!scopeActive(s.tag)) return;
-            try s.log_fn(s.prefix ++ "{s}\n", .{str});
+        /// Write primitive within the specified `tag` scope.
+        pub fn write(s: *Self, bytes: []const u8) Error!usize {
+            if (!builtin.is_test and !scopeActive(tag)) return bytes.len;
+            return s.underlying_writer.write(bytes);
         }
 
-        /// Splits a string and prints each line with a scope prefix. If prefix
-        /// is empty, uses `printString()` directly instead.
-        pub fn printStringPerLine(str: []const u8) !void {
-            if (!scopeActive(s.tag)) return;
-            if (s.prefix.len == 0) return @This().printString(str);
+        /// Flushes the entire buffer to the writer. Use this to ensure the
+        /// buffer is written out after multiple writes via the `writer`
+        /// interface or `write` function directly.
+        pub fn flush(s: *Self) Error!void {
+            if (!builtin.is_test and !scopeActive(tag)) return;
+            return s.underlying_writer.flush();
+        }
 
-            var iter = std.mem.splitScalar(u8, str, '\n');
-            while (iter.next()) |line| {
-                try s.log_fn(s.prefix ++ "{s}\n", .{line});
-            }
+        pub fn writer(s: *Self) Writer {
+            return .{ .context = s };
         }
     };
 }
 
-/// Default scope for immediate use.
-const unscoped = scope(.{ .tag = .unscoped });
+/// Default scope.
+var defaultScope = scope(.log, .{ .prefix = defaults.log_prefix_default_scope }){};
 
-/// Prints a formatted string within `.unscoped` scope using
-/// `defaults.log_fn`. Use `scope(...).print` to initialize your own scope.
-/// Or use `defaults.logFn()` for raw, unconditional logging.
-pub const print = unscoped.print;
+/// Prints a formatted string within default's `.log` scope using
+/// `defaults.log_writer` under the hood. Use `scope(..)` to initialize your own
+/// scope or use `defaults.log_writer.print()` for raw, unconditional logging.
+pub const print = defaultScope.print;
 
-/// Formats a string, splits it by lines, and prints each line within
-/// `.unscoped` scope using `defaults.log_fn`.
-pub const printPerLine = unscoped.printPerLine;
+/// Returns writer interface within default's `.log` scope. If the scope is
+/// inactive, it becomes a "null writer".
+pub const writer = defaultScope.writer;
 
-/// Prints a string within `.unscoped` scope using `defaults.log_fn`.
-pub const printString = unscoped.printString;
+/// Write primitive within default's `.log` scope.
+pub const writeFn = defaultScope.write;
 
-/// Splits a string and prints each line within `.unscoped` scope using
-/// `defaults.log_fn`.
-pub const printStringPerLine = unscoped.printStringPerLine;
+/// Flushes the entire buffer within default's `.log` scope. Use this to
+/// ensure the buffer is written out after multiple writes via the `writer`
+/// interface or `writeFn` directly.
+pub const flush = defaultScope.flush;
+
+test {
+    const t = std.testing;
+    var out = std.ArrayList(u8).init(t.allocator);
+    const out_writer = out.writer();
+    defer out.deinit();
+
+    var sc = scope(.scope_tag, .{
+        .buffer_size = 10,
+        .Writer = @TypeOf(out_writer),
+    }).init(out_writer);
+
+    try sc.print("long print", .{});
+    try sc.print("very long print", .{});
+
+    try t.expectEqualStrings(
+        \\scope_tag: long print
+        \\scope_tag: very long 
+        \\scope_tag: print
+        \\
+    , out.items);
+    out.clearAndFree();
+
+    try std.fmt.format(sc.writer(), "{s}", .{"very long print"});
+    try t.expectEqualStrings(
+        \\scope_tag: very long 
+        \\
+    , out.items);
+
+    try sc.flush();
+    try t.expectEqualStrings(
+        \\scope_tag: very long 
+        \\scope_tag: print
+        \\
+    , out.items);
+}

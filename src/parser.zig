@@ -2,6 +2,7 @@
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
 const std = @import("std");
+const ThisFile = @This();
 pub const List = std.ArrayListUnmanaged;
 pub const Map = std.StringHashMapUnmanaged;
 
@@ -634,12 +635,13 @@ pub const Parser = struct {
 };
 
 const log = struct {
+    const _log = @import("log.zig");
     const color = @import("ansi_colors.zig");
-    const scope = @import("log.zig").scope(.{ .tag = .parser, .prefix = "parser: " });
-    const scopeActive = @import("log.zig").scopeActive;
+    var scope = _log.scope(.parser, .{}){};
+    const scopeActive = if (@hasDecl(ThisFile, "log_in_tests")) true else _log.scopeActive(.parser);
 
     pub fn stacks(p: *Parser) void {
-        if (!scopeActive(.parser)) return;
+        if (!scopeActive) return;
         const operators = p.pending.operators.items;
         const operands = p.pending.operands.items;
         const scopes = p.pending.scopes.items;
@@ -687,12 +689,12 @@ const log = struct {
     }
 
     pub fn cursor(p: *Parser) void {
-        if (!scopeActive(.parser)) return;
+        if (!scopeActive) return;
         scope.print("[state:  " ++ color.ctEscape(.{.bold}, "{s}") ++ " at .{s}]\n", .{ @tagName(p.state), @tagName(p.token.tag) }) catch return;
     }
 
     pub fn action(name: []const u8, arg: []const u8) void {
-        if (!scopeActive(.parser)) return;
+        if (!scopeActive) return;
         if (arg.len == 0)
             scope.print("[action: {s}]\n", .{name}) catch return
         else
@@ -700,9 +702,12 @@ const log = struct {
     }
 
     pub fn end() void {
-        scope.print("[end]\n\n", .{}) catch return;
+        if (!scopeActive) return;
+        scope.print("[end]\n", .{}) catch return;
     }
 };
+
+// const log_in_tests = true;
 
 test "Parser" {
     const writer = @import("writer.zig");

@@ -2,7 +2,7 @@
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
 const std = @import("std");
-const This = @This();
+const ThisFile = @This();
 
 pub const Token = struct {
     tag: Tag,
@@ -1073,13 +1073,14 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
         }
 
         const log = struct {
+            const _log = @import("log.zig");
             const color = @import("ansi_colors.zig");
-            const tag = if (@hasDecl(This, "log_in_tests")) .unscoped else .tokenizer;
-            const scope = @import("log.zig").scope(.{ .tag = tag, .prefix = "tokenizer: " });
-            const scopeActive = @import("log.zig").scopeActive(tag);
+            var scope = _log.scope(.tokenizer, .{}){};
+            const scopeActive = if (@hasDecl(ThisFile, "log_in_tests")) true else _log.scopeActive(.tokenizer);
         };
 
         fn logState(s: *const Self) void {
+            if (!log.scopeActive) return;
             if (opt.track_location)
                 log.scope.print("[read state .{s} " ++
                     log.color.ctEscape(.{.faint}, "{d}:{d}:{d}") ++
@@ -1092,6 +1093,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
         }
 
         fn logToken(token: Token) void {
+            if (!log.scopeActive) return;
             log.scope.print("[retn token " ++
                 log.color.ctEscape(.{.bold}, ".{s}") ++
                 ":{d}:{d}]\n", .{
