@@ -3,12 +3,22 @@
 
 const std = @import("std");
 
+/// PerLineWriter options.
 pub const BufferedPerLineWriterOptions = struct {
-    Writer: type,
+    /// The type of underlying writer.
+    WriterType: type,
+    /// The prefix that is prepended to each line written.
     prefix: []const u8 = "",
+    /// The postfix that is appended to each line written, right before '\n'.
     postfix: []const u8 = "",
+    /// The buffer size to accumulate lines before flushing. `buffer_size - 1`
+    /// is the max line length that can be accumulated and rendered correctly.
     buffer_size: usize = 4096,
+    /// Do not print the last empty line (a line that consists only of a newline
+    /// character) when `flush()` is called.
     skip_last_empty_line: bool = true,
+    /// Acquire stderr with `std.debug.[un]lockStdErr()` when writing to the
+    /// underlying writer.
     lock_stderr_on_flush: bool = false,
 };
 
@@ -19,15 +29,15 @@ pub const BufferedPerLineWriterOptions = struct {
 pub fn BufferedPerLineWriter(opt: BufferedPerLineWriterOptions) type {
     if (opt.buffer_size < 1) @compileError("buffer_size cannot be less than 1");
     return struct {
-        underlying_writer: opt.Writer,
+        underlying_writer: opt.WriterType,
         buf: [opt.buffer_size]u8 = undefined,
         idx: usize = 0,
 
         const Self = @This();
-        pub const Error = opt.Writer.Error;
+        pub const Error = opt.WriterType.Error;
         pub const Writer = std.io.Writer(*Self, Error, write);
 
-        pub fn init(underlying_writer: opt.Writer) Self {
+        pub fn init(underlying_writer: opt.WriterType) Self {
             return Self{ .underlying_writer = underlying_writer };
         }
 
@@ -40,18 +50,19 @@ pub fn BufferedPerLineWriter(opt: BufferedPerLineWriterOptions) type {
         /// the stored bytes except the last line before writing to the remaining
         /// buffer space.
         pub fn write(s: *Self, bytes: []const u8) Error!usize {
-            // if bytes do not fit, parse and flush stored bytes first
-            if (s.idx + bytes.len > s.buf.len) {
+            if (bytes.len == 0) return 0; // no need to write
+
+            // bytes do not fit, flush stored bytes first
+            if (s.idx != 0 and s.idx + bytes.len > s.buf.len) {
                 try s.flushExceptLastLine();
             }
 
             // store bytes into the remaining buffer space
-            const buf_left = s.buf.len - s.idx;
-            const write_amt = @min(buf_left, bytes.len);
-            @memcpy(s.buf[s.idx .. s.idx + write_amt], bytes[0..write_amt]);
-            s.idx += write_amt;
+            const n = @min(s.buf.len - s.idx, bytes.len);
+            @memcpy(s.buf[s.idx..][0..n], bytes[0..n]);
+            s.idx += n;
 
-            return write_amt;
+            return n;
         }
 
         pub fn writer(s: *Self) Writer {
@@ -65,9 +76,8 @@ pub fn BufferedPerLineWriter(opt: BufferedPerLineWriterOptions) type {
             if (opt.lock_stderr_on_flush) std.debug.lockStdErr();
             defer if (opt.lock_stderr_on_flush) std.debug.unlockStdErr();
 
-            const buf = s.slice();
-
             // print empty buffer as an empty line (s.idx = 0 already)
+            const buf = s.slice();
             if (buf.len == 0) return s.writeLineImpl("");
 
             var iter = std.mem.splitScalar(u8, buf, '\n');
@@ -84,10 +94,11 @@ pub fn BufferedPerLineWriter(opt: BufferedPerLineWriterOptions) type {
         /// complete line. The last line is always assumed incomplete and
         /// is moved to the beginning of the buffer to allow continuation.
         fn flushExceptLastLine(s: *Self) Error!void {
+            if (s.idx == 0) return; // empty buffer considered as the last empty line
+
             if (opt.lock_stderr_on_flush) std.debug.lockStdErr();
             defer if (opt.lock_stderr_on_flush) std.debug.unlockStdErr();
 
-            if (s.idx == 0) return;
             var iter = std.mem.splitScalar(u8, s.slice(), '\n');
             while (iter.next()) |line| {
                 if (iter.index == null) { // reached the end
@@ -126,7 +137,7 @@ test {
 
         {
             var plw = BufferedPerLineWriter(.{
-                .Writer = WriterType,
+                .WriterType = WriterType,
                 .prefix = "p: ",
                 .buffer_size = 4,
                 .skip_last_empty_line = false,
@@ -152,21 +163,21 @@ test {
             out.clearAndFree();
         }
         {
-            var plw = BufferedPerLineWriter(.{ .Writer = WriterType, .buffer_size = 4, .prefix = "p: " }).init(out.writer());
+            var plw = BufferedPerLineWriter(.{ .WriterType = WriterType, .buffer_size = 4, .prefix = "p: " }).init(out.writer());
 
             const written = try plw.write("12");
             try t.expectEqual(2, written); // (!) assert a smaller input is written to a larger buffer
             out.clearAndFree();
         }
         {
-            var plw = BufferedPerLineWriter(.{ .Writer = WriterType, .buffer_size = 1 }).init(out.writer());
+            var plw = BufferedPerLineWriter(.{ .WriterType = WriterType, .buffer_size = 1 }).init(out.writer());
 
             try plw.writer().writeAll("123456");
             try t.expectEqual('6', plw.slice()[0]); // (!) assert the writer interface was able to write all bytes
             out.clearAndFree();
         }
         {
-            var plw = BufferedPerLineWriter(.{ .Writer = WriterType, .buffer_size = 4, .prefix = "p: " }).init(out.writer());
+            var plw = BufferedPerLineWriter(.{ .WriterType = WriterType, .buffer_size = 4, .prefix = "p: " }).init(out.writer());
 
             try plw.writer().writeAll("11\n22");
             //                         ^^^-^ (first pass)
@@ -201,7 +212,7 @@ test {
 
         // (!) assert a single byte buffer behaves correctly
         {
-            var plw = BufferedPerLineWriter(.{ .Writer = WriterType, .buffer_size = 1, .prefix = "p: " }).init(out.writer());
+            var plw = BufferedPerLineWriter(.{ .WriterType = WriterType, .buffer_size = 1, .prefix = "p: " }).init(out.writer());
             try plw.writer().writeAll("y\nz");
             try plw.flush();
             try t.expectEqualStrings(
@@ -226,7 +237,7 @@ test {
                 defer buf.deinit();
                 {
                     var plw = BufferedPerLineWriter(.{
-                        .Writer = @TypeOf(buf.writer()),
+                        .WriterType = @TypeOf(buf.writer()),
                         .prefix = "p: ",
                         .buffer_size = 4, // (!) 4-byte size buffer
                         .skip_last_empty_line = true,
@@ -240,7 +251,7 @@ test {
                 }
                 {
                     var plw = BufferedPerLineWriter(.{
-                        .Writer = @TypeOf(buf.writer()),
+                        .WriterType = @TypeOf(buf.writer()),
                         .prefix = "",
                         .buffer_size = 4,
                         .skip_last_empty_line = true,
