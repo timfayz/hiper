@@ -226,7 +226,7 @@ test "+reverseInplace" {
     try run.case("12345", "54321");
 }
 
-fn readLineImpl(
+fn readLinesImpl(
     comptime mode: enum { forward, backward },
     stack: [][]const u8,
     input: [:0]const u8,
@@ -268,31 +268,35 @@ fn readLineImpl(
     return .{ s.slice(), index_rel_pos };
 }
 
-/// Reads lines from the input at a specified index, pushing slices onto `stack`
-/// until either the stack is full or the `amount` of lines are read. Returns the
-/// slice of retrieved lines with the index's relative position within the current
-/// line (always `stack[0]`). If `stack` is empty, nothing will be read.
+/// Reads lines from the input starting at the specified index, pushing lines
+/// onto `stack` until either the stack is full or the specified `amount` of
+/// lines is read. Returns `stack` slice of the retrieved lines, with the
+/// index's relative position (IRP) within the current line (always `stack[0]`).
+/// If the IRP exceeds the current line length, the index is either on a new line
+/// or at the end of the stream (EOF). If `stack.len() == 0`, nothing is read.
 pub inline fn readLinesForward(
     stack: [][]const u8,
     input: [:0]const u8,
     index: usize,
     amount: usize,
 ) struct { [][]const u8, usize } {
-    return readLineImpl(.forward, stack, input, index, amount);
+    return readLinesImpl(.forward, stack, input, index, amount);
 }
 
-/// Reads lines from the input at a specified index backward, pushing slices
-/// onto `stack` until either the stack is full or the `amount` of lines are
-/// read. Returns the slice of retrieved lines with the index's relative position
-/// within the current line (always `stack[stack.len - 1]`). If `stack` is empty,
-/// nothing will be read. Lines are returned in normal order.
+/// Reads lines from the input starting at the specified index backwards,
+/// pushing lines onto `stack` until either the stack is full or the specified
+/// `amount` of lines is read. Returns `stack` slice of the retrieved lines,
+/// with the index's relative position (IRP) within the current line (always
+/// `stack[stack.len - 1]`). If the IRP exceeds the current line length, the
+/// index is either on a new line or at the end of the stream (EOF). If
+/// `stack.len() == 0`, nothing is read. Lines are returned in normal order.
 pub inline fn readLinesBackward(
     stack: [][]const u8,
     input: [:0]const u8,
     index: usize,
     amount: usize,
 ) struct { [][]const u8, usize } {
-    return readLineImpl(.backward, stack, input, index, amount);
+    return readLinesImpl(.backward, stack, input, index, amount);
 }
 
 test "+readLinesForward/Backward" {
@@ -306,8 +310,7 @@ test "+readLinesForward/Backward" {
             expect: anytype,
             args: struct { amount: usize, rel_pos: usize },
         ) !void {
-            const expect_arr = std.meta.fields(@TypeOf(expect));
-            const expect_lines: [expect_arr.len][]const u8 = expect;
+            const expect_lines: [std.meta.fields(@TypeOf(expect)).len][]const u8 = expect;
 
             var stack: [32][]const u8 = undefined;
             const actual_lines, const actual_pos = switch (mode) {
@@ -316,9 +319,7 @@ test "+readLinesForward/Backward" {
             };
 
             try t.expectEqual(expect_lines.len, actual_lines.len);
-            for (expect_lines, actual_lines) |expected, actual| {
-                try t.expectEqualStrings(expected, actual);
-            }
+            for (expect_lines, actual_lines) |e, a| try t.expectEqualStrings(e, a);
             try t.expectEqual(args.rel_pos, actual_pos);
         }
     };
@@ -344,15 +345,16 @@ test "+readLinesForward/Backward" {
     try run.case(.backward, input, 18, .{ "second", "third" }, .{ .amount = 2, .rel_pos = 5 });
 }
 
-const IndexInfo = struct { rel_pos: usize, line_num: usize };
+const IndexInfo = struct { rel_pos: usize, curr_line: usize };
 
 /// Reads lines around a specified index in the input. Returns a slice of
-/// retrieved lines with the relative position of the index within the current
-/// line and its line number. Function works in three modes:
+/// retrieved lines, the current line index within the returned slice, and the
+/// index's relative position within the current line. Function operates in
+/// three modes:
 ///
 /// * If `backward = 0` and `forward >= 1`, reads forward only, exactly as `readLinesForward`.
 /// * If `backward >= 1` and `forward = 0`, reads backward only, exactly as `readLinesBackward`.
-/// * If `backward > 0` and `forward > 0`, reads the current line + extra lines backward/forward as specified.
+/// * If `backward >= 1` and `forward >= 1`, reads current line + *extra* lines backward/forward as specified.
 ///
 /// The number of lines read depends on the available `stack.len` and the
 /// requested `amount`.
@@ -363,13 +365,13 @@ pub fn readLinesAround(
     amount: struct { backward: usize = 0, forward: usize = 0 },
 ) struct { [][]const u8, IndexInfo } {
     if (stack.len == 0 or (amount.backward == 0 and amount.forward == 0)) {
-        return .{ stack[0..0], .{ .rel_pos = 0, .line_num = 0 } };
+        return .{ stack[0..0], .{ .rel_pos = 0, .curr_line = 0 } };
     } else if (amount.backward == 0) {
         const lines, const index_rel_pos = readLinesForward(stack, input, index, amount.forward);
-        return .{ lines, .{ .rel_pos = index_rel_pos, .line_num = 0 } };
+        return .{ lines, .{ .rel_pos = index_rel_pos, .curr_line = 0 } };
     } else if (amount.forward == 0) {
         const lines, const index_rel_pos = readLinesBackward(stack, input, index, amount.backward);
-        return .{ lines, .{ .rel_pos = index_rel_pos, .line_num = 0 } };
+        return .{ lines, .{ .rel_pos = index_rel_pos, .curr_line = lines.len -| 1 } };
     } else {
         const lines_backward, const index_rel_pos = readLinesBackward(stack, input, index, amount.backward + 1);
         const curr_line = lines_backward[lines_backward.len -| 1];
@@ -382,16 +384,56 @@ pub fn readLinesAround(
                 break :blk lines_backward;
             }
         };
-        return .{ lines_around, .{ .rel_pos = index_rel_pos, .line_num = lines_backward.len - 1 } };
+        return .{ lines_around, .{ .rel_pos = index_rel_pos, .curr_line = lines_backward.len - 1 } };
     }
 }
 
 test "+readLinesAround" {
     const t = std.testing;
-    _ = t; // autofix
+
+    const run = struct {
+        fn case(
+            input: [:0]const u8,
+            index: usize,
+            expect: anytype,
+            args: struct { backward: usize, forward: usize, rel_pos: usize, curr_line: usize },
+        ) !void {
+            const expect_lines: [std.meta.fields(@TypeOf(expect)).len][]const u8 = expect;
+
+            var stack: [32][]const u8 = undefined;
+            const actual_lines, const line_info = readLinesAround(&stack, input, index, .{
+                .backward = args.backward,
+                .forward = args.forward,
+            });
+
+            try t.expectEqual(expect_lines.len, actual_lines.len);
+            for (expect_lines, actual_lines) |e, a| try t.expectEqualStrings(e, a);
+            try t.expectEqual(args.curr_line, line_info.curr_line);
+            try t.expectEqual(args.rel_pos, line_info.rel_pos);
+        }
+    };
 
     const input = "one\ntwo\nthree\nfour\nfive";
-    _ = input; // autofix
     //             ^0 ^3   ^7     ^13   ^18   ^23
 
+    try run.case(input, 100, .{}, .{ .backward = 0, .forward = 0, .rel_pos = 0, .curr_line = 0 });
+    try run.case(input, 0, .{}, .{ .backward = 0, .forward = 0, .rel_pos = 0, .curr_line = 0 });
+    try run.case(input, 8, .{"three"}, .{ .backward = 1, .forward = 0, .rel_pos = 0, .curr_line = 0 });
+    try run.case(input, 8, .{"three"}, .{ .backward = 0, .forward = 1, .rel_pos = 0, .curr_line = 0 });
+    try run.case(input, 12, .{"three"}, .{ .backward = 1, .forward = 0, .rel_pos = 4, .curr_line = 0 });
+    try run.case(input, 12, .{"three"}, .{ .backward = 0, .forward = 1, .rel_pos = 4, .curr_line = 0 });
+    try run.case(input, 12, .{ "two", "three" }, .{ .backward = 2, .forward = 0, .rel_pos = 4, .curr_line = 1 });
+    try run.case(input, 12, .{ "three", "four" }, .{ .backward = 0, .forward = 2, .rel_pos = 4, .curr_line = 0 });
+    try run.case(input, 23, .{ "one", "two", "three", "four", "five" }, .{
+        .backward = 5,
+        .forward = 5,
+        .rel_pos = 4,
+        .curr_line = 4,
+    });
+    try run.case(input, 0, .{ "one", "two", "three", "four", "five" }, .{
+        .backward = 5,
+        .forward = 5,
+        .rel_pos = 0,
+        .curr_line = 0,
+    });
 }
