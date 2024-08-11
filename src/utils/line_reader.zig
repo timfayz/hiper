@@ -226,6 +226,42 @@ test "+reverseInplace" {
     try run.case("12345", "54321");
 }
 
+/// Returns the line at the specified index with the index's relative position
+/// (IRP) within that line. If IRP exceeds the current line length, the index
+/// is either on a new line or at the end of the stream (EOF).
+pub fn readLine(input: [:0]const u8, index: usize) struct { []const u8, usize } {
+    const line_start = indexOfLineStart(input, index);
+    const line_end = indexOfLineEnd(input, index);
+    const index_rel_pos = index - line_start;
+    return .{ input[line_start..line_end], index_rel_pos };
+}
+
+test "+readLine" {
+    const t = std.testing;
+
+    const run = struct {
+        fn case(input: [:0]const u8, index: usize, expect_rel_pos: usize, expect_line: []const u8) !void {
+            const actual_line, const actual_rel_pos = readLine(input, index);
+            try t.expectEqualStrings(expect_line, actual_line);
+            try t.expectEqual(expect_rel_pos, actual_rel_pos);
+        }
+    };
+    //              |idx| |idx_rel_pos|
+    try run.case("", 0, 0, "");
+    try run.case("one", 0, 0, "one");
+    try run.case("one", 1, 1, "one");
+    try run.case("one", 3, 3, "one");
+    //            ^0 ^3
+    try run.case("\n", 0, 0, "");
+    //            ^
+    try run.case("\n", 1, 0, "");
+    //              ^
+    try run.case("\nx", 2, 1, "x");
+    //               ^
+    try run.case("\nx", 1, 0, "x");
+    //              ^
+}
+
 fn readLinesImpl(
     comptime mode: enum { forward, backward },
     stack: [][]const u8,
@@ -235,15 +271,12 @@ fn readLinesImpl(
 ) struct { [][]const u8, usize } {
     if (stack.len == 0 or amount == 0) return .{ stack[0..0], 0 };
 
-    // current line
     var line_start = indexOfLineStart(input, index);
     var line_end = indexOfLineEnd(input, index);
+    const index_rel_pos = index - line_start;
 
     var s = Stack.initFromSliceEmpty([]const u8, stack);
-    s.push(input[line_start..line_end]) catch unreachable;
-
-    // relative position in line
-    const index_rel_pos = index - line_start;
+    s.push(input[line_start..line_end]) catch unreachable; // current line
 
     var i: usize = amount - 1;
     while (i != 0 and !s.full()) : (i -= 1) {
@@ -272,7 +305,7 @@ fn readLinesImpl(
 /// onto `stack` until either the stack is full or the specified `amount` of
 /// lines is read. Returns `stack` slice of the retrieved lines, with the
 /// index's relative position (IRP) within the current line (always `stack[0]`).
-/// If the IRP exceeds the current line length, the index is either on a new line
+/// If IRP exceeds the current line length, the index is either on a new line
 /// or at the end of the stream (EOF). If `stack.len() == 0`, nothing is read.
 pub inline fn readLinesForward(
     stack: [][]const u8,
@@ -287,7 +320,7 @@ pub inline fn readLinesForward(
 /// pushing lines onto `stack` until either the stack is full or the specified
 /// `amount` of lines is read. Returns `stack` slice of the retrieved lines,
 /// with the index's relative position (IRP) within the current line (always
-/// `stack[stack.len - 1]`). If the IRP exceeds the current line length, the
+/// `stack[stack.len - 1]`). If IRP exceeds the current line length, the
 /// index is either on a new line or at the end of the stream (EOF). If
 /// `stack.len() == 0`, nothing is read. Lines are returned in normal order.
 pub inline fn readLinesBackward(
