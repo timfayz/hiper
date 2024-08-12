@@ -58,6 +58,9 @@ test "+indexOfLineEnd/Start" {
     try case.runStart("", .{ .index = 0, .expect = 0 });
     try case.runEnd__("", .{ .index = 0, .expect = 0 });
 
+    try case.runStart("", .{ .index = 100, .expect = 0 });
+    try case.runEnd__("", .{ .index = 100, .expect = 0 });
+
     try case.runStart("\n", .{ .index = 0, .expect = 0 });
     try case.runEnd__("\n", .{ .index = 0, .expect = 0 });
     //                 ^
@@ -230,9 +233,10 @@ test "+reverseInplace" {
 /// (IRP) within that line. If IRP exceeds the current line length, the index
 /// is either on a new line or at the end of the stream (EOF).
 pub fn readLine(input: [:0]const u8, index: usize) struct { []const u8, usize } {
-    const line_start = indexOfLineStart(input, index);
-    const line_end = indexOfLineEnd(input, index);
-    const index_rel_pos = index - line_start;
+    const idx = if (index > input.len) input.len else index; // normalize
+    const line_start = indexOfLineStartImpl(input, idx);
+    const line_end = indexOfLineEndImpl(input, idx);
+    const index_rel_pos = idx - line_start;
     return .{ input[line_start..line_end], index_rel_pos };
 }
 
@@ -251,6 +255,7 @@ test "+readLine" {
     try run.case("one", 0, 0, "one");
     try run.case("one", 1, 1, "one");
     try run.case("one", 3, 3, "one");
+    try run.case("one", 100, 3, "one");
     //            ^0 ^3
     try run.case("\n", 0, 0, "");
     //            ^
@@ -271,9 +276,10 @@ fn readLinesImpl(
 ) struct { [][]const u8, usize } {
     if (stack.len == 0 or amount == 0) return .{ stack[0..0], 0 };
 
-    var line_start = indexOfLineStart(input, index);
-    var line_end = indexOfLineEnd(input, index);
-    const index_rel_pos = index - line_start;
+    const idx = if (index > input.len) input.len else index; // normalize
+    var line_start = indexOfLineStart(input, idx);
+    var line_end = indexOfLineEnd(input, idx);
+    const index_rel_pos = idx - line_start;
 
     var s = Stack.initFromSliceEmpty([]const u8, stack);
     s.push(input[line_start..line_end]) catch unreachable; // current line
@@ -368,6 +374,7 @@ test "+readLinesForward/Backward" {
     try run.case(.forward, input, 6, .{"second"}, .{ .amount = 1, .rel_pos = 0 });
     try run.case(.forward, input, 8, .{ "second", "third" }, .{ .amount = 2, .rel_pos = 2 });
     try run.case(.forward, input, 18, .{"third"}, .{ .amount = 2, .rel_pos = 5 });
+    try run.case(.forward, input, 100, .{"third"}, .{ .amount = 2, .rel_pos = 5 });
 
     try run.case(.backward, input, 0, .{}, .{ .amount = 0, .rel_pos = 0 });
     try run.case(.backward, input, 0, .{"first"}, .{ .amount = 1, .rel_pos = 0 });
