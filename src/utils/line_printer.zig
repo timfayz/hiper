@@ -26,7 +26,7 @@ pub fn printLine(
 ) !void {
     if (opt.view_len < 1) @compileError("view_length cannot be less than one");
     const line, const line_index_pos = lr.readLine(input, index); // get current line
-    const number = if (line_number == 0) lr.lineNumAt(input, index) else line_number;
+    const number = if (line_number == 0) lr.countLineNum(input, index) else line_number;
     _ = try printLineNumImpl(writer, number, opt);
     _ = try printLineImpl(writer, input, line, line_index_pos, opt);
 }
@@ -153,7 +153,7 @@ pub fn printLineWithCursor(
 ) !void {
     if (opt.view_len < 1) @compileError("view_length cannot be less than one");
     const line, const line_index_pos = lr.readLine(input, index); // get current line
-    const number = if (line_number == 0) lr.lineNumAt(input, index) else line_number;
+    const number = if (line_number == 0) lr.countLineNum(input, index) else line_number;
     const number_col_width = try printLineNumImpl(writer, number, opt);
     const new_index_pos = try printLineImpl(writer, input, line, line_index_pos, opt);
     // force line view at cursor position
@@ -170,7 +170,7 @@ inline fn printLineNumImpl(
 ) !usize {
     if (opt.show_line_numbers) {
         try writer.print("{d}" ++ opt.line_number_sep, .{line_number});
-        return lr.intLen(line_number) + opt.line_number_sep.len;
+        return lr.countIntLen(line_number) + opt.line_number_sep.len;
     }
     return 0;
 }

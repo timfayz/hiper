@@ -1,6 +1,19 @@
 // MIT License (c) Timur Fayzrakhmanov.
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
+//! Public API:
+//! - indexOfLineEnd
+//! - indexOfLineStart
+//! - indexOfSliceEnd
+//! - indexOfSliceStart
+//! - reverseSlice
+//! - countIntLen
+//! - countLineNum
+//! - readLine
+//! - readLinesForward
+//! - readLinesBackward
+//! - readLinesAround
+
 const std = @import("std");
 const Stack = @import("stack.zig");
 
@@ -120,81 +133,6 @@ test "+indexOfSliceStart/End" {
     try t.expectEqual(10, indexOfSliceStart(in4, in4[10..10]));
 }
 
-/// Returns the number of digits in an integer.
-pub fn intLen(int: usize) usize {
-    if (int == 0) return 1;
-    var len: usize = 1;
-    var next: usize = int;
-    while (true) {
-        next /= 10;
-        if (next > 0)
-            len += 1
-        else
-            break;
-    }
-    return len;
-}
-
-test "+intLen" {
-    const t = std.testing;
-
-    try t.expectEqual(1, intLen(0));
-    try t.expectEqual(1, intLen(1));
-    try t.expectEqual(1, intLen(9));
-    try t.expectEqual(2, intLen(10));
-    try t.expectEqual(2, intLen(11));
-    try t.expectEqual(2, intLen(99));
-    try t.expectEqual(3, intLen(100));
-    try t.expectEqual(3, intLen(101));
-    try t.expectEqual(3, intLen(999));
-    try t.expectEqual(
-        std.fmt.comptimePrint("{d}", .{std.math.maxInt(u32)}).len,
-        intLen(std.math.maxInt(u32)),
-    );
-}
-
-/// Returns the line number at the specified index in `input`. Line numbers
-/// start from 1.
-pub fn lineNumAt(input: [:0]const u8, index: usize) usize {
-    const idx = if (index > input.len) input.len else index; // normalize
-
-    // spacial case: index at the first empty line
-    if (idx == 0 and input[0] == '\n') return 1;
-
-    // general case
-    var line_number: usize = 1;
-    var i: usize = 0;
-    while (i < idx) : (i += 1) {
-        if (input[i] == '\n') line_number += 1;
-    }
-    return line_number;
-}
-
-test "+lineNumAt" {
-    const t = std.testing;
-
-    try t.expectEqual(1, lineNumAt("", 0));
-    try t.expectEqual(1, lineNumAt("", 100));
-
-    try t.expectEqual(1, lineNumAt("\n", 0));
-    //                              ^ (1 line)
-    try t.expectEqual(2, lineNumAt("\n", 1));
-    //                                ^ (2 line)
-    try t.expectEqual(2, lineNumAt("\n", 100));
-    //                                ^ (2 line)
-    try t.expectEqual(2, lineNumAt("\n\n", 1));
-    //                                ^ (2 line)
-    try t.expectEqual(3, lineNumAt("\n\n", 2));
-    //                                  ^ (3 line)
-
-    try t.expectEqual(1, lineNumAt("l1\nl2\nl3", 0));
-    //                              ^ (1 line)
-    try t.expectEqual(2, lineNumAt("l1\nl2\nl3", 3));
-    //                                  ^ (2 line)
-    try t.expectEqual(3, lineNumAt("l1\nl2\nl3", 6));
-    //                                      ^ (3 line)
-}
-
 /// Reverses slice items in-place.
 pub fn reverseSlice(T: type, items: []T) void {
     if (items.len <= 1) return;
@@ -227,6 +165,81 @@ test "+reverseInplace" {
     try run.case("123", "321");
     try run.case("1234", "4321");
     try run.case("12345", "54321");
+}
+
+/// Returns the number of digits in an integer.
+pub fn countIntLen(int: usize) usize {
+    if (int == 0) return 1;
+    var len: usize = 1;
+    var next: usize = int;
+    while (true) {
+        next /= 10;
+        if (next > 0)
+            len += 1
+        else
+            break;
+    }
+    return len;
+}
+
+test "+countIntLen" {
+    const t = std.testing;
+
+    try t.expectEqual(1, countIntLen(0));
+    try t.expectEqual(1, countIntLen(1));
+    try t.expectEqual(1, countIntLen(9));
+    try t.expectEqual(2, countIntLen(10));
+    try t.expectEqual(2, countIntLen(11));
+    try t.expectEqual(2, countIntLen(99));
+    try t.expectEqual(3, countIntLen(100));
+    try t.expectEqual(3, countIntLen(101));
+    try t.expectEqual(3, countIntLen(999));
+    try t.expectEqual(
+        std.fmt.comptimePrint("{d}", .{std.math.maxInt(u32)}).len,
+        countIntLen(std.math.maxInt(u32)),
+    );
+}
+
+/// Returns the line number at the specified index in `input`. Line numbers
+/// start from 1.
+pub fn countLineNum(input: [:0]const u8, index: usize) usize {
+    const idx = if (index > input.len) input.len else index; // normalize
+
+    // spacial case: index at the first empty line
+    if (idx == 0 and input[0] == '\n') return 1;
+
+    // general case
+    var line_number: usize = 1;
+    var i: usize = 0;
+    while (i < idx) : (i += 1) {
+        if (input[i] == '\n') line_number += 1;
+    }
+    return line_number;
+}
+
+test "+countLineNum" {
+    const t = std.testing;
+
+    try t.expectEqual(1, countLineNum("", 0));
+    try t.expectEqual(1, countLineNum("", 100));
+
+    try t.expectEqual(1, countLineNum("\n", 0));
+    //                              ^ (1 line)
+    try t.expectEqual(2, countLineNum("\n", 1));
+    //                                ^ (2 line)
+    try t.expectEqual(2, countLineNum("\n", 100));
+    //                                ^ (2 line)
+    try t.expectEqual(2, countLineNum("\n\n", 1));
+    //                                ^ (2 line)
+    try t.expectEqual(3, countLineNum("\n\n", 2));
+    //                                  ^ (3 line)
+
+    try t.expectEqual(1, countLineNum("l1\nl2\nl3", 0));
+    //                              ^ (1 line)
+    try t.expectEqual(2, countLineNum("l1\nl2\nl3", 3));
+    //                                  ^ (2 line)
+    try t.expectEqual(3, countLineNum("l1\nl2\nl3", 6));
+    //                                      ^ (3 line)
 }
 
 /// Returns the line at the specified index with the index's relative position
@@ -277,8 +290,8 @@ fn readLinesImpl(
     if (stack.len == 0 or amount == 0) return .{ stack[0..0], 0 };
 
     const idx = if (index > input.len) input.len else index; // normalize
-    var line_start = indexOfLineStart(input, idx);
-    var line_end = indexOfLineEnd(input, idx);
+    var line_start = indexOfLineStartImpl(input, idx);
+    var line_end = indexOfLineEndImpl(input, idx);
     const index_rel_pos = idx - line_start;
 
     var s = Stack.initFromSliceEmpty([]const u8, stack);
