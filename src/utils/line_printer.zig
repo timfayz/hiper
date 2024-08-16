@@ -1,6 +1,15 @@
+// MIT License (c) Timur Fayzrakhmanov.
+// tim.fayzrakhmanov@gmail.com (github.com/timfayz)
+
+//! Public API:
+//! - LinePrinterOptions
+//! - printLine
+//! - printLineWithCursor
+
 const std = @import("std");
 const lr = @import("line_reader.zig");
 
+/// LinePrinter options.
 pub const LinePrinterOptions = struct {
     view_len: u8 = 80,
     view_line_at: enum { start, end, cursor } = .cursor,
