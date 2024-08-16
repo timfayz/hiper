@@ -34,7 +34,6 @@ pub fn printLine(
 test "+printLine" {
     const t = std.testing;
 
-    // test line and cursor rendering
     const case = struct {
         pub fn run(
             input: [:0]const u8,
@@ -55,66 +54,61 @@ test "+printLine" {
         \\1 | 
         \\
     );
-
     try case.run("", 0, 0, .{ .show_eof = true },
         \\1 | ␃
         \\
     );
 
     // .show_line_numbers
-
+    //
     try case.run("", 0, 0, .{ .show_line_numbers = false },
         \\␃
         \\
     );
-
     try case.run("", 0, 0, .{ .show_eof = false, .show_line_numbers = false },
         \\
         \\
     );
-
     try case.run("", 0, 0, .{ .show_line_numbers = true },
         \\1 | ␃
         \\
     );
 
-    // manual line number
-
-    try case.run("hello", 0, 2, .{},
-        \\2 | hello␃
-        \\
-    );
-
     // .line_number_sep
-
+    //
     try case.run("hello", 0, 0, .{ .line_number_sep = "__" },
         \\1__hello␃
         \\
     );
-
     try case.run("hello", 0, 0, .{ .line_number_sep = "" },
         \\1hello␃
         \\
     );
 
-    // .view_len and .view_line_at
-
-    try case.run("hello", 0, 0, .{
-        .view_len = 3,
-        .view_line_at = .end,
-    },
+    // .view_line_at
+    //
+    try case.run("hello", 0, 0, .{ .view_len = 3, .view_line_at = .end },
         \\1 | ..llo␃
         \\
     );
-
-    try case.run("hello", 0, 0, .{
-        .view_len = 3,
-        .view_line_at = .start,
-    },
+    try case.run("hello", 0, 0, .{ .view_len = 3, .view_line_at = .start },
         \\1 | hel..
         \\
     );
+    try case.run("hello", 2, 0, .{ .view_len = 3, .view_line_at = .cursor },
+        \\1 | ..ell..
+        \\
+    );
 
+    // manual line number specification
+    //
+    try case.run("hello", 0, 2, .{},
+        \\2 | hello␃
+        \\
+    );
+
+    // automatic line number detection
+    //
     const input =
         \\first line
         //^0        ^10
@@ -123,27 +117,22 @@ test "+printLine" {
         \\
         //^23
     ;
-
     try case.run(input, 0, 0, .{},
         \\1 | first line
         \\
     );
-
     try case.run(input, 5, 0, .{},
         \\1 | first line
         \\
     );
-
     try case.run(input, 12, 0, .{},
         \\2 | second line
         \\
     );
-
     try case.run(input, 22, 0, .{},
         \\2 | second line
         \\
     );
-
     try case.run(input, 100, 0, .{},
         \\3 | ␃
         \\
