@@ -134,15 +134,20 @@ test "+indexOfSliceStart/End" {
 }
 
 /// Reverses slice items in-place.
-pub fn reverseSlice(T: type, items: []T) void {
-    if (items.len <= 1) return;
+pub fn reverseSlice(slice: anytype) void {
+    comptime {
+        const T_info = @typeInfo(@TypeOf(slice));
+        if (T_info != .Pointer and T_info.Pointer.size != .Slice)
+            @compileError("argument must be a slice");
+    }
+    if (slice.len <= 1) return;
     var i: usize = 0;
-    const swap_amt = items.len / 2;
-    const last_item_idx = items.len - 1;
+    const swap_amt = slice.len / 2;
+    const last_item_idx = slice.len - 1;
     while (i < swap_amt) : (i += 1) {
-        const tmp = items[i];
-        items[i] = items[last_item_idx - i]; // swap lhs
-        items[last_item_idx - i] = tmp; // swap rhs
+        const tmp = slice[i];
+        slice[i] = slice[last_item_idx - i]; // swap lhs
+        slice[last_item_idx - i] = tmp; // swap rhs
     }
 }
 
@@ -154,7 +159,7 @@ test "+reverseInplace" {
             var buf: [32]u8 = undefined;
             for (input, 0..) |byte, i| buf[i] = byte;
             const actual = buf[0..input.len];
-            reverseSlice(u8, actual);
+            reverseSlice(actual);
             try t.expectEqualStrings(expect, actual);
         }
     };
@@ -316,7 +321,7 @@ fn readLinesImpl(
         s.push(input[line_start..line_end]) catch unreachable;
     }
 
-    if (mode == .backward) reverseSlice([]const u8, s.slice());
+    if (mode == .backward) reverseSlice(s.slice());
     return .{ s.slice(), index_rel_pos };
 }
 
