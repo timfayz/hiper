@@ -3,7 +3,7 @@ const lr = @import("line_reader.zig");
 
 pub const LinePrinterOptions = struct {
     view_len: u8 = 80,
-    view_at: enum { line_start, line_end, cursor } = .cursor,
+    view_line_at: enum { start, end, cursor } = .cursor,
     show_line_numbers: bool = true,
     show_eof: bool = true,
     show_cursor_hint: bool = true,
@@ -97,11 +97,11 @@ test "+printLine" {
         \\
     );
 
-    // .view_len and .view_at
+    // .view_len and .view_line_at
 
     try case.run("hello", 0, 0, .{
         .view_len = 3,
-        .view_at = .line_end,
+        .view_line_at = .end,
     },
         \\1 | ..llo␃
         \\
@@ -109,7 +109,7 @@ test "+printLine" {
 
     try case.run("hello", 0, 0, .{
         .view_len = 3,
-        .view_at = .line_start,
+        .view_line_at = .start,
     },
         \\1 | hel..
         \\
@@ -169,7 +169,7 @@ pub fn printLineWithCursor(
     const new_index_pos = try printLineImpl(writer, input, line, line_index_pos, opt);
     // force line view at cursor position
     comptime var opt_forced = opt;
-    opt_forced.view_at = .cursor;
+    opt_forced.view_line_at = .cursor;
     try printCursorImpl(writer, input, index, number_col_width + new_index_pos, opt_forced);
 }
 
@@ -197,7 +197,7 @@ inline fn printLineImpl(
     var new_index_pos = line_index_pos;
     // line exceeds the view length
     if (line.len > opt.view_len) {
-        switch (opt.view_at) {
+        switch (opt.view_line_at) {
             .cursor => {
                 const extra_rshift = if (opt.view_len & 1 == 0) 1 else 0; // if view_len is even
                 const view_start = @min(line_index_pos -| opt.view_len / 2 + extra_rshift, line.len - opt.view_len);
@@ -214,13 +214,13 @@ inline fn printLineImpl(
                     try writer.writeAll("␃");
                 }
             },
-            .line_end => {
+            .end => {
                 try writer.writeAll(opt.skip_symbol);
                 try writer.writeAll(line[line.len - opt.view_len ..]);
                 if (opt.show_eof and lr.indexOfSliceEnd(input, line) >= input.len)
                     try writer.writeAll("␃");
             },
-            .line_start => {
+            .start => {
                 try writer.writeAll(line[0..opt.view_len]);
                 try writer.writeAll(opt.skip_symbol);
             },
@@ -254,7 +254,7 @@ test "+printLineImpl" {
         }
     };
 
-    // view_at = .cursor (default)
+    // view_line_at = .cursor (default)
 
     try run.case("", 0, "␃\n", 0, .{ .view_len = 100 });
     //
