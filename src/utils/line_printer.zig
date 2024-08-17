@@ -33,11 +33,12 @@ pub fn printLine(
     line_number: usize,
     comptime opt: LinePrinterOptions,
 ) !void {
+    const detect_line_num = if (line_number == 0) true else false;
     if (opt.view_len < 1) @compileError("view_length cannot be less than one");
-    const line, const line_index_pos = lr.readLine(input, index); // get current line
-    const number = if (line_number == 0) lr.countLineNum(input, index) else line_number;
-    _ = try printLineNumImpl(writer, number, opt);
-    _ = try printLineImpl(writer, input, line, line_index_pos, opt);
+    const line = lr.readLine(input, index, detect_line_num);
+    const line_num = if (detect_line_num) line.line_num else line_number;
+    _ = try printLineNumImpl(writer, line_num, opt);
+    _ = try printLineImpl(writer, input, line.item, line.index_rel_pos, opt);
 }
 
 test "+printLine" {
@@ -55,63 +56,63 @@ test "+printLine" {
             try printLine(out.writer(), input, index, line_number, opt);
             try t.expectEqualStrings(expect, out.slice());
         }
-    };
+    }.run;
 
     // .show_eof
-    //            |idx| |line_num|
-    try case.run("", 0, 0, .{ .show_eof = false },
+    //          |idx| |line_num|
+    try case("", 0, 0, .{ .show_eof = false },
         \\1 | 
         \\
     );
-    try case.run("", 0, 0, .{ .show_eof = true },
+    try case("", 0, 0, .{ .show_eof = true },
         \\1 | ␃
         \\
     );
 
     // .show_line_numbers
     //
-    try case.run("", 0, 0, .{ .show_line_numbers = false },
+    try case("", 0, 0, .{ .show_line_numbers = false },
         \\␃
         \\
     );
-    try case.run("", 0, 0, .{ .show_eof = false, .show_line_numbers = false },
+    try case("", 0, 0, .{ .show_eof = false, .show_line_numbers = false },
         \\
         \\
     );
-    try case.run("", 0, 0, .{ .show_line_numbers = true },
+    try case("", 0, 0, .{ .show_line_numbers = true },
         \\1 | ␃
         \\
     );
 
     // .line_number_sep
     //
-    try case.run("hello", 0, 0, .{ .line_number_sep = "__" },
+    try case("hello", 0, 0, .{ .line_number_sep = "__" },
         \\1__hello␃
         \\
     );
-    try case.run("hello", 0, 0, .{ .line_number_sep = "" },
+    try case("hello", 0, 0, .{ .line_number_sep = "" },
         \\1hello␃
         \\
     );
 
     // .view_line_at
     //
-    try case.run("hello", 0, 0, .{ .view_len = 3, .view_line_at = .end },
+    try case("hello", 0, 0, .{ .view_len = 3, .view_line_at = .end },
         \\1 | ..llo␃
         \\
     );
-    try case.run("hello", 0, 0, .{ .view_len = 3, .view_line_at = .start },
+    try case("hello", 0, 0, .{ .view_len = 3, .view_line_at = .start },
         \\1 | hel..
         \\
     );
-    try case.run("hello", 2, 0, .{ .view_len = 3, .view_line_at = .cursor },
+    try case("hello", 2, 0, .{ .view_len = 3, .view_line_at = .cursor },
         \\1 | ..ell..
         \\
     );
 
     // manual line number specification
     //
-    try case.run("hello", 0, 2, .{},
+    try case("hello", 0, 2, .{},
         \\2 | hello␃
         \\
     );
@@ -126,23 +127,23 @@ test "+printLine" {
         \\
         //^23
     ;
-    try case.run(input, 0, 0, .{},
+    try case(input, 0, 0, .{},
         \\1 | first line
         \\
     );
-    try case.run(input, 5, 0, .{},
+    try case(input, 5, 0, .{},
         \\1 | first line
         \\
     );
-    try case.run(input, 12, 0, .{},
+    try case(input, 12, 0, .{},
         \\2 | second line
         \\
     );
-    try case.run(input, 22, 0, .{},
+    try case(input, 22, 0, .{},
         \\2 | second line
         \\
     );
-    try case.run(input, 100, 0, .{},
+    try case(input, 100, 0, .{},
         \\3 | ␃
         \\
     );
@@ -161,10 +162,11 @@ pub fn printLineWithCursor(
     comptime opt: LinePrinterOptions,
 ) !void {
     if (opt.view_len < 1) @compileError("view_length cannot be less than one");
-    const line, const line_index_pos = lr.readLine(input, index); // get current line
-    const number = if (line_number == 0) lr.countLineNum(input, index) else line_number;
-    const number_col_width = try printLineNumImpl(writer, number, opt);
-    const new_index_pos = try printLineImpl(writer, input, line, line_index_pos, opt);
+    const detect_line_num = if (line_number == 0) true else false;
+    const line = lr.readLine(input, index, detect_line_num);
+    const line_num = if (detect_line_num) line.line_num else line_number;
+    const number_col_width = try printLineNumImpl(writer, line_num, opt);
+    const new_index_pos = try printLineImpl(writer, input, line.item, line.index_rel_pos, opt);
     // force line view at cursor position
     comptime var opt_forced = opt;
     opt_forced.view_line_at = .cursor;
@@ -338,7 +340,7 @@ test "+printLineWithCursor" {
             try printLineWithCursor(out.writer(), input, index, 0, opt); // auto line number detection
             try t.expectEqualStrings(expect, out.slice());
         }
-    };
+    }.run;
 
     const input =
         \\line1
@@ -346,39 +348,39 @@ test "+printLineWithCursor" {
         \\
     ;
 
-    try case.run(input, 0, .{},
+    try case(input, 0, .{},
         \\1 | line1
         \\    ^
         \\
     );
-    try case.run(input, 0, .{ .view_len = 3 },
+    try case(input, 0, .{ .view_len = 3 },
         \\1 | lin..
         \\    ^
         \\
     );
-    try case.run(input, 4, .{},
+    try case(input, 4, .{},
         \\1 | line1
         \\        ^
         \\
     );
-    try case.run(input, 5, .{},
+    try case(input, 5, .{},
         \\1 | line1
         \\         ^ (newline)
         \\
     );
-    try case.run(input, 5, .{ .view_len = 3 },
+    try case(input, 5, .{ .view_len = 3 },
         \\1 | ..ne1
         \\         ^ (newline)
         \\
     );
 
-    try case.run(input, 6, .{},
+    try case(input, 6, .{},
         \\2 | line2
         \\    ^
         \\
     );
 
-    try case.run(input, 100, .{},
+    try case(input, 100, .{},
         \\3 | ␃
         \\    ^ (end of string)
         \\
