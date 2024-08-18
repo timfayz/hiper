@@ -12,7 +12,7 @@
 //! - readLine
 //! - readLinesForward
 //! - readLinesBackward
-//! - readLinesAround
+//! - readLines
 
 const std = @import("std");
 const Stack = @import("stack.zig");
@@ -522,12 +522,12 @@ const LinesAroundInfo = struct {
 /// * If `backward = 0` and `forward >= 1`, reads forward only, exactly as `readLinesForward`.
 /// * If `backward >= 1` and `forward = 0`, reads backward only, exactly as `readLinesBackward`.
 /// * If `backward >= 1` and `forward >= 1`, reads current line + *extra* lines backward/forward as specified.
-pub fn readLinesAround(
+pub fn readLines(
     buf: [][]const u8,
     input: [:0]const u8,
     index: usize,
-    amount: struct { backward: usize = 0, forward: usize = 0 },
     detect_line_num: bool,
+    amount: struct { backward: usize = 0, forward: usize = 0 },
 ) LinesAroundInfo {
     if (buf.len == 0 or (amount.backward == 0 and amount.forward == 0)) {
         return .{
@@ -598,10 +598,10 @@ test "+readLinesAround" {
             const expect_lines: [std.meta.fields(@TypeOf(expect)).len][]const u8 = expect;
 
             var buf: [32][]const u8 = undefined;
-            const actual = readLinesAround(&buf, input, index, .{
+            const actual = readLines(&buf, input, index, detect_ln, .{
                 .backward = backward,
                 .forward = forward,
-            }, detect_ln);
+            });
 
             try t.expectEqual(expect_lines.len, actual.items.len);
             for (expect_lines, actual.items) |e, a| try t.expectEqualStrings(e, a);
