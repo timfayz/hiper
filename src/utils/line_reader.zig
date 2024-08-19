@@ -2,11 +2,8 @@
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
 //! Public API:
-//! - indexOfLineEnd
 //! - indexOfLineStart
-//! - indexOfSliceEnd
-//! - indexOfSliceStart
-//! - reverseSlice
+//! - indexOfLineEnd
 //! - countIntLen
 //! - countLineNum
 //! - readLine
@@ -15,7 +12,8 @@
 //! - readLines
 
 const std = @import("std");
-const Stack = @import("stack.zig");
+const stack = @import("stack.zig");
+const slice = @import("slice.zig");
 
 /// Retrieves the ending position of a line.
 pub fn indexOfLineEnd(input: [:0]const u8, index: usize) usize {
@@ -103,75 +101,6 @@ test "+indexOfLineEnd/Start" {
     //                   1 3  6
 }
 
-/// Retrieves the ending position of a slice in source.
-pub inline fn indexOfSliceEnd(source: anytype, slice: anytype) usize {
-    return slice.ptr - source.ptr +| slice.len;
-}
-
-/// Retrieves the starting position of a slice in source.
-pub inline fn indexOfSliceStart(source: anytype, slice: anytype) usize {
-    return slice.ptr - source.ptr;
-}
-
-test "+indexOfSliceStart/End" {
-    const t = std.testing;
-
-    const in1 = "";
-    try t.expectEqual(0, indexOfSliceEnd(in1, in1[0..0]));
-    const in2 = "0123456789";
-    try t.expectEqual(0, indexOfSliceEnd(in2, in2[0..0]));
-    try t.expectEqual(7, indexOfSliceEnd(in2, in2[3..7]));
-    try t.expectEqual(9, indexOfSliceEnd(in2, in2[3..9]));
-    try t.expectEqual(10, indexOfSliceEnd(in2, in2[3..10]));
-
-    const in3 = "";
-    try t.expectEqual(0, indexOfSliceStart(in3, in3[0..0]));
-    const in4 = "0123456789";
-    try t.expectEqual(0, indexOfSliceStart(in4, in4[0..0]));
-    try t.expectEqual(3, indexOfSliceStart(in4, in4[3..7]));
-    try t.expectEqual(9, indexOfSliceStart(in4, in4[9..10]));
-    try t.expectEqual(10, indexOfSliceStart(in4, in4[10..10]));
-}
-
-/// Reverses slice items in-place.
-pub fn reverseSlice(slice: anytype) void {
-    comptime {
-        const T_info = @typeInfo(@TypeOf(slice));
-        if (T_info != .Pointer and T_info.Pointer.size != .Slice)
-            @compileError("argument must be a slice");
-    }
-    if (slice.len <= 1) return;
-    var i: usize = 0;
-    const swap_amt = slice.len / 2;
-    const last_item_idx = slice.len - 1;
-    while (i < swap_amt) : (i += 1) {
-        const tmp = slice[i];
-        slice[i] = slice[last_item_idx - i]; // swap lhs
-        slice[last_item_idx - i] = tmp; // swap rhs
-    }
-}
-
-test "+reverseInplace" {
-    const t = std.testing;
-
-    const case = struct {
-        pub fn run(input: []const u8, expect: []const u8) !void {
-            var buf: [32]u8 = undefined;
-            for (input, 0..) |byte, i| buf[i] = byte;
-            const actual = buf[0..input.len];
-            reverseSlice(actual);
-            try t.expectEqualStrings(expect, actual);
-        }
-    }.run;
-
-    try case("", "");
-    try case("1", "1");
-    try case("12", "21");
-    try case("123", "321");
-    try case("1234", "4321");
-    try case("12345", "54321");
-}
-
 /// Returns the number of digits in an integer.
 pub fn countIntLen(int: usize) usize {
     if (int == 0) return 1;
@@ -248,7 +177,7 @@ test "+countLineNum" {
 }
 
 const LineInfo = struct {
-    item: []const u8,
+    line: []const u8,
     index_rel_pos: usize,
     line_num: usize,
 };
@@ -272,7 +201,7 @@ pub fn readLine(
     const line_end = indexOfLineEndImpl(input, idx);
     const index_rel_pos = idx - line_start;
     return .{
-        .item = input[line_start..line_end],
+        .line = input[line_start..line_end],
         .index_rel_pos = index_rel_pos,
         .line_num = blk: {
             if (detect_line_num) {
@@ -297,7 +226,7 @@ test "+readLine" {
             },
         ) !void {
             const actual_line = readLine(input, index, detect_ln);
-            try t.expectEqualStrings(expect_line, actual_line.item);
+            try t.expectEqualStrings(expect_line, actual_line.line);
             try t.expectEqual(args.exp_pos, actual_line.index_rel_pos);
             try t.expectEqual(args.exp_ln, actual_line.line_num);
         }
@@ -324,7 +253,7 @@ test "+readLine" {
 
 /// Represents the result of a single-direction line reading.
 pub const LinesInfo = struct {
-    items: [][]const u8,
+    lines: [][]const u8,
     index_rel_pos: usize,
     line_num: usize,
 };
@@ -340,7 +269,7 @@ fn readLinesImpl(
 ) LinesInfo {
     if (buf.len == 0 or amount == 0)
         return .{
-            .items = buf[0..0],
+            .lines = buf[0..0],
             .index_rel_pos = 0,
             .line_num = 0,
         };
@@ -350,7 +279,7 @@ fn readLinesImpl(
     var line_end = indexOfLineEndImpl(input, idx);
     const index_rel_pos = idx - line_start;
 
-    var s = Stack.initFromSliceEmpty([]const u8, buf);
+    var s = stack.initFromSliceEmpty([]const u8, buf);
     s.push(input[line_start..line_end]) catch unreachable; // current line
 
     var i: usize = amount - 1;
@@ -371,15 +300,15 @@ fn readLinesImpl(
         }
         s.push(input[line_start..line_end]) catch unreachable;
     }
-    if (mode == .backward) reverseSlice(s.slice());
+    if (mode == .backward) slice.reverseSlice(s.slice());
 
     return .{
-        .items = s.slice(),
+        .lines = s.slice(),
         .index_rel_pos = index_rel_pos,
         .line_num = blk: {
             if (detect_line_num) {
                 const first_line = s.slice()[0];
-                const updated_index = indexOfSliceStart(input, first_line);
+                const updated_index = slice.indexOfSliceStart(input, first_line);
                 break :blk countLineNum(input, updated_index);
             } else break :blk 0;
         },
@@ -451,14 +380,14 @@ test "+readLinesForward/Backward" {
         ) !void {
             const expect_lines: [std.meta.fields(@TypeOf(expect)).len][]const u8 = expect;
 
-            var stack: [32][]const u8 = undefined;
+            var buf: [32][]const u8 = undefined;
             const actual_lines = switch (mode) {
-                .frwd => readLinesForward(&stack, input, index, amount, detect_ln),
-                .back => readLinesBackward(&stack, input, index, amount, detect_ln),
+                .frwd => readLinesForward(&buf, input, index, amount, detect_ln),
+                .back => readLinesBackward(&buf, input, index, amount, detect_ln),
             };
 
-            try t.expectEqual(expect_lines.len, actual_lines.items.len);
-            for (expect_lines, actual_lines.items) |e, a| try t.expectEqualStrings(e, a);
+            try t.expectEqual(expect_lines.len, actual_lines.lines.len);
+            for (expect_lines, actual_lines.lines) |e, a| try t.expectEqualStrings(e, a);
             try t.expectEqual(args.exp_pos, actual_lines.index_rel_pos);
             try t.expectEqual(args.exp_ln, actual_lines.line_num);
         }
@@ -500,7 +429,7 @@ test "+readLinesForward/Backward" {
 
 /// Represents the result of a bi-directional line reading.
 const LinesAroundInfo = struct {
-    items: [][]const u8,
+    lines: [][]const u8,
     curr_line_pos: usize,
     index_rel_pos: usize,
     line_num: usize,
@@ -531,53 +460,52 @@ pub fn readLines(
 ) LinesAroundInfo {
     if (buf.len == 0 or (amount.backward == 0 and amount.forward == 0)) {
         return .{
-            .items = buf[0..0],
+            .lines = buf[0..0],
             .curr_line_pos = 0,
             .index_rel_pos = 0,
             .line_num = 0,
         };
     } else if (amount.backward == 0) {
-        const lines = readLinesForward(buf, input, index, amount.forward, detect_line_num);
+        const info = readLinesForward(buf, input, index, amount.forward, detect_line_num);
         return .{
-            .items = lines.items,
+            .lines = info.lines,
             .curr_line_pos = 0,
-            .index_rel_pos = lines.index_rel_pos,
-            .line_num = lines.line_num,
+            .index_rel_pos = info.index_rel_pos,
+            .line_num = info.line_num,
         };
     } else if (amount.forward == 0) {
-        const lines = readLinesBackward(buf, input, index, amount.backward, detect_line_num);
+        const info = readLinesBackward(buf, input, index, amount.backward, detect_line_num);
         return .{
-            .items = lines.items,
-            .curr_line_pos = lines.items.len -| 1,
-            .index_rel_pos = lines.index_rel_pos,
-            .line_num = lines.line_num,
+            .lines = info.lines,
+            .curr_line_pos = info.lines.len -| 1,
+            .index_rel_pos = info.index_rel_pos,
+            .line_num = info.line_num,
         };
     } else { // bi-directional read
-        const lines = readLinesBackward(buf, input, index, amount.backward + 1, detect_line_num);
-        const l_backward = lines.items;
-        const curr_line = l_backward[l_backward.len -| 1];
+        const backward = readLinesBackward(buf, input, index, amount.backward + 1, detect_line_num);
+        const curr_line = backward.lines[backward.lines.len -| 1];
 
         const lines_merged = blk: {
-            const next_index = indexOfSliceEnd(input, curr_line) + 1;
+            const next_index = slice.indexOfSliceEnd(input, curr_line) + 1;
             if (next_index < input.len) {
-                const l_forward = readLinesForward(
-                    buf[l_backward.len..],
+                const forward = readLinesForward(
+                    buf[backward.lines.len..],
                     input,
                     next_index,
                     amount.forward,
                     false,
                 );
-                break :blk buf[0 .. l_backward.len + l_forward.items.len];
+                break :blk buf[0 .. backward.lines.len + forward.lines.len];
             } else {
-                break :blk l_backward;
+                break :blk backward.lines;
             }
         };
 
         return .{
-            .items = lines_merged,
-            .curr_line_pos = lines.items.len - 1,
-            .index_rel_pos = lines.index_rel_pos,
-            .line_num = lines.line_num,
+            .lines = lines_merged,
+            .curr_line_pos = backward.lines.len - 1,
+            .index_rel_pos = backward.index_rel_pos,
+            .line_num = backward.line_num,
         };
     }
 }
@@ -603,8 +531,8 @@ test "+readLinesAround" {
                 .forward = forward,
             });
 
-            try t.expectEqual(expect_lines.len, actual.items.len);
-            for (expect_lines, actual.items) |e, a| try t.expectEqualStrings(e, a);
+            try t.expectEqual(expect_lines.len, actual.lines.len);
+            for (expect_lines, actual.lines) |e, a| try t.expectEqualStrings(e, a);
             try t.expectEqual(args.exp_clp, actual.curr_line_pos);
             try t.expectEqual(args.exp_pos, actual.index_rel_pos);
             try t.expectEqual(args.exp_pos, actual.index_rel_pos);

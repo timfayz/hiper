@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const lr = @import("line_reader.zig");
+const slice = @import("slice.zig");
 
 /// LinePrinter options.
 pub const LinePrinterOptions = struct {
@@ -35,10 +36,10 @@ pub fn printLine(
 ) !void {
     const detect_line_num = if (line_number == 0) true else false;
     if (opt.view_len < 1) @compileError("view_length cannot be less than one");
-    const line = lr.readLine(input, index, detect_line_num);
-    const line_num = if (detect_line_num) line.line_num else line_number;
-    _ = try printLineNumImpl(writer, line_num, opt);
-    _ = try printLineImpl(writer, input, line.item, line.index_rel_pos, opt);
+    const info = lr.readLine(input, index, detect_line_num);
+    const line_num = if (detect_line_num) info.line_num else line_number;
+    _ = try printLineNumImpl(writer, line_num, 0, opt);
+    _ = try printLineImpl(writer, input, info.line, info.index_rel_pos, opt);
 }
 
 test "+printLine" {
@@ -163,10 +164,12 @@ pub fn printLineWithCursor(
 ) !void {
     if (opt.view_len < 1) @compileError("view_length cannot be less than one");
     const detect_line_num = if (line_number == 0) true else false;
-    const line = lr.readLine(input, index, detect_line_num);
-    const line_num = if (detect_line_num) line.line_num else line_number;
-    const number_col_width = try printLineNumImpl(writer, line_num, opt);
-    const new_index_pos = try printLineImpl(writer, input, line.item, line.index_rel_pos, opt);
+    const info = lr.readLine(input, index, detect_line_num);
+    const line_num = if (detect_line_num) info.line_num else line_number;
+
+    const number_col_width = try printLineNumImpl(writer, line_num, 0, opt);
+    const new_index_pos = try printLineImpl(writer, input, info.line, info.index_rel_pos, opt);
+
     // force line view at cursor position
     comptime var opt_forced = opt;
     opt_forced.view_line_at = .cursor;
@@ -177,11 +180,12 @@ pub fn printLineWithCursor(
 inline fn printLineNumImpl(
     writer: anytype,
     line_number: usize,
+    padding: usize,
     comptime opt: LinePrinterOptions,
 ) !usize {
     if (opt.show_line_numbers) {
-        try writer.print("{d}" ++ opt.line_number_sep, .{line_number});
-        return lr.countIntLen(line_number) + opt.line_number_sep.len;
+        try writer.print("{d: <[1]}" ++ opt.line_number_sep, .{ line_number, padding });
+        return lr.countIntLen(line_number) + padding + opt.line_number_sep.len;
     }
     return 0;
 }
@@ -210,14 +214,14 @@ inline fn printLineImpl(
                 try writer.writeAll(line[view_start..view_end]);
                 if (view_end < line.len) {
                     try writer.writeAll(opt.skip_symbol);
-                } else if (opt.show_eof and lr.indexOfSliceEnd(input, line) >= input.len) {
+                } else if (opt.show_eof and slice.indexOfSliceEnd(input, line) >= input.len) {
                     try writer.writeAll("␃");
                 }
             },
             .end => {
                 try writer.writeAll(opt.skip_symbol);
                 try writer.writeAll(line[line.len - opt.view_len ..]);
-                if (opt.show_eof and lr.indexOfSliceEnd(input, line) >= input.len)
+                if (opt.show_eof and slice.indexOfSliceEnd(input, line) >= input.len)
                     try writer.writeAll("␃");
             },
             .start => {
@@ -229,7 +233,7 @@ inline fn printLineImpl(
     // line fits the entire view length
     else {
         try writer.writeAll(line);
-        if (opt.show_eof and lr.indexOfSliceEnd(input, line) >= input.len)
+        if (opt.show_eof and slice.indexOfSliceEnd(input, line) >= input.len)
             try writer.writeAll("␃");
     }
     try writer.writeByte('\n');
