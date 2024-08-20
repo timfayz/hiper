@@ -29,7 +29,7 @@ pub const LinePrinterOptions = struct {
 /// options.
 pub fn printLine(
     writer: anytype,
-    input: [:0]const u8,
+    input: []const u8,
     index: usize,
     line_number: usize,
     comptime opt: LinePrinterOptions,
@@ -39,7 +39,7 @@ pub fn printLine(
     const info = lr.readLine(input, index, detect_line_num);
     const line_num = if (detect_line_num) info.line_num else line_number;
     _ = try printLineNumImpl(writer, line_num, 0, opt);
-    _ = try printLineImpl(writer, input, info.line, info.index_rel_pos, opt);
+    _ = try printLineImpl(writer, input, info.line, info.index_pos, opt);
 }
 
 test "+printLine" {
@@ -47,7 +47,7 @@ test "+printLine" {
 
     const case = struct {
         pub fn run(
-            input: [:0]const u8,
+            input: []const u8,
             index: usize,
             line_number: usize,
             comptime opt: LinePrinterOptions,
@@ -157,7 +157,7 @@ test "+printLine" {
 /// hint. See `LineReaderOptions` for additional options.
 pub fn printLineWithCursor(
     writer: anytype,
-    input: [:0]const u8,
+    input: []const u8,
     index: usize,
     line_number: usize,
     comptime opt: LinePrinterOptions,
@@ -168,7 +168,7 @@ pub fn printLineWithCursor(
     const line_num = if (detect_line_num) info.line_num else line_number;
 
     const number_col_width = try printLineNumImpl(writer, line_num, 0, opt);
-    const new_index_pos = try printLineImpl(writer, input, info.line, info.index_rel_pos, opt);
+    const new_index_pos = try printLineImpl(writer, input, info.line, info.index_pos, opt);
 
     // force line view at cursor position
     comptime var opt_forced = opt;
@@ -193,7 +193,7 @@ inline fn printLineNumImpl(
 /// Implementation function. Prints `line` and recalculate `line_index_pos`.
 inline fn printLineImpl(
     writer: anytype,
-    input: [:0]const u8,
+    input: []const u8,
     line: []const u8,
     line_index_pos: usize,
     comptime opt: LinePrinterOptions,
@@ -245,7 +245,7 @@ test "+printLineImpl" {
 
     const run = struct {
         fn case(
-            line: [:0]const u8,
+            line: []const u8,
             line_index_pos: usize,
             expect: []const u8,
             expect_index_pos: usize,
@@ -297,7 +297,7 @@ test "+printLineImpl" {
 /// Implementation function. Prints a cursor.
 fn printCursorImpl(
     writer: anytype,
-    input: [:0]const u8,
+    input: []const u8,
     index: usize,
     line_index_pos: usize,
     comptime opt: LinePrinterOptions,
@@ -313,7 +313,7 @@ fn printCursorImpl(
 
 /// Implementation function. Prints a cursor hint.
 fn cursorHintImpl(
-    input: [:0]const u8,
+    input: []const u8,
     index: usize,
     comptime opt: LinePrinterOptions,
 ) []const u8 {
@@ -335,7 +335,7 @@ test "+printLineWithCursor" {
 
     const case = struct {
         pub fn run(
-            input: [:0]const u8,
+            input: []const u8,
             index: usize,
             comptime opt: LinePrinterOptions,
             expect: []const u8,

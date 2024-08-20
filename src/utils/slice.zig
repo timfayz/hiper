@@ -112,10 +112,7 @@ test "+sliceStart/EndSeg" {
 }
 
 fn SliceSegInfo(T: type) type {
-    return struct {
-        slice: T,
-        index_rel_pos: usize,
-    };
+    return struct { slice: T, index_pos: usize };
 }
 
 /// Returns a segment of `seg_len` from the slice centered around the `index`
@@ -131,7 +128,7 @@ pub fn sliceSeg(
     },
 ) SliceSegInfo(T) {
     if (seg_len > slice.len)
-        return .{ .slice = slice, .index_rel_pos = index };
+        return .{ .slice = slice, .index_pos = index };
 
     const extra: usize =
         if (seg_len & 1 == 0 and // seg_len is even
@@ -144,7 +141,7 @@ pub fn sliceSeg(
 
     return .{
         .slice = slice[view_start..view_end],
-        .index_rel_pos = index - view_start,
+        .index_pos = index - view_start,
     };
 }
 
@@ -166,7 +163,7 @@ test "+sliceSeg" {
                 .even_rshift = args.even_rshift,
             });
             try t.expectEqualStrings(expect_line, info.slice);
-            try t.expectEqual(args.exp_pos, info.index_rel_pos);
+            try t.expectEqual(args.exp_pos, info.index_pos);
         }
     }.run;
 
