@@ -25,8 +25,8 @@ pub const LinePrinterOptions = struct {
 
 /// Reads a line from the input at the specified index and writes it to the
 /// writer. If `line_number` is 0, it is automatically detected; otherwise, the
-/// specified number is used as is. See `LineReaderOptions` for additional
-/// options.
+/// specified number is used as is. If `index > input.len`, no line will be read
+/// or written. See `LineReaderOptions` for additional options.
 pub fn printLine(
     writer: anytype,
     input: []const u8,
@@ -37,9 +37,11 @@ pub fn printLine(
     const detect_line_num = if (line_number == 0) true else false;
     if (opt.view_len < 1) @compileError("view_length cannot be less than one");
     const info = lr.readLine(input, index, detect_line_num);
-    const line_num = if (detect_line_num) info.line_num else line_number;
-    _ = try printLineNumImpl(writer, line_num, 0, opt);
-    _ = try printLineImpl(writer, input, info.line, info.index_pos, opt);
+    if (info.line) |line| {
+        const line_num = if (detect_line_num) info.line_num else line_number;
+        _ = try printLineNumImpl(writer, line_num, 0, opt);
+        _ = try printLineImpl(writer, input, line, info.index_pos, opt);
+    }
 }
 
 test "+printLine" {
@@ -145,16 +147,16 @@ test "+printLine" {
         \\
     );
     try case(input, 100, 0, .{},
-        \\3 | ␃
         \\
     );
 }
 
 /// Reads a line from the input at the specified index and writes it to the
 /// writer. If `line_number` is 0, it is automatically detected; otherwise, the
-/// specified number is used as is. In addition to printing the line, this
-/// function provides a cursor at the specified position with an optional
-/// hint. See `LineReaderOptions` for additional options.
+/// specified number is used as is. If `index > input.len`, no line will be read
+/// or written. In addition to printing the line, this function provides a cursor
+/// at the specified position with an optional hint. See `LineReaderOptions` for
+/// additional options.
 pub fn printLineWithCursor(
     writer: anytype,
     input: []const u8,
@@ -165,18 +167,21 @@ pub fn printLineWithCursor(
     if (opt.view_len < 1) @compileError("view_length cannot be less than one");
     const detect_line_num = if (line_number == 0) true else false;
     const info = lr.readLine(input, index, detect_line_num);
-    const line_num = if (detect_line_num) info.line_num else line_number;
+    if (info.line) |line| {
+        const line_num = if (detect_line_num) info.line_num else line_number;
 
-    const number_col_width = try printLineNumImpl(writer, line_num, 0, opt);
-    const new_index_pos = try printLineImpl(writer, input, info.line, info.index_pos, opt);
+        const number_col_width = try printLineNumImpl(writer, line_num, 0, opt);
+        const new_index_pos = try printLineImpl(writer, input, line, info.index_pos, opt);
 
-    // force line view at cursor position
-    comptime var opt_forced = opt;
-    opt_forced.view_line_at = .cursor;
-    try printCursorImpl(writer, input, index, number_col_width + new_index_pos, opt_forced);
+        // force line view at cursor position
+        comptime var opt_forced = opt;
+        opt_forced.view_line_at = .cursor;
+        try printCursorImpl(writer, input, index, number_col_width + new_index_pos, opt_forced);
+    }
 }
 
-/// Implementation function. Prints `line_number`.
+/// Implementation function. Prints `line_number` and returns `line_number.len +
+/// padding + opt.line_number_sep.len`
 inline fn printLineNumImpl(
     writer: anytype,
     line_number: usize,
@@ -190,7 +195,8 @@ inline fn printLineNumImpl(
     return 0;
 }
 
-/// Implementation function. Prints `line` and recalculate `line_index_pos`.
+/// Implementation function. Prints `line` and returns recalculated
+/// `line_index_pos`.
 inline fn printLineImpl(
     writer: anytype,
     input: []const u8,
@@ -383,10 +389,12 @@ test "+printLineWithCursor" {
         \\    ^
         \\
     );
-
-    try case(input, 100, .{},
+    try case(input, 12, .{},
         \\3 | ␃
         \\    ^ (end of string)
+        \\
+    );
+    try case(input, 100, .{},
         \\
     );
 }

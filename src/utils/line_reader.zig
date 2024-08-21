@@ -13,78 +13,78 @@ const std = @import("std");
 const stack = @import("stack.zig");
 const slice = @import("slice.zig");
 
-/// Retrieves the ending position of a line. If `index > input.len`, returns
-/// `input.len`.
+/// Retrieves the ending position of a line.
 pub fn indexOfLineEnd(input: []const u8, index: usize) usize {
     if (index >= input.len or input.len == 0) return input.len;
-    var i: usize = index;
-    while (i < input.len) : (i += 1) {
-        if (input[i] == '\n') break;
+    var end: usize = index;
+    while (end < input.len) : (end += 1) {
+        if (input[end] == '\n') break;
     }
-    return i;
+    return end;
 }
 
-/// Retrieves the starting position of a line. If `index > input.len`, returns
-/// `input.len`.
+/// Retrieves the starting position of a line.
 pub fn indexOfLineStart(input: []const u8, index: usize) usize {
-    if (index >= input.len or input.len == 0) return input.len;
-    var i: usize = index;
-    if (i == 0 and input[i] == '\n') return 0;
-    if (input[i] == '\n') i -|= 1; // step back from line end
-    while (true) : (i -= 1) {
-        if (input[i] == '\n') {
-            i += 1;
+    if (input.len == 0 or index == 0) return 0;
+    var start: usize = if (index > input.len) input.len else index;
+    // step back from end
+    if (start == input.len or input[start] == '\n') start -|= 1;
+    while (true) : (start -= 1) {
+        if (input[start] == '\n') {
+            start += 1;
             break;
         }
-        if (i == 0) break;
+        if (start == 0) break;
     }
-    return i;
+    return start;
 }
 
 test "+indexOfLineEnd/Start" {
     const t = std.testing;
 
-    const case = struct {
-        pub fn start(input: []const u8, args: struct { index: usize, expect: usize }) !void {
-            try t.expectEqual(args.expect, indexOfLineStart(input, args.index));
+    const lineStart = struct {
+        pub fn run(input: []const u8, args: struct { idx: usize, expect: usize }) !void {
+            try t.expectEqual(args.expect, indexOfLineStart(input, args.idx));
         }
+    }.run;
 
-        pub fn end__(input: []const u8, args: struct { index: usize, expect: usize }) !void {
-            try t.expectEqual(args.expect, indexOfLineEnd(input, args.index));
+    const lineEnd__ = struct {
+        pub fn lineEnd__(input: []const u8, args: struct { idx: usize, expect: usize }) !void {
+            try t.expectEqual(args.expect, indexOfLineEnd(input, args.idx));
         }
-    };
+    }.lineEnd__;
 
-    try case.start("", .{ .index = 0, .expect = 0 });
-    try case.end__("", .{ .index = 0, .expect = 0 });
+    try lineStart("", .{ .idx = 0, .expect = 0 });
+    try lineEnd__("", .{ .idx = 0, .expect = 0 });
 
-    try case.start("", .{ .index = 100, .expect = 0 });
-    try case.end__("", .{ .index = 100, .expect = 0 });
+    try lineStart("", .{ .idx = 100, .expect = 0 });
+    try lineEnd__("", .{ .idx = 100, .expect = 0 });
 
-    try case.start("\n", .{ .index = 0, .expect = 0 });
-    try case.end__("\n", .{ .index = 0, .expect = 0 });
-    //              ^
-    try case.start("\n\n", .{ .index = 0, .expect = 0 });
-    try case.end__("\n\n", .{ .index = 0, .expect = 0 });
-    //              ^
-    try case.start("\n\n", .{ .index = 1, .expect = 1 });
-    try case.end__("\n\n", .{ .index = 1, .expect = 1 });
-    //                ^
-    try case.start("\n\n\n", .{ .index = 1, .expect = 1 });
-    try case.end__("\n\n\n", .{ .index = 1, .expect = 1 });
-    //                ^
-    try case.start("line", .{ .index = 2, .expect = 0 });
-    try case.end__("line", .{ .index = 2, .expect = 4 });
-    //                ^
-    try case.start("line", .{ .index = 4, .expect = 4 });
-    try case.end__("line", .{ .index = 6, .expect = 4 });
-    //                   ^
-    try case.start("\nc", .{ .index = 1, .expect = 1 });
-    try case.end__("\nc", .{ .index = 1, .expect = 2 });
-    //                ^
-    try case.start("\nline2\n", .{ .index = 3, .expect = 1 });
-    try case.end__("\nline2\n", .{ .index = 3, .expect = 6 });
-    //                ^ ^  ^
-    //                1 3  6
+    try lineStart("\n", .{ .idx = 0, .expect = 0 });
+    try lineEnd__("\n", .{ .idx = 0, .expect = 0 });
+    //             ^
+    try lineStart("\n\n", .{ .idx = 0, .expect = 0 });
+    try lineEnd__("\n\n", .{ .idx = 0, .expect = 0 });
+    //             ^
+    try lineStart("\n\n", .{ .idx = 1, .expect = 1 });
+    try lineEnd__("\n\n", .{ .idx = 1, .expect = 1 });
+    //               ^
+    try lineStart("\n\n\n", .{ .idx = 1, .expect = 1 });
+    try lineEnd__("\n\n\n", .{ .idx = 1, .expect = 1 });
+    //               ^
+    try lineStart("line", .{ .idx = 2, .expect = 0 });
+    try lineEnd__("line", .{ .idx = 2, .expect = 4 });
+    //               ^
+    try lineStart("line", .{ .idx = 6, .expect = 0 });
+    try lineEnd__("line", .{ .idx = 6, .expect = 4 });
+    //                  ^+
+    try lineStart("\nc", .{ .idx = 1, .expect = 1 });
+    try lineEnd__("\nc", .{ .idx = 1, .expect = 2 });
+    //               ^
+    try lineStart("\nline2\n", .{ .idx = 3, .expect = 1 });
+    try lineEnd__("\nline2\n", .{ .idx = 3, .expect = 6 });
+    //               ^ ^  ^
+    //               1 3  6
 }
 
 /// Returns the number of digits in an integer.
@@ -158,7 +158,7 @@ test "+countLineNum" {
 }
 
 const LineInfo = struct {
-    line: []const u8,
+    line: ?[]const u8,
     index_pos: usize,
     line_num: usize,
 };
@@ -177,10 +177,11 @@ pub fn readLine(
     index: usize,
     detect_line_num: bool,
 ) LineInfo {
-    const idx = if (index > input.len) input.len else index; // normalize
-    const line_start = indexOfLineStart(input, idx);
-    const line_end = indexOfLineEnd(input, idx);
-    const index_pos = idx - line_start;
+    if (index > input.len)
+        return .{ .line = null, .index_pos = 0, .line_num = 0 };
+    const line_start = indexOfLineStart(input, index);
+    const line_end = indexOfLineEnd(input, index);
+    const index_pos = index - line_start;
     return .{
         .line = input[line_start..line_end],
         .index_pos = index_pos,
@@ -200,14 +201,17 @@ test "+readLine" {
             input: []const u8,
             index: usize,
             detect_line_num: bool,
-            expect_line: []const u8,
+            expect_line: ?[]const u8,
             expect: struct {
                 pos: usize,
                 ln: usize,
             },
         ) !void {
             const actual_line = readLine(input, index, detect_line_num);
-            try t.expectEqualStrings(expect_line, actual_line.line);
+            if (expect_line != null and actual_line.line != null)
+                try t.expectEqualStrings(expect_line.?, actual_line.line.?)
+            else
+                try t.expectEqual(expect_line, actual_line.line);
             try t.expectEqual(expect.pos, actual_line.index_pos);
             try t.expectEqual(expect.ln, actual_line.line_num);
         }
@@ -216,24 +220,24 @@ test "+readLine" {
     //      |input| |idx| |detect_ln| |expect_line| |expect items|
     try case("", 0, false, "", .{ .pos = 0, .ln = 0 });
     try case("", 0, true, "", .{ .pos = 0, .ln = 1 });
+    try case("", 100, false, null, .{ .pos = 0, .ln = 0 });
+
     try case("\n", 0, true, "", .{ .pos = 0, .ln = 1 });
     //        ^
     try case("\n", 1, true, "", .{ .pos = 0, .ln = 2 });
     //          ^
-    try case("\n", 100, true, "", .{ .pos = 0, .ln = 2 });
+    try case("\none", 4, true, "one", .{ .pos = 3, .ln = 2 });
+    //             ^
+    try case("\n", 100, true, null, .{ .pos = 0, .ln = 0 });
     //           ^+
-    try case("one", 100, true, "", .{ .pos = 0, .ln = 1 });
+    try case("one", 100, true, null, .{ .pos = 0, .ln = 0 });
     //            ^+
     try case("one", 0, false, "one", .{ .pos = 0, .ln = 0 });
     //        ^
-    try case("one", 1, true, "one", .{ .pos = 1, .ln = 1 });
-    //         ^
     try case("one", 2, true, "one", .{ .pos = 2, .ln = 1 });
     //          ^
     try case("one\n", 0, false, "one", .{ .pos = 0, .ln = 0 });
     //        ^
-    try case("one\n", 1, true, "one", .{ .pos = 1, .ln = 1 });
-    //         ^
     try case("one\n", 2, true, "one", .{ .pos = 2, .ln = 1 });
     //          ^
     try case("one\n", 3, true, "one", .{ .pos = 3, .ln = 1 });
@@ -263,7 +267,7 @@ fn readLinesImpl(
     amount: usize,
     detect_line_num: bool,
 ) LinesInfo {
-    if (index >= input.len or buf.len == 0 or amount == 0)
+    if (index > input.len or buf.len == 0 or amount == 0)
         return .{
             .lines = buf[0..0],
             .first_line_num = 0,
@@ -324,6 +328,7 @@ test "+readLinesImpl" {
             detect_ln: bool,
             expect_ln: anytype,
             expect: struct {
+                clp: usize,
                 pos: usize,
                 fln: usize,
             },
@@ -334,6 +339,7 @@ test "+readLinesImpl" {
             const expect_lines: [std.meta.fields(@TypeOf(expect_ln)).len][]const u8 = expect_ln;
             try t.expectEqual(expect_lines.len, actual_lines.lines.len);
             for (expect_lines, actual_lines.lines) |e, a| try t.expectEqualStrings(e, a);
+            try t.expectEqual(expect.clp, actual_lines.curr_line_pos);
             try t.expectEqual(expect.pos, actual_lines.index_pos);
             try t.expectEqual(expect.fln, actual_lines.first_line_num);
         }
@@ -343,36 +349,43 @@ test "+readLinesImpl" {
     //             ^0   ^5      ^12    ^18
     //                      ^8(rel_pos:2)
 
+    // forward
     //                      |idx| |amt| |detect_ln| |expect items|
-    try case(.forward, input, 0, 0, false, .{}, .{ .pos = 0, .fln = 0 });
-    try case(.forward, input, 0, 1, false, .{"first"}, .{ .pos = 0, .fln = 0 });
-    try case(.forward, input, 3, 1, false, .{"first"}, .{ .pos = 3, .fln = 0 });
-    try case(.forward, input, 5, 1, false, .{"first"}, .{ .pos = 5, .fln = 0 });
-    try case(.forward, input, 6, 1, false, .{"second"}, .{ .pos = 0, .fln = 0 });
-    try case(.forward, input, 12, 1, false, .{"second"}, .{ .pos = 6, .fln = 0 });
-    try case(.forward, input, 8, 2, false, .{ "second", "third" }, .{ .pos = 2, .fln = 0 });
-    try case(.forward, input, 17, 2, false, .{ "third", "" }, .{ .pos = 4, .fln = 0 });
-    try case(.forward, input, 100, 2, false, .{}, .{ .pos = 0, .fln = 0 });
+    try case(.forward, input, 0, 0, false, .{}, .{ .pos = 0, .clp = 0, .fln = 0 });
+    try case(.forward, input, 0, 1, false, .{"first"}, .{ .pos = 0, .clp = 0, .fln = 0 });
+    try case(.forward, input, 3, 1, false, .{"first"}, .{ .pos = 3, .clp = 0, .fln = 0 });
+    try case(.forward, input, 5, 1, false, .{"first"}, .{ .pos = 5, .clp = 0, .fln = 0 });
+    try case(.forward, input, 6, 1, false, .{"second"}, .{ .pos = 0, .clp = 0, .fln = 0 });
+    try case(.forward, input, 12, 1, false, .{"second"}, .{ .pos = 6, .clp = 0, .fln = 0 });
+    try case(.forward, input, 8, 2, false, .{ "second", "third" }, .{ .pos = 2, .clp = 0, .fln = 0 });
+    try case(.forward, input, 17, 2, false, .{ "third", "" }, .{ .pos = 4, .clp = 0, .fln = 0 });
+    // edge cases
+    try case(.forward, input, 19, 2, false, .{""}, .{ .pos = 0, .clp = 0, .fln = 0 });
+    try case(.forward, input, 100, 2, false, .{}, .{ .pos = 0, .clp = 0, .fln = 0 });
 
-    try case(.backward, input, 0, 0, false, .{}, .{ .pos = 0, .fln = 0 });
-    try case(.backward, input, 0, 1, false, .{"first"}, .{ .pos = 0, .fln = 0 });
-    try case(.backward, input, 3, 1, false, .{"first"}, .{ .pos = 3, .fln = 0 });
-    try case(.backward, input, 5, 1, false, .{"first"}, .{ .pos = 5, .fln = 0 });
-    try case(.backward, input, 6, 1, false, .{"second"}, .{ .pos = 0, .fln = 0 });
-    try case(.backward, input, 12, 1, false, .{"second"}, .{ .pos = 6, .fln = 0 });
-    try case(.backward, input, 8, 2, false, .{ "first", "second" }, .{ .pos = 2, .fln = 0 });
-    try case(.backward, input, 17, 2, false, .{ "second", "third" }, .{ .pos = 4, .fln = 0 });
+    // backward
+    //
+    try case(.backward, input, 0, 0, false, .{}, .{ .pos = 0, .clp = 0, .fln = 0 });
+    try case(.backward, input, 0, 1, false, .{"first"}, .{ .pos = 0, .clp = 0, .fln = 0 });
+    try case(.backward, input, 3, 1, false, .{"first"}, .{ .pos = 3, .clp = 0, .fln = 0 });
+    try case(.backward, input, 5, 1, false, .{"first"}, .{ .pos = 5, .clp = 0, .fln = 0 });
+    try case(.backward, input, 6, 1, false, .{"second"}, .{ .pos = 0, .clp = 0, .fln = 0 });
+    try case(.backward, input, 12, 1, false, .{"second"}, .{ .pos = 6, .clp = 0, .fln = 0 });
+    try case(.backward, input, 8, 2, false, .{ "first", "second" }, .{ .pos = 2, .clp = 1, .fln = 0 });
+    try case(.backward, input, 17, 2, false, .{ "second", "third" }, .{ .pos = 4, .clp = 1, .fln = 0 });
 
     // automatic line number detection
-    try case(.forward, input, 0, 0, true, .{}, .{ .pos = 0, .fln = 0 });
-    try case(.forward, input, 5, 1, true, .{"first"}, .{ .pos = 5, .fln = 1 });
-    try case(.forward, input, 6, 1, true, .{"second"}, .{ .pos = 0, .fln = 2 });
-    try case(.forward, input, 8, 2, true, .{ "second", "third" }, .{ .pos = 2, .fln = 2 });
+    try case(.forward, input, 0, 0, true, .{}, .{ .pos = 0, .clp = 0, .fln = 0 });
+    try case(.forward, input, 5, 1, true, .{"first"}, .{ .pos = 5, .clp = 0, .fln = 1 });
+    try case(.forward, input, 6, 1, true, .{"second"}, .{ .pos = 0, .clp = 0, .fln = 2 });
+    try case(.forward, input, 8, 2, true, .{ "second", "third" }, .{ .pos = 2, .clp = 0, .fln = 2 });
+    try case(.forward, input, 19, 2, true, .{""}, .{ .pos = 0, .clp = 0, .fln = 4 });
 
-    try case(.backward, input, 0, 0, true, .{}, .{ .pos = 0, .fln = 0 });
-    try case(.backward, input, 6, 1, true, .{"second"}, .{ .pos = 0, .fln = 2 });
-    try case(.backward, input, 8, 2, true, .{ "first", "second" }, .{ .pos = 2, .fln = 1 });
-    try case(.backward, input, 17, 2, true, .{ "second", "third" }, .{ .pos = 4, .fln = 2 });
+    try case(.backward, input, 0, 0, true, .{}, .{ .pos = 0, .clp = 0, .fln = 0 });
+    try case(.backward, input, 6, 1, true, .{"second"}, .{ .pos = 0, .clp = 0, .fln = 2 });
+    try case(.backward, input, 8, 2, true, .{ "first", "second" }, .{ .pos = 2, .clp = 1, .fln = 1 });
+    try case(.backward, input, 17, 2, true, .{ "second", "third" }, .{ .pos = 4, .clp = 1, .fln = 2 });
+    try case(.backward, input, 19, 2, true, .{ "third", "" }, .{ .pos = 0, .clp = 1, .fln = 3 });
 }
 
 pub const ReadMode = union(enum) {
@@ -445,11 +458,12 @@ test "+readLines" {
         }
     }.run;
 
-    const input = "one\ntwo\nthree\nfour\nfive";
-    //             ^0 ^3   ^7     ^13   ^18  ^22
+    const input = "one\ntwo\nthree\nfour\n";
+    //             ^0 ^3   ^7     ^13   ^18
 
     try case(input, 0, false, .{ .bi = .{ .backward = 0, .forward = 0 } }, .{}, .{ .pos = 0, .clp = 0, .fln = 0 });
     try case(input, 100, false, .{ .bi = .{ .backward = 0, .forward = 0 } }, .{}, .{ .pos = 0, .clp = 0, .fln = 0 });
+    try case(input, 100, true, .{ .bi = .{ .backward = 0, .forward = 0 } }, .{}, .{ .pos = 0, .clp = 0, .fln = 0 });
     try case(input, 100, false, .{ .bi = .{ .backward = 10, .forward = 10 } }, .{}, .{ .pos = 0, .clp = 0, .fln = 0 });
 
     try case(input, 8, false, .{ .bi = .{ .backward = 1, .forward = 0 } }, .{"three"}, .{ .pos = 0, .clp = 0, .fln = 0 });
@@ -464,10 +478,10 @@ test "+readLines" {
     try case(input, 12, true, .{ .bi = .{ .backward = 2, .forward = 0 } }, .{ "two", "three" }, .{ .pos = 4, .clp = 1, .fln = 2 });
     try case(input, 12, true, .{ .bi = .{ .backward = 0, .forward = 2 } }, .{ "three", "four" }, .{ .pos = 4, .clp = 0, .fln = 3 });
 
-    try case(input, 22, true, .{
+    try case(input, 19, true, .{
         .bi = .{ .backward = 5, .forward = 5 },
-    }, .{ "one", "two", "three", "four", "five" }, .{ .pos = 3, .clp = 4, .fln = 1 });
+    }, .{ "one", "two", "three", "four", "" }, .{ .pos = 0, .clp = 4, .fln = 1 });
     try case(input, 0, true, .{
         .bi = .{ .backward = 5, .forward = 5 },
-    }, .{ "one", "two", "three", "four", "five" }, .{ .pos = 0, .clp = 0, .fln = 1 });
+    }, .{ "one", "two", "three", "four", "" }, .{ .pos = 0, .clp = 0, .fln = 1 });
 }
