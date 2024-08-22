@@ -1,6 +1,14 @@
 // MIT License (c) Timur Fayzrakhmanov.
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
+//! Public API:
+//! - defaults (options)
+//! - scopeActive
+//! - print
+//! - writer
+//! - writeFn
+//! - flush
+
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -80,27 +88,27 @@ pub fn scope(
         postfix: []const u8 = "",
         buffer_size: usize = defaults.log_buffer_size,
         lock_stderr_on_flush: bool = defaults.log_lock_stderr_on_flush,
-        Writer: ?type = null,
+        WriterType: ?type = null,
     },
 ) type {
-    const PLW = @import("per_line.zig").BufferedPerLineWriter(.{
+    const LineWriter = @import("line_writer.zig").BufferedLineWriter(.{
         .prefix = defaults.log_prefix_all_scopes ++ opt.prefix,
         .postfix = opt.postfix,
         .buffer_size = opt.buffer_size,
         .lock_stderr_on_flush = opt.lock_stderr_on_flush,
-        .Writer = if (opt.Writer) |W| W else @TypeOf(defaults.log_writer),
+        .WriterType = if (opt.WriterType) |W| W else @TypeOf(defaults.log_writer),
     });
 
     return struct {
-        underlying_writer: PLW = PLW.init(if (opt.Writer) |_| undefined else defaults.log_writer),
+        underlying_writer: LineWriter = LineWriter.init(if (opt.WriterType) |_| undefined else defaults.log_writer),
 
         const Self = @This();
-        const Error = PLW.Error;
+        const Error = LineWriter.Error;
         const Writer = std.io.Writer(*Self, Error, write);
 
         pub fn init(underlying_writer: anytype) Self {
-            if (opt.Writer == null) @compileError("no .Writer was specified, init with scope(...){} instead");
-            return Self{ .underlying_writer = PLW.init(underlying_writer) };
+            if (opt.WriterType == null) @compileError("no .WriterType was specified, init with scope(...){} instead");
+            return Self{ .underlying_writer = LineWriter.init(underlying_writer) };
         }
 
         /// Prints a formatted string within the specified `tag` scope using
@@ -159,7 +167,7 @@ test {
 
     var sc = scope(.scope_tag, .{
         .buffer_size = 10,
-        .Writer = @TypeOf(out_writer),
+        .WriterType = @TypeOf(out_writer),
     }).init(out_writer);
 
     try sc.print("long print", .{});
