@@ -1,11 +1,15 @@
 // MIT License (c) Timur Fayzrakhmanov.
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
-const std = @import("std");
+//! Public API:
+//! - Stack
+//! - init
+//! - StackFromSlice
+//! - initFromSliceFilled
+//! - initFromSliceEmpty
+//! - initFromSliceSetLen
 
-pub inline fn init(T: type, comptime length: usize) Stack(T, length) {
-    return Stack(T, length){};
-}
+const std = @import("std");
 
 pub fn Stack(T: type, length: usize) type {
     if (length == 0) @compileError("stack length cannot be zero");
@@ -70,6 +74,10 @@ pub fn Stack(T: type, length: usize) type {
     };
 }
 
+pub inline fn init(T: type, comptime length: usize) Stack(T, length) {
+    return Stack(T, length){};
+}
+
 test "test Stack" {
     const t = std.testing;
     // test internals
@@ -128,18 +136,6 @@ test "test Stack" {
         try t.expectEqual(0, s.len());
         try t.expectEqual(stack_size, s.left());
     }
-}
-
-pub inline fn initFromSliceFilled(T: type, slice: []T) StackFromSlice(T) {
-    return StackFromSlice(T).initFilled(slice);
-}
-
-pub inline fn initFromSliceEmpty(T: type, slice: []T) StackFromSlice(T) {
-    return StackFromSlice(T).initEmpty(slice);
-}
-
-pub inline fn initFromSliceSetLen(T: type, slice: []T, len: usize) StackFromSlice(T) {
-    return StackFromSlice(T).initLen(slice, len);
 }
 
 pub fn StackFromSlice(T: type) type {
@@ -223,6 +219,18 @@ pub fn StackFromSlice(T: type) type {
             return s.slc[0..s.top];
         }
     };
+}
+
+pub inline fn initFromSliceFilled(T: type, slice: []T) StackFromSlice(T) {
+    return StackFromSlice(T).initFilled(slice);
+}
+
+pub inline fn initFromSliceEmpty(T: type, slice: []T) StackFromSlice(T) {
+    return StackFromSlice(T).initEmpty(slice);
+}
+
+pub inline fn initFromSliceSetLen(T: type, slice: []T, len: usize) StackFromSlice(T) {
+    return StackFromSlice(T).initLen(slice, len);
 }
 
 test "test StackFromSlice" {
