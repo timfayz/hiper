@@ -8,8 +8,10 @@
 //! - sliceStartSeg
 //! - sliceEndSeg
 //! - sliceSeg
+//! - isSliceSeg
 
 const std = @import("std");
+const nm = @import("num.zig");
 
 /// Retrieves the starting position of a slice in source.
 pub inline fn indexOfSliceStart(source: anytype, slice: anytype) usize {
@@ -273,3 +275,33 @@ test "+sliceSeg" {
     //             ^             ^
 
 }
+
+/// Checks if the provided segment is a valid sub-slice of the given slice.
+pub inline fn isSliceSeg(T: type, slice: []const T, seg: []const T) bool {
+    const seg_ptr = @intFromPtr(seg.ptr);
+    const slice_ptr = @intFromPtr(slice.ptr);
+    return nm.numInRangeInc(usize, seg_ptr, slice_ptr, slice_ptr + slice.len) and
+        nm.numInRangeInc(usize, seg_ptr + seg.len, slice_ptr, slice_ptr + slice.len);
+}
+
+test "+sliceSegIn" {
+    const equal = std.testing.expectEqual;
+    const slice: [11]u8 = "hello_world".*;
+
+    try equal(true, isSliceSeg(u8, slice[0..], slice[0..0]));
+    try equal(true, isSliceSeg(u8, slice[0..], slice[11..11]));
+    try equal(true, isSliceSeg(u8, slice[0..], slice[0..1]));
+    try equal(true, isSliceSeg(u8, slice[0..], slice[3..6]));
+    try equal(true, isSliceSeg(u8, slice[0..], slice[10..11]));
+    try equal(false, isSliceSeg(u8, slice[0..], "hello_world"));
+    // intersecting
+    try equal(true, isSliceSeg(u8, slice[0..5], slice[0..5])); // same
+    try equal(true, isSliceSeg(u8, slice[0..0], slice[0..0]));
+    try equal(true, isSliceSeg(u8, slice[11..11], slice[11..11])); // last zero
+    try equal(false, isSliceSeg(u8, slice[0..5], slice[0..6]));
+    try equal(false, isSliceSeg(u8, slice[0..5], slice[5..10]));
+    try equal(false, isSliceSeg(u8, slice[5..10], slice[0..5]));
+    try equal(false, isSliceSeg(u8, slice[0..0], slice[11..11]));
+    try equal(false, isSliceSeg(u8, slice[0..6], slice[5..11]));
+}
+
