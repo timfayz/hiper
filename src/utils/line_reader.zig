@@ -4,12 +4,12 @@
 //! Public API:
 //! - indexOfLineStart
 //! - indexOfLineEnd
-//! - countIntLen
 //! - countLineNum
 //! - readLine
 //! - readLines
 
 const std = @import("std");
+const nm = @import("num.zig");
 const stack = @import("stack.zig");
 const slice = @import("slice.zig");
 
@@ -85,39 +85,6 @@ test "+indexOfLineEnd/Start" {
     try lineEnd__("\nline2\n", .{ .idx = 3, .expect = 6 });
     //               ^ ^  ^
     //               1 3  6
-}
-
-/// Returns the number of digits in an integer.
-pub fn countIntLen(int: usize) usize {
-    if (int == 0) return 1;
-    var len: usize = 1;
-    var next: usize = int;
-    while (true) {
-        next /= 10;
-        if (next > 0)
-            len += 1
-        else
-            break;
-    }
-    return len;
-}
-
-test "+countIntLen" {
-    const t = std.testing;
-
-    try t.expectEqual(1, countIntLen(0));
-    try t.expectEqual(1, countIntLen(1));
-    try t.expectEqual(1, countIntLen(9));
-    try t.expectEqual(2, countIntLen(10));
-    try t.expectEqual(2, countIntLen(11));
-    try t.expectEqual(2, countIntLen(99));
-    try t.expectEqual(3, countIntLen(100));
-    try t.expectEqual(3, countIntLen(101));
-    try t.expectEqual(3, countIntLen(999));
-    try t.expectEqual(
-        std.fmt.comptimePrint("{d}", .{std.math.maxInt(u32)}).len,
-        countIntLen(std.math.maxInt(u32)),
-    );
 }
 
 /// Returns the line number at the specified index in `input`. Line numbers

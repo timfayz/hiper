@@ -9,6 +9,7 @@
 const std = @import("std");
 const lr = @import("line_reader.zig");
 const slice = @import("slice.zig");
+const num = @import("num.zig");
 
 /// LinePrinter options.
 pub const LinePrinterOptions = struct {
@@ -190,7 +191,7 @@ inline fn printLineNumImpl(
 ) !usize {
     if (opt.show_line_numbers) {
         try writer.print("{d: <[1]}" ++ opt.line_number_sep, .{ line_number, padding });
-        return lr.countIntLen(line_number) + padding + opt.line_number_sep.len;
+        return num.countIntLen(line_number) + padding + opt.line_number_sep.len;
     }
     return 0;
 }
