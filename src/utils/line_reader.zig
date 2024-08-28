@@ -370,7 +370,28 @@ pub const ReadMode = union(enum) {
     /// Reads a specified range of lines around the cursor, cutting off lines
     /// that fall outside the available input boundaries.
     range_hard: usize,
+
+    pub fn total(mode: @This()) usize {
+        return switch (mode) {
+            inline .backward,
+            .forward,
+            .range_soft,
+            .range_hard,
+            => |amt| amt,
+            .bi => |amt| amt.backward + amt.forward,
+        };
+    }
 };
+
+test "+ReadMode.total" {
+    const equal = std.testing.expectEqual;
+    try equal(0, (ReadMode{ .bi = .{ .backward = 0, .forward = 0 } }).total());
+    try equal(10, (ReadMode{ .bi = .{ .backward = 4, .forward = 6 } }).total());
+    try equal(5, (ReadMode{ .backward = 5 }).total());
+    try equal(5, (ReadMode{ .forward = 5 }).total());
+    try equal(5, (ReadMode{ .range_hard = 5 }).total());
+    try equal(5, (ReadMode{ .range_soft = 5 }).total());
+}
 
 pub fn readLines(
     buf: [][]const u8,
