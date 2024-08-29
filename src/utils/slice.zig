@@ -11,7 +11,7 @@
 //! - isSliceSeg
 
 const std = @import("std");
-const nm = @import("num.zig");
+const num = @import("num.zig");
 
 /// Retrieves the starting position of a slice in source.
 pub inline fn indexOfSliceStart(source: anytype, slice: anytype) usize {
@@ -118,28 +118,38 @@ fn SliceSegInfo(T: type) type {
 }
 
 /// Returns a segment of `seg_len` from the slice centered around the `index`
-/// and the relative position of the original index within the segment.
+/// and the relative position of the original index within the segment. When
+/// `trunc_hard` is true, the segment is strictly truncated by slice bounds
+/// without compensating for the truncated length by extending to left or right.
 pub fn sliceSeg(
     T: type,
     slice: T,
     index: usize,
     seg_len: usize,
-    hard_mode: bool,
+    trunc_hard: bool,
     comptime opt: struct {
-        even_rshift: bool = true,
+        /// If `seg_len` is even and `rshift_even` is true, the segment shifts
+        /// right by one index relative to the cursor (`index`).
+        rshift_even: bool = true,
     },
 ) SliceSegInfo(T) {
     if (seg_len > slice.len)
         return .{ .slice = slice, .index_pos = index };
 
-    const extra: usize =
-        if (seg_len & 1 == 0 and // seg_len is even
-        opt.even_rshift and index != 0) 1 else 0;
+    const seg_even = seg_len & 1 == 0;
+    const dist = seg_len / 2;
+
+    const shift_if_even: usize = if (opt.rshift_even and seg_even) 1 else 0;
     const view_start = @min(
-        index -| seg_len / 2 + extra,
-        if (hard_mode) slice.len else slice.len - seg_len,
+        index -| (dist -| shift_if_even),
+        if (trunc_hard) slice.len else slice.len - seg_len,
     );
-    const view_end = @min(view_start + seg_len, slice.len);
+
+    const shift = if (seg_even) shift_if_even else 1;
+    const view_end = @min(
+        if (trunc_hard) index + (dist + shift) else view_start + seg_len,
+        slice.len,
+    );
 
     return .{
         .slice = slice[view_start..view_end],
@@ -158,18 +168,18 @@ test "+sliceSeg" {
             comptime args: struct {
                 seg_len: usize,
                 exp_pos: usize,
-                even_rshift: bool = true,
+                rshift_even: bool = true,
             },
         ) !void {
             const info = sliceSeg([]const u8, line, index, args.seg_len, hard_mode, .{
-                .even_rshift = args.even_rshift,
+                .rshift_even = args.rshift_even,
             });
             try t.expectEqualStrings(expect_line, info.slice);
             try t.expectEqual(args.exp_pos, info.index_pos);
         }
     }.run;
 
-    //                 |idx| |exp_line|
+    //           |hard| |idx| |exp_line|
     try case("", false, 0, "", .{ .seg_len = 0, .exp_pos = 0 });
     //        ^             ^
     try case("", false, 0, "", .{ .seg_len = 100, .exp_pos = 0 });
@@ -197,7 +207,7 @@ test "+sliceSeg" {
     try case("ABCDE", false, 6, "CDE", .{ .seg_len = 3, .exp_pos = 4 });
     //              ^                ^
 
-    // Even segment length
+    // Even segment length (right shifted)
     try case("ABCD", false, 0, "AB", .{ .seg_len = 2, .exp_pos = 0 });
     //        ^                 ^
     try case("ABCD", false, 1, "BC", .{ .seg_len = 2, .exp_pos = 0 });
@@ -211,77 +221,80 @@ test "+sliceSeg" {
     try case("ABCD", false, 5, "CD", .{ .seg_len = 2, .exp_pos = 3 });
     //             ^               ^
 
-    // Even segment length (left shift)
-    try case("ABCD", false, 0, "AB", .{ .seg_len = 2, .exp_pos = 0, .even_rshift = false });
+    // Even segment length (left shifted)
+    try case("ABCD", false, 0, "AB", .{ .seg_len = 2, .exp_pos = 0, .rshift_even = false });
     //        ^                 ^
-    try case("ABCD", false, 1, "AB", .{ .seg_len = 2, .exp_pos = 1, .even_rshift = false });
+    try case("ABCD", false, 1, "AB", .{ .seg_len = 2, .exp_pos = 1, .rshift_even = false });
     //         ^                 ^
-    try case("ABCD", false, 2, "BC", .{ .seg_len = 2, .exp_pos = 1, .even_rshift = false });
+    try case("ABCD", false, 2, "BC", .{ .seg_len = 2, .exp_pos = 1, .rshift_even = false });
     //          ^                ^
-    try case("ABCD", false, 3, "CD", .{ .seg_len = 2, .exp_pos = 1, .even_rshift = false });
+    try case("ABCD", false, 3, "CD", .{ .seg_len = 2, .exp_pos = 1, .rshift_even = false });
     //           ^               ^
-    try case("ABCD", false, 4, "CD", .{ .seg_len = 2, .exp_pos = 2, .even_rshift = false });
+    try case("ABCD", false, 4, "CD", .{ .seg_len = 2, .exp_pos = 2, .rshift_even = false });
     //            ^               ^
-    try case("ABCD", false, 5, "CD", .{ .seg_len = 2, .exp_pos = 3, .even_rshift = false });
+    try case("ABCD", false, 5, "CD", .{ .seg_len = 2, .exp_pos = 3, .rshift_even = false });
     //             ^               ^
 
     // Hard mode
     //
     try case("ABCDE", true, 0, "ABCDE", .{ .seg_len = 100, .exp_pos = 0 });
-    //        ^                  ^
-    try case("ABCDE", true, 0, "ABC", .{ .seg_len = 3, .exp_pos = 0 });
-    //        ^                  ^
+    //        ^                 ^
+    try case("ABCDE", true, 0, "AB", .{ .seg_len = 3, .exp_pos = 0 });
+    //        ^                 ^
     try case("ABCDE", true, 1, "ABC", .{ .seg_len = 3, .exp_pos = 1 });
-    //         ^                  ^
+    //         ^                 ^
     try case("ABCDE", true, 2, "BCD", .{ .seg_len = 3, .exp_pos = 1 });
-    //          ^                 ^
+    //          ^                ^
     try case("ABCDE", true, 3, "CDE", .{ .seg_len = 3, .exp_pos = 1 });
-    //           ^                ^
+    //           ^               ^
     try case("ABCDE", true, 4, "DE", .{ .seg_len = 3, .exp_pos = 1 });
-    //            ^               ^
+    //            ^              ^
     try case("ABCDE", true, 5, "E", .{ .seg_len = 3, .exp_pos = 1 });
-    //             ^              ^
+    //             ^             ^
     try case("ABCDE", true, 6, "", .{ .seg_len = 3, .exp_pos = 1 });
-    //              ^             ^
+    //              ^            ^
     try case("ABCDE", true, 7, "", .{ .seg_len = 3, .exp_pos = 2 });
-    //               ^             ^
+    //               ^            ^
 
     // Even segment length
     try case("ABCD", true, 0, "AB", .{ .seg_len = 2, .exp_pos = 0 });
-    //        ^                 ^
+    //        ^                ^
     try case("ABCD", true, 1, "BC", .{ .seg_len = 2, .exp_pos = 0 });
-    //         ^                ^
+    //         ^               ^
     try case("ABCD", true, 2, "CD", .{ .seg_len = 2, .exp_pos = 0 });
-    //          ^                ^
+    //          ^              ^
     try case("ABCD", true, 3, "D", .{ .seg_len = 2, .exp_pos = 0 });
-    //           ^              ^
+    //           ^             ^
     try case("ABCD", true, 4, "", .{ .seg_len = 2, .exp_pos = 0 });
-    //            ^             ^
+    //            ^            ^
     try case("ABCD", true, 5, "", .{ .seg_len = 2, .exp_pos = 1 });
-    //             ^             ^
+    //             ^            ^
+    try case("ABCD", true, 6, "", .{ .seg_len = 2, .exp_pos = 2 });
+    //              ^            ^
 
     // Even segment length (left shift)
-    try case("ABCD", true, 0, "AB", .{ .seg_len = 2, .exp_pos = 0, .even_rshift = false });
-    //        ^                 ^
-    try case("ABCD", true, 1, "AB", .{ .seg_len = 2, .exp_pos = 1, .even_rshift = false });
-    //         ^                 ^
-    try case("ABCD", true, 2, "BC", .{ .seg_len = 2, .exp_pos = 1, .even_rshift = false });
-    //          ^                ^
-    try case("ABCD", true, 3, "CD", .{ .seg_len = 2, .exp_pos = 1, .even_rshift = false });
-    //           ^               ^
-    try case("ABCD", true, 4, "D", .{ .seg_len = 2, .exp_pos = 1, .even_rshift = false });
-    //            ^              ^
-    try case("ABCD", true, 5, "", .{ .seg_len = 2, .exp_pos = 1, .even_rshift = false });
-    //             ^             ^
-
+    try case("ABCD", true, 0, "A", .{ .seg_len = 2, .exp_pos = 0, .rshift_even = false });
+    //        ^                ^
+    try case("ABCD", true, 1, "AB", .{ .seg_len = 2, .exp_pos = 1, .rshift_even = false });
+    //         ^                ^
+    try case("ABCD", true, 2, "BC", .{ .seg_len = 2, .exp_pos = 1, .rshift_even = false });
+    //          ^               ^
+    try case("ABCD", true, 3, "CD", .{ .seg_len = 2, .exp_pos = 1, .rshift_even = false });
+    //           ^              ^
+    try case("ABCD", true, 4, "D", .{ .seg_len = 2, .exp_pos = 1, .rshift_even = false });
+    //            ^             ^
+    try case("ABCD", true, 5, "", .{ .seg_len = 2, .exp_pos = 1, .rshift_even = false });
+    //             ^            ^
+    try case("ABCD", true, 6, "", .{ .seg_len = 2, .exp_pos = 2, .rshift_even = false });
+    //              ^            ^
 }
 
 /// Checks if the provided segment is a valid sub-slice of the given slice.
 pub inline fn isSliceSeg(T: type, slice: []const T, seg: []const T) bool {
     const seg_ptr = @intFromPtr(seg.ptr);
     const slice_ptr = @intFromPtr(slice.ptr);
-    return nm.numInRangeInc(usize, seg_ptr, slice_ptr, slice_ptr + slice.len) and
-        nm.numInRangeInc(usize, seg_ptr + seg.len, slice_ptr, slice_ptr + slice.len);
+    return num.numInRangeInc(usize, seg_ptr, slice_ptr, slice_ptr + slice.len) and
+        num.numInRangeInc(usize, seg_ptr + seg.len, slice_ptr, slice_ptr + slice.len);
 }
 
 test "+sliceSegIn" {
