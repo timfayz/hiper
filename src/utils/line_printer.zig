@@ -17,7 +17,7 @@ pub const LineOptions = struct {
     view_at: enum { start, end, cursor } = .cursor,
     line_len: u8 = 3,
     trunc_sym: []const u8 = "..",
-    trunc_hard: bool = true,
+    trunc_mode: slice.TruncMode = .hard,
     show_line_num: bool = true,
     line_num_sep: []const u8 = "| ",
     show_eof: bool = true,
@@ -56,7 +56,7 @@ pub fn printLine(
         for (info.lines, first_line_num..) |line, line_num| {
             var curr_index_pos = info.index_pos;
             try writeLineNumImpl(writer, line_num, num_col_len, opt);
-            try writeLineImpl(writer, input, line, &curr_index_pos, opt.trunc_hard, opt);
+            try writeLineImpl(writer, input, line, &curr_index_pos, opt);
         }
     }
 }
@@ -92,7 +92,7 @@ pub fn printLineWithCursor(
         for (info.lines, 0.., first_line_num..) |line, i, line_num| {
             var index_pos = info.index_pos; // index relative position per line
             try writeLineNumImpl(writer, line_num, num_col_len, line_opt);
-            try writeLineImpl(writer, input, line, &index_pos, line_opt.trunc_hard, line_opt);
+            try writeLineImpl(writer, input, line, &index_pos, line_opt);
             if (info.curr_line_pos == i) {
                 const cursor_pos = num_col_len + line_num_sep_len + index_pos;
                 try writeCursorImpl(writer, input, index, cursor_pos, cursor_opt);
@@ -118,14 +118,13 @@ fn writeLineImpl(
     input: []const u8,
     line: []const u8,
     index_pos: *usize,
-    trunc_hard: bool,
     comptime opt: LineOptions,
 ) !void {
     truncate: {
         switch (opt.view_at) {
             .cursor => {
                 if (opt.line_len == 0) break :truncate;
-                const seg = slice.sliceSeg([]const u8, line, index_pos.*, opt.line_len, trunc_hard, .{});
+                const seg = slice.sliceSeg([]const u8, line, index_pos.*, opt.line_len, opt.trunc_mode, .{});
                 index_pos.* = seg.index_pos;
                 if (slice.indexOfSliceStart(line, seg.slice) > 0) {
                     try writer.writeAll(opt.trunc_sym);
@@ -219,10 +218,11 @@ test "+printLine[any]" {
         }
     }.run;
 
-    // params passing format:
-    // |expected printLine output|
-    // |expected printLineWithCursor output|
-    // |input| |idx| |amount| |line_num| |line_ops| |cursor_ops|
+    // format:
+    // try case(
+    // |expected printLine output|,
+    // |expected printLineWithCursor output|,
+    // |input|, |idx|, |amount|, |line_num|, |line_ops|, |cursor_ops|)
 
     // out of bounds read
     //
@@ -304,18 +304,18 @@ test "+printLine[any]" {
         \\      ^
     , "hello", 2, .{ .forward = 1 }, 0, .{ .line_len = 3, .view_at = .start }, .{});
 
-    // for other cases `.view_at == .cursor` by default
+    // `.view_at == .cursor` is a default for other cases
 
-    // .trunc_hard
+    // .trunc_mode
     // --------------------
-    // == false
+    // == .soft
     try case(
         \\1| hel..
         \\
     ,
         \\1| hel..
         \\   ^
-    , "hello", 0, .{ .forward = 1 }, 0, .{ .line_len = 3, .trunc_hard = false }, .{});
+    , "hello", 0, .{ .forward = 1 }, 0, .{ .line_len = 3, .trunc_mode = .soft }, .{});
 
     try case(
         \\1| ..llo␃
@@ -323,7 +323,7 @@ test "+printLine[any]" {
     ,
         \\1| ..llo␃
         \\       ^
-    , "hello", 4, .{ .forward = 1 }, 0, .{ .line_len = 3, .trunc_hard = false }, .{});
+    , "hello", 4, .{ .forward = 1 }, 0, .{ .line_len = 3, .trunc_mode = .soft }, .{});
 
     try case(
         \\1| ..ell..
@@ -331,16 +331,16 @@ test "+printLine[any]" {
     ,
         \\1| ..ell..
         \\      ^
-    , "hello", 2, .{ .forward = 1 }, 0, .{ .line_len = 3, .trunc_hard = false }, .{});
+    , "hello", 2, .{ .forward = 1 }, 0, .{ .line_len = 3, .trunc_mode = .soft }, .{});
 
-    // == true
+    // == .hard
     try case(
         \\1| he..
         \\
     ,
         \\1| he..
         \\   ^
-    , "hello", 0, .{ .forward = 1 }, 0, .{ .line_len = 3, .trunc_hard = true }, .{});
+    , "hello", 0, .{ .forward = 1 }, 0, .{ .line_len = 3, .trunc_mode = .hard }, .{});
 
     try case(
         \\1| ..lo␃
@@ -348,7 +348,7 @@ test "+printLine[any]" {
     ,
         \\1| ..lo␃
         \\      ^
-    , "hello", 4, .{ .forward = 1 }, 0, .{ .line_len = 3, .trunc_hard = true }, .{});
+    , "hello", 4, .{ .forward = 1 }, 0, .{ .line_len = 3, .trunc_mode = .hard }, .{});
 
     try case(
         \\1| ..ell..
@@ -356,7 +356,7 @@ test "+printLine[any]" {
     ,
         \\1| ..ell..
         \\      ^
-    , "hello", 2, .{ .forward = 1 }, 0, .{ .line_len = 3, .trunc_hard = true }, .{});
+    , "hello", 2, .{ .forward = 1 }, 0, .{ .line_len = 3, .trunc_mode = .hard }, .{});
 
     // manual line numbering
     // --------------------
