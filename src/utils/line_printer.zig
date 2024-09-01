@@ -15,7 +15,7 @@ const num = @import("num.zig");
 /// Line printing options.
 pub const LineOptions = struct {
     view_at: enum { start, end, cursor } = .cursor,
-    line_len: u8 = 3,
+    line_len: usize = 80,
     trunc_sym: []const u8 = "..",
     trunc_mode: slice.SliceAroundMode = .hard_flex,
     show_line_num: bool = true,
@@ -35,8 +35,8 @@ pub const CursorOptions = struct {
 
 /// Line with cursor printing options.
 pub const LineWithCursorOptions = struct {
-    line_opt: LineOptions,
-    cursor_opt: CursorOptions,
+    line_opt: LineOptions = .{},
+    cursor_opt: CursorOptions = .{},
 };
 
 /// Reads an `amount` of lines from the input at the specified index and writes
@@ -140,7 +140,13 @@ fn writeLineImpl(
     skip_status: bool,
     comptime opt: LineOptions,
 ) !void {
-    // empty (last) line
+    // full line
+    if (opt.line_len == 0) {
+        try writer.writeAll(full);
+        if (slice.indexOfSliceEnd(input, full) >= input.len)
+            try writer.writeAll("␃");
+    } else
+    // empty line
     if (opt.show_eof and full.len == 0) {
         if (slice.indexOfSliceEnd(input, full) >= input.len)
             try writer.writeAll("␃");
@@ -149,7 +155,7 @@ fn writeLineImpl(
     else if (skip_status) {
         try writer.writeAll(opt.trunc_sym);
     }
-    // normal line
+    // sliced line
     else {
         if (slice.indexOfSliceStart(full, sliced) > 0) {
             try writer.writeAll(opt.trunc_sym);
@@ -452,6 +458,18 @@ test "+printLine, printLineWithCursor" {
         \\Last.
         //^70  ^75
     ;
+
+    try case(
+        \\10| First.
+        \\11| This is the second.
+        \\12| A third line is a longer one.
+        \\
+    ,
+        \\10| First.
+        \\    ^
+        \\11| This is the second.
+        \\12| A third line is a longer one.
+    , input2, 0, .{ .forward = 3 }, 10, .{ .line_len = 0 }, .{});
 
     try case(
         \\8 | First..
