@@ -10,7 +10,7 @@
 const std = @import("std");
 
 pub fn typeIsNum(T: type) void {
-    if (@typeInfo(T) != .Int and @typeInfo(T) != .Float)
+    if (@typeInfo(T) != .int and @typeInfo(T) != .float)
         @compileError("type must be a number, got " ++ @tagName(@typeInfo(T)));
 }
 

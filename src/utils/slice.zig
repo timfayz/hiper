@@ -2,9 +2,13 @@
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
 //! Public API:
+//! - reverseSlice()
+//! - intersectSlices()
+//! - mergeSlices()
 //! - indexOfSliceStart()
 //! - indexOfSliceEnd()
-//! - reverseSlice()
+//! - SliceIndices
+//! - sliceIndices()
 //! - sliceStart()
 //! - sliceStartIndices()
 //! - sliceEnd()
@@ -12,7 +16,7 @@
 //! - sliceRange()
 //! - SliceAroundOptions
 //! - SliceAroundMode
-//! - SliceAroundInfo
+//! - SliceAroundInfo()
 //! - sliceAround()
 //! - SliceAroundIndices
 //! - sliceAroundIndices()
@@ -21,43 +25,11 @@
 const std = @import("std");
 const num = @import("num.zig");
 
-/// Retrieves the starting position of a slice in source.
-pub inline fn indexOfSliceStart(source: anytype, slice: anytype) usize {
-    return slice.ptr - source.ptr;
-}
-
-/// Retrieves the ending position of a slice in source.
-pub inline fn indexOfSliceEnd(source: anytype, slice: anytype) usize {
-    return (slice.ptr - source.ptr) +| slice.len;
-}
-
-test "+indexOfSliceStart/End" {
-    const equal = std.testing.expectEqual;
-
-    const in1 = "";
-    try equal(0, indexOfSliceEnd(in1, in1[0..0]));
-
-    const in2 = "0123456789";
-    try equal(0, indexOfSliceEnd(in2, in2[0..0]));
-    try equal(7, indexOfSliceEnd(in2, in2[3..7]));
-    try equal(9, indexOfSliceEnd(in2, in2[3..9]));
-    try equal(10, indexOfSliceEnd(in2, in2[3..10]));
-
-    const in3 = "";
-    try equal(0, indexOfSliceStart(in3, in3[0..0]));
-
-    const in4 = "0123456789";
-    try equal(0, indexOfSliceStart(in4, in4[0..0]));
-    try equal(3, indexOfSliceStart(in4, in4[3..7]));
-    try equal(9, indexOfSliceStart(in4, in4[9..10]));
-    try equal(10, indexOfSliceStart(in4, in4[10..10]));
-}
-
 /// Reverses slice items in-place.
 pub fn reverseSlice(slice: anytype) void {
     comptime {
         const T_info = @typeInfo(@TypeOf(slice));
-        if (T_info != .Pointer and T_info.Pointer.size != .Slice)
+        if (T_info != .pointer and T_info.Pointer.size != .slice)
             @compileError("argument must be a slice");
     }
     if (slice.len <= 1) return;
@@ -71,7 +43,7 @@ pub fn reverseSlice(slice: anytype) void {
     }
 }
 
-test "+reverseInplace" {
+test "+reverseSlice" {
     const t = std.testing;
 
     const case = struct {
@@ -92,11 +64,135 @@ test "+reverseInplace" {
     try case("12345", "54321");
 }
 
-/// Return structure for `sliceStartIndices()` and `sliceEndIndices()`.
+/// Returns the intersection of two slices. Note: This function works correctly
+/// only if both slices originate from the same source.
+/// ```txt
+/// [slice1+] [+slice2]    (slices disjoint)
+///         null
+///
+/// [slice1+++]            (slices intersect)
+///         [+++slice2]
+///         [+]            (intersection)
+/// ```
+pub fn intersectSlices(T: type, slice1: T, slice2: T) ?T {
+    var slice: T = undefined;
+    const ptr1 = @intFromPtr(slice1.ptr);
+    const ptr2 = @intFromPtr(slice2.ptr);
+    const start = @max(ptr1, ptr2);
+    const end = @min(ptr1 + slice1.len, ptr2 + slice2.len);
+    if (start >= end) return null;
+    slice.ptr = @ptrFromInt(start);
+    slice.len = end - start;
+    return slice;
+}
+
+test "+intersectSlices" {
+    const equal = struct {
+        pub fn check(expect: ?[]const u8, actual: ?[]const u8) !void {
+            if (expect == null) return std.testing.expectEqual(null, actual);
+            if (actual == null) return std.testing.expectEqual(expect, null);
+            try std.testing.expectEqualStrings(expect.?, actual.?);
+        }
+    }.check;
+
+    const in1 = "abcd";
+    try equal(null, intersectSlices([]const u8, in1[0..0], in1[4..4])); // zero slices
+    try equal(null, intersectSlices([]const u8, in1[0..2], in1[2..4])); // touching boundaries
+
+    try equal("c", intersectSlices([]const u8, in1[0..3], in1[2..4])); // intersecting slices
+    try equal("c", intersectSlices([]const u8, in1[2..4], in1[0..3])); // (!) order
+
+    try equal("bc", intersectSlices([]const u8, in1[0..3], in1[1..4])); // intersecting slices
+    try equal("bc", intersectSlices([]const u8, in1[1..4], in1[0..3])); // (!) order
+
+    try equal("abcd", intersectSlices([]const u8, in1[0..4], in1[0..4])); // same slices
+
+    try equal("bc", intersectSlices([]const u8, in1[0..4], in1[1..3])); // one within other
+    try equal("bc", intersectSlices([]const u8, in1[1..3], in1[0..4])); // (!) order
+}
+
+/// Returns the union of two slices. Note: This function works correctly only if
+/// both slices originate from the same source.
+/// ```txt
+/// [slice1+] [+slice2]    (slices disjoint)
+/// |+++++++++++++++++|    (merged)
+///
+/// [slice1+++]            (slices intersect)
+///         [+++slice2]
+/// |+++++++++++++++++|    (merged)
+/// ```
+pub fn mergeSlices(
+    T: type,
+    slice1: T,
+    slice2: T,
+) T {
+    var slice: T = undefined;
+    const ptr1 = @intFromPtr(slice1.ptr);
+    const ptr2 = @intFromPtr(slice2.ptr);
+    const start = @min(ptr1, ptr2);
+    const end = @max(ptr1 + slice1.len, ptr2 + slice2.len);
+    slice.ptr = @ptrFromInt(start);
+    slice.len = end - start;
+    return slice;
+}
+
+test "+mergeSlices" {
+    const equal = std.testing.expectEqualStrings;
+    const in1 = "abcd";
+    try equal("abcd", mergeSlices([]const u8, in1[0..0], in1[4..4])); // zero slices
+    try equal("abcd", mergeSlices([]const u8, in1[4..4], in1[0..0])); // (!) order
+
+    try equal("abcd", mergeSlices([]const u8, in1[0..2], in1[2..4])); // normal slices
+    try equal("abcd", mergeSlices([]const u8, in1[2..4], in1[0..2])); // (!) order
+
+    try equal("abcd", mergeSlices([]const u8, in1[0..3], in1[1..4])); // intersected slices
+
+    try equal("abcd", mergeSlices([]const u8, in1[0..4], in1[0..4])); // same slices
+}
+
+/// Retrieves the starting position of a slice in source.
+pub inline fn indexOfSliceStart(source: anytype, slice: anytype) usize {
+    return slice.ptr - source.ptr;
+}
+
+/// Retrieves the ending position of a slice in source.
+pub inline fn indexOfSliceEnd(source: anytype, slice: anytype) usize {
+    return (slice.ptr - source.ptr) +| slice.len;
+}
+
+test "+indexOfSliceStart, indexOfSliceEnd" {
+    const equal = std.testing.expectEqual;
+
+    const empty = "";
+    const input = "0123456789";
+
+    try equal(0, indexOfSliceEnd(empty, empty[0..0]));
+    try equal(0, indexOfSliceEnd(input, input[0..0]));
+    try equal(7, indexOfSliceEnd(input, input[3..7]));
+    try equal(9, indexOfSliceEnd(input, input[3..9]));
+    try equal(10, indexOfSliceEnd(input, input[3..10]));
+
+    try equal(0, indexOfSliceStart(empty, empty[0..0]));
+    try equal(0, indexOfSliceStart(input, input[0..0]));
+    try equal(3, indexOfSliceStart(input, input[3..7]));
+    try equal(9, indexOfSliceStart(input, input[9..10]));
+    try equal(10, indexOfSliceStart(input, input[10..10]));
+}
+
+/// Return structure for `sliceIndices()`, `sliceStartIndices()` and
+/// `sliceEndIndices()`.
 pub const SliceIndices = struct {
     start: usize,
     end: usize,
 };
+
+/// Retrieves the starting and ending positions of a slice in source.
+pub inline fn sliceIndices(source: anytype, slice: anytype) SliceIndices {
+    return .{
+        .start = indexOfSliceStart(source, slice),
+        .end = indexOfSliceEnd(source, slice),
+    };
+}
 
 /// Returns the beginning of a slice with a specified length. If `len`
 /// is larger than the slice length, the entire slice is returned.
