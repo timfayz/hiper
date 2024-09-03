@@ -2,11 +2,16 @@
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
 //! Public API:
-//! - indexOfLineStart
-//! - indexOfLineEnd
-//! - countLineNum
-//! - readLine
-//! - readLines
+//! - indexOfLineStart()
+//! - indexOfLineEnd()
+//! - countLineNum()
+//! - ReadLineInfo
+//! - readLine()
+//! - ReadDirection
+//! - ReadRequest
+//! - ReadLinesInfo
+//! - readLines()
+//! - continueRead()
 
 const std = @import("std");
 const nm = @import("num.zig");
@@ -39,7 +44,7 @@ pub fn indexOfLineStart(input: []const u8, index: usize) usize {
     return start;
 }
 
-test "+indexOfLineEnd/Start" {
+test "+indexOfLineEnd, indexOfLineStart" {
     const t = std.testing;
 
     const lineStart = struct {
@@ -124,27 +129,23 @@ test "+countLineNum" {
     //                                      ^
 }
 
-/// Represents the result of a single-line reading.
-const LineInfo = struct {
+/// The result of a single-line reading.
+pub const ReadLineInfo = struct {
     line: ?[]const u8,
     index_pos: usize,
     line_num: usize,
 };
 
-/// Reads a line from the input starting at the specified index.
-///
-/// Returns:
-/// * Line at the specified index.
-/// * Index position within the current line.
-/// * Line number if `detect_line_num` is true; otherwise, `0`.
-///
-/// If index position exceeds the current line length, the index is either on a
-/// new line or at the end of the stream (EOF).
+/// Retrieves a line from the input starting at the specified index. Returns the
+/// retrieved line, index position within the current line, and line number if
+/// `detect_line_num` is true; otherwise, `0`. If index position exceeds the
+/// current line length, the index is either on a new line or at the end of the
+/// stream (EOF).
 pub fn readLine(
     input: []const u8,
     index: usize,
     detect_line_num: bool,
-) LineInfo {
+) ReadLineInfo {
     if (index > input.len)
         return .{ .line = null, .index_pos = 0, .line_num = 0 };
     const line_start = indexOfLineStart(input, index);
@@ -218,30 +219,291 @@ test "+readLine" {
     //               ^
 }
 
-/// Represents the result of multi-line reading.
-pub const LinesInfo = struct {
-    lines: [][]const u8,
-    first_line_num: usize,
-    curr_line_pos: usize,
-    index_pos: usize,
+/// Defines the basic direction for multi-line reading.
+pub const ReadDirection = enum { forward, backward };
+
+/// Specifies the amount and direction for multi-line reading.
+pub const ReadRequest = union(enum) {
+    /// Read a specified amount of lines, moving backward.
+    backward: usize,
+    /// Read a specified amount of lines, moving forward.
+    forward: usize,
+    /// Read a specified amount of lines in both directions.
+    /// Backward first, then forward. Current line is in backward range.
+    bi: struct { backward: usize, forward: usize },
+    /// Reads a specified range of lines around the cursor, distributing range
+    /// within available input boundaries.
+    range_soft: usize,
+    /// Reads a specified range of lines around the cursor, cutting off lines
+    /// that fall outside the available input boundaries.
+    range_hard: usize,
+
+    pub fn amountTotal(req: ReadRequest) usize {
+        return switch (req) {
+            inline .backward, .forward, .range_soft, .range_hard => |amt| amt,
+            .bi => |amt| amt.backward + amt.forward,
+        };
+    }
+
+    pub fn amountBackward(req: ReadRequest) usize {
+        return switch (req) {
+            .backward => |amt| amt,
+            .forward => 0,
+            .bi => |amt| amt.backward,
+            else => 0,
+        };
+    }
+
+    pub fn amountForward(req: ReadRequest) usize {
+        return switch (req) {
+            .backward => 0,
+            .forward => |amt| amt,
+            .bi => |amt| amt.forward,
+            else => 0,
+        };
+    }
+
+    pub inline fn range(len: usize) ReadRequest {
+        const rshift_even = true; // hardcoded for now
+        return ReadRequest{
+            .bi = if (len & 1 == 0) .{ // even
+                .backward = if (rshift_even) len / 2 else len / 2 + 1,
+                .forward = if (rshift_even) len / 2 else len / 2 - 1,
+            } else .{ // odd
+                .backward = len / 2 + 1, // backward includes current line
+                .forward = len / 2,
+            },
+        };
+    }
 };
+
+/// The result of multi-line reading.
+pub const ReadLinesInfo = struct {
+    /// Retrieved lines.
+    lines: [][]const u8,
+    /// The detected first line number of `lines` (starts from 1).
+    first_line_num: usize,
+    /// The position of the current line where the index was located.
+    curr_line_pos: usize,
+    /// The index position within the current line.
+    index_pos: usize,
+
+    pub inline fn initEmpty(buf: [][]const u8) ReadLinesInfo {
+        return .{ .lines = buf[0..0], .first_line_num = 0, .curr_line_pos = 0, .index_pos = 0 };
+    }
+
+    pub inline fn readBeforeCurr(s: *const ReadLinesInfo) usize {
+        return s.curr_line_pos;
+    }
+
+    pub inline fn readAfterCurr(s: *const ReadLinesInfo) usize {
+        return s.lines.len -| s.curr_line_pos -| 1;
+    }
+
+    pub inline fn readTotal(r: *const ReadLinesInfo) usize {
+        return r.lines.len;
+    }
+
+    pub inline fn readBackward(r: *const ReadLinesInfo, req: ReadRequest) usize {
+        return switch (req) {
+            .forward => 0,
+            .backward => r.readTotal(),
+            else => r.readBeforeCurr() + 1,
+        };
+    }
+
+    pub inline fn readForward(r: *const ReadLinesInfo, req: ReadRequest) usize {
+        return switch (req) {
+            .forward => r.readTotal(),
+            .backward => 0,
+            else => r.readAfterCurr(),
+        };
+    }
+
+    pub inline fn leftTotal(r: *const ReadLinesInfo, req: ReadRequest) usize {
+        return req.amountTotal() - r.readTotal();
+    }
+
+    pub inline fn leftBackward(r: *const ReadLinesInfo, req: ReadRequest) usize {
+        return req.amountBackward() - r.readBackward(req);
+    }
+
+    pub inline fn leftForward(r: *const ReadLinesInfo, req: ReadRequest) usize {
+        return req.amountForward() - r.readForward(req);
+    }
+
+    pub inline fn currLine(r: *const ReadLinesInfo) []const u8 {
+        return r.lines[r.curr_line_pos];
+    }
+
+    pub inline fn firstLine(r: *const ReadLinesInfo) []const u8 {
+        return r.lines[0];
+    }
+
+    pub inline fn lastLine(r: *const ReadLinesInfo) []const u8 {
+        return r.lines[r.lines.len -| 1];
+    }
+
+    pub inline fn indexLastRead(r: *const ReadLinesInfo, input: []const u8) usize {
+        return slice.indexOfSliceEnd(input, r.lastLine());
+    }
+
+    pub inline fn indexFirstRead(r: *const ReadLinesInfo, input: []const u8) usize {
+        return slice.indexOfSliceStart(input, r.firstLine());
+    }
+};
+
+/// Retrieves lines from the input starting at the specified index, according to
+/// the direction and amount defined by the request. Returns the retrieved lines,
+/// the detected line number of the first line (if `detect_line_num` is true;
+/// otherwise, `0`), the index of the current line, and the index position within
+/// that line. If index position exceeds the current line length, the index is
+/// either on a new line or at the end of the stream (EOF).
+pub fn readLines(
+    buf: [][]const u8,
+    input: []const u8,
+    index: usize,
+    detect_line_num: bool,
+    request: ReadRequest,
+) ReadLinesInfo {
+    if (index > input.len or buf.len == 0 or request.amountTotal() == 0)
+        return ReadLinesInfo.initEmpty(buf);
+    switch (request) {
+        .forward => return readLinesImpl(.forward, buf, input, index, request.forward, detect_line_num),
+        .backward => return readLinesImpl(.backward, buf, input, index, request.backward, detect_line_num),
+        .bi => {
+            const backward = readLinesImpl(.backward, buf, input, index, request.bi.backward, detect_line_num);
+            return continueRead(.forward, backward, buf, input, index, request.bi.forward, detect_line_num);
+        },
+        inline .range_soft, .range_hard => |amt, req| {
+            const range = ReadRequest.range(amt);
+            switch (req) {
+                .range_hard => return readLines(buf, input, index, detect_line_num, range),
+                .range_soft => {
+                    // read planned amount backward/forward
+                    const info = readLines(buf, input, index, detect_line_num, range);
+                    const amt_left = info.leftTotal(range);
+                    const buf_left = buf[info.readTotal()..];
+                    const back_left = info.leftBackward(range) > 0;
+                    const forw_left = info.leftForward(range) > 0;
+
+                    // no space or lines left to read
+                    if (buf_left.len == 0 or amt_left == 0 or (back_left and forw_left))
+                        return info;
+
+                    // compensate any read deficit
+                    return continueRead(if (back_left) .forward else .backward, info, buf, input, index, amt_left, detect_line_num);
+                },
+                else => unreachable,
+            }
+        },
+    }
+}
+
+test "+readLines" {
+    const t = std.testing;
+
+    const case = struct {
+        fn run(
+            input: []const u8,
+            index: usize,
+            detect_ln: bool,
+            request: ReadRequest,
+            expect_lns: anytype,
+            expect: struct { pos: usize, clp: usize, fln: usize },
+        ) !void {
+            var buf: [32][]const u8 = undefined;
+            const actual = readLines(&buf, input, index, detect_ln, request);
+            const expect_lines: [std.meta.fields(@TypeOf(expect_lns)).len][]const u8 = expect_lns;
+            try t.expectEqual(expect_lines.len, actual.lines.len);
+            for (expect_lines, actual.lines) |e, a| try t.expectEqualStrings(e, a);
+            try t.expectEqual(expect.clp, actual.curr_line_pos);
+            try t.expectEqual(expect.pos, actual.index_pos);
+            try t.expectEqual(expect.fln, actual.first_line_num);
+        }
+    }.run;
+
+    // format:
+    // try case(|input|, |index|, |detect_line_number|, |read_request|, |expected result items|)
+
+    const input = "one\ntwo\nthree\nfour\n";
+    //             ^0 ^3   ^7     ^13   ^18
+
+    // .bi
+    //
+    try case(input, 0, true, .{ .bi = .{ .backward = 0, .forward = 0 } }, .{}, .{ .pos = 0, .clp = 0, .fln = 0 });
+    try case(input, 100, true, .{ .bi = .{ .backward = 10, .forward = 10 } }, .{}, .{ .pos = 0, .clp = 0, .fln = 0 });
+
+    try case(input, 8, false, .{ .bi = .{ .backward = 1, .forward = 0 } }, .{"three"}, .{ .pos = 0, .clp = 0, .fln = 0 });
+    try case(input, 8, true, .{ .bi = .{ .backward = 1, .forward = 0 } }, .{"three"}, .{ .pos = 0, .clp = 0, .fln = 3 });
+    try case(input, 8, false, .{ .bi = .{ .backward = 0, .forward = 1 } }, .{"three"}, .{ .pos = 0, .clp = 0, .fln = 0 });
+    try case(input, 8, true, .{ .bi = .{ .backward = 0, .forward = 1 } }, .{"three"}, .{ .pos = 0, .clp = 0, .fln = 3 });
+
+    try case(input, 12, false, .{ .bi = .{ .backward = 1, .forward = 0 } }, .{"three"}, .{ .pos = 4, .clp = 0, .fln = 0 });
+    try case(input, 12, false, .{ .bi = .{ .backward = 0, .forward = 1 } }, .{"three"}, .{ .pos = 4, .clp = 0, .fln = 0 });
+    try case(input, 12, true, .{ .bi = .{ .backward = 2, .forward = 0 } }, .{ "two", "three" }, .{ .pos = 4, .clp = 1, .fln = 2 });
+    try case(input, 12, true, .{ .bi = .{ .backward = 0, .forward = 2 } }, .{ "three", "four" }, .{ .pos = 4, .clp = 0, .fln = 3 });
+
+    try case(input, 19, true, .{ .bi = .{ .backward = 5, .forward = 5 } }, .{
+        "one",
+        "two",
+        "three",
+        "four",
+        "",
+    }, .{ .pos = 0, .clp = 4, .fln = 1 });
+    try case(input, 0, true, .{ .bi = .{ .backward = 5, .forward = 5 } }, .{
+        "one",
+        "two",
+        "three",
+        "four",
+        "",
+    }, .{ .pos = 0, .clp = 0, .fln = 1 });
+
+    // .range_hard
+    //
+    try case(input, 0, true, .{ .range_hard = 1 }, .{"one"}, .{ .pos = 0, .clp = 0, .fln = 1 });
+    //                                                ^
+    try case(input, 19, true, .{ .range_hard = 1 }, .{""}, .{ .pos = 0, .clp = 0, .fln = 5 });
+    //                                                ^
+    try case(input, 0, true, .{ .range_hard = 2 }, .{ "one", "two" }, .{ .pos = 0, .clp = 0, .fln = 1 });
+    //                                                 ^
+    try case(input, 19, true, .{ .range_hard = 2 }, .{""}, .{ .pos = 0, .clp = 0, .fln = 5 });
+    //                                                ^
+    try case(input, 0, true, .{ .range_hard = 3 }, .{ "one", "two" }, .{ .pos = 0, .clp = 0, .fln = 1 });
+    //                                                 ^
+    try case(input, 19, true, .{ .range_hard = 3 }, .{ "four", "" }, .{ .pos = 0, .clp = 1, .fln = 4 });
+    //                                                         ^
+    try case(input, 10, true, .{ .range_hard = 3 }, .{ "two", "three", "four" }, .{ .pos = 2, .clp = 1, .fln = 2 });
+    //                                                           ^
+    try case(input, 6, true, .{ .range_hard = 4 }, .{ "one", "two", "three", "four" }, .{ .pos = 2, .clp = 1, .fln = 1 });
+    //                                                          ^
+    try case(input, 15, true, .{ .range_hard = 4 }, .{ "three", "four", "" }, .{ .pos = 1, .clp = 1, .fln = 3 });
+    //                                                            ^
+
+    // .range_soft
+    //
+    try case(input, 0, true, .{ .range_soft = 1 }, .{"one"}, .{ .pos = 0, .clp = 0, .fln = 1 });
+    //                                                ^
+    try case(input, 0, true, .{ .range_soft = 3 }, .{ "one", "two", "three" }, .{ .pos = 0, .clp = 0, .fln = 1 });
+    //                                                 ^
+    try case(input, 9, true, .{ .range_soft = 3 }, .{ "two", "three", "four" }, .{ .pos = 1, .clp = 1, .fln = 2 });
+    //                                                         ^
+    try case(input, 0, true, .{ .range_soft = 4 }, .{ "one", "two", "three", "four" }, .{ .pos = 0, .clp = 0, .fln = 1 });
+    //                                                 ^
+
+}
 
 /// Implementation function. Reads lines in both directions.
 fn readLinesImpl(
-    comptime mode: enum { forward, backward },
+    comptime dir: ReadDirection,
     buf: [][]const u8,
     input: []const u8,
     index: usize,
     amount: usize,
     detect_line_num: bool,
-) LinesInfo {
+) ReadLinesInfo {
     if (index > input.len or buf.len == 0 or amount == 0)
-        return .{
-            .lines = buf[0..0],
-            .first_line_num = 0,
-            .curr_line_pos = 0,
-            .index_pos = 0,
-        };
+        return ReadLinesInfo.initEmpty(buf);
 
     var line_start = indexOfLineStart(input, index);
     var line_end = indexOfLineEnd(input, index);
@@ -252,7 +514,7 @@ fn readLinesImpl(
 
     var i: usize = amount - 1;
     while (i != 0 and !s.full()) : (i -= 1) {
-        switch (mode) {
+        switch (dir) {
             .forward => {
                 if (line_end >= input.len) break;
                 const start_shifted = line_end + 1;
@@ -268,11 +530,11 @@ fn readLinesImpl(
         }
         s.push(input[line_start..line_end]) catch unreachable;
     }
-    if (mode == .backward) slice.reverseSlice(s.slice());
+    if (dir == .backward) slice.reverseSlice(s.slice());
 
     return .{
         .lines = s.slice(),
-        .curr_line_pos = if (mode == .backward) s.slice().len -| 1 else 0,
+        .curr_line_pos = if (dir == .backward) s.slice().len -| 1 else 0,
         .index_pos = index_pos,
         .first_line_num = blk: {
             if (detect_line_num) {
@@ -289,21 +551,16 @@ test "+readLinesImpl" {
 
     const case = struct {
         fn run(
-            comptime mode: enum { forward, backward },
+            comptime dir: ReadDirection,
             input: []const u8,
             index: usize,
             amount: usize,
             detect_ln: bool,
             expect_ln: anytype,
-            expect: struct {
-                clp: usize,
-                pos: usize,
-                fln: usize,
-            },
+            expect: struct { clp: usize, pos: usize, fln: usize },
         ) !void {
             var buf: [32][]const u8 = undefined;
-            const m = if (mode == .forward) .forward else .backward;
-            const actual_lines = readLinesImpl(m, &buf, input, index, amount, detect_ln);
+            const actual_lines = readLinesImpl(dir, &buf, input, index, amount, detect_ln);
             const expect_lines: [std.meta.fields(@TypeOf(expect_ln)).len][]const u8 = expect_ln;
             try t.expectEqual(expect_lines.len, actual_lines.lines.len);
             for (expect_lines, actual_lines.lines) |e, a| try t.expectEqualStrings(e, a);
@@ -313,12 +570,15 @@ test "+readLinesImpl" {
         }
     }.run;
 
+    // format:
+    // try case(|direction|, |input|, |index|, |amount| |detect_line_number|, |expected result items|)
+
     const input = "first\nsecond\nthird\n";
     //             ^0   ^5      ^12    ^18
     //                      ^8(rel_pos:2)
 
     // forward
-    //                      |idx| |amt| |detect_ln| |expect items|
+    //
     try case(.forward, input, 0, 0, false, .{}, .{ .pos = 0, .clp = 0, .fln = 0 });
     try case(.forward, input, 0, 1, false, .{"first"}, .{ .pos = 0, .clp = 0, .fln = 0 });
     try case(.forward, input, 3, 1, false, .{"first"}, .{ .pos = 3, .clp = 0, .fln = 0 });
@@ -356,230 +616,32 @@ test "+readLinesImpl" {
     try case(.backward, input, 19, 2, true, .{ "third", "" }, .{ .pos = 0, .clp = 1, .fln = 3 });
 }
 
-pub const ReadMode = union(enum) {
-    /// Read a specified amount of lines, moving backward.
-    backward: usize,
-    /// Read a specified amount of lines, moving forward.
-    forward: usize,
-    /// Read a specified amount of lines in both directions.
-    /// Backward first, then forward. Current line is in backward range.
-    bi: struct { backward: usize, forward: usize },
-    /// Reads a specified range of lines around the cursor, distributing range
-    /// within available input boundaries.
-    range_soft: usize,
-    /// Reads a specified range of lines around the cursor, cutting off lines
-    /// that fall outside the available input boundaries.
-    range_hard: usize,
-
-    pub fn total(mode: @This()) usize {
-        return switch (mode) {
-            inline .backward,
-            .forward,
-            .range_soft,
-            .range_hard,
-            => |amt| amt,
-            .bi => |amt| amt.backward + amt.forward,
-        };
-    }
-};
-
-test "+ReadMode.total" {
-    const equal = std.testing.expectEqual;
-    try equal(0, (ReadMode{ .bi = .{ .backward = 0, .forward = 0 } }).total());
-    try equal(10, (ReadMode{ .bi = .{ .backward = 4, .forward = 6 } }).total());
-    try equal(5, (ReadMode{ .backward = 5 }).total());
-    try equal(5, (ReadMode{ .forward = 5 }).total());
-    try equal(5, (ReadMode{ .range_hard = 5 }).total());
-    try equal(5, (ReadMode{ .range_soft = 5 }).total());
-}
-
-pub fn readLines(
+/// Continues reading from the result of `readLines` in the specified direction.
+/// Refer to `readLines` for more details.
+pub fn continueRead(
+    direction: ReadDirection,
+    info: ReadLinesInfo,
     buf: [][]const u8,
     input: []const u8,
     index: usize,
-    detect_line_num: bool,
-    mode: ReadMode,
-) LinesInfo {
-    if (index > input.len or buf.len == 0) return .{
-        .lines = buf[0..0],
-        .first_line_num = 0,
-        .curr_line_pos = 0,
-        .index_pos = 0,
-    };
-    switch (mode) {
-        .forward => return readLinesImpl(.forward, buf, input, index, mode.forward, detect_line_num),
-        .backward => return readLinesImpl(.backward, buf, input, index, mode.backward, detect_line_num),
-        .bi => {
-            const backward = readLinesImpl(.backward, buf, input, index, mode.bi.backward, detect_line_num);
-            const backward_empty = backward.lines.len == 0;
-            const next_index = b: {
-                if (backward_empty) break :b index else {
-                    const curr_line = backward.lines[backward.curr_line_pos];
-                    break :b slice.indexOfSliceEnd(input, curr_line) + 1;
-                }
-            };
-            const buf_left = buf[backward.lines.len..];
-            const forward = readLinesImpl(.forward, buf_left, input, next_index, mode.bi.forward, detect_line_num);
+    amount: usize,
+    update_line_num: bool,
+) ReadLinesInfo {
+    if (buf.len == 0) return ReadLinesInfo.initEmpty(buf);
+    const info_empty = info.lines.len == 0;
+    switch (direction) {
+        .forward => {
+            const next_index = if (info_empty) index else info.indexLastRead(input) + 1;
+            const detect_ln = if (info.first_line_num == 0 and update_line_num) true else false;
+            const buf_left = buf[info.lines.len..];
+            const forward = readLinesImpl(.forward, buf_left, input, next_index, amount, detect_ln);
             return .{
-                .lines = buf[0 .. backward.lines.len + forward.lines.len],
-                .curr_line_pos = backward.curr_line_pos,
-                .first_line_num = if (backward_empty) forward.first_line_num else backward.first_line_num,
-                .index_pos = if (backward_empty) forward.index_pos else backward.index_pos,
+                .lines = buf[0 .. info.lines.len + forward.lines.len],
+                .curr_line_pos = info.curr_line_pos,
+                .first_line_num = if (info_empty) forward.first_line_num else info.first_line_num,
+                .index_pos = if (info_empty) forward.index_pos else info.index_pos,
             };
         },
-        inline .range_soft, .range_hard => |range, range_mode| {
-            switch (range) {
-                0 => return .{
-                    .lines = buf[0..0],
-                    .first_line_num = 0,
-                    .curr_line_pos = 0,
-                    .index_pos = 0,
-                },
-                1 => return readLinesImpl(.forward, buf, input, index, 1, detect_line_num),
-                else => {
-                    // calculate the amount to read both backward and forward.
-                    const rshift_even = true; // hardcoded for now
-                    // for range=4: true => 1back, 1curr, 2for; false => 2back, 1curr, 1for
-                    const read = ReadMode{
-                        .bi = if (range & 1 == 0) .{ // even
-                            .backward = if (rshift_even) range / 2 else range / 2 + 1,
-                            .forward = if (rshift_even) range / 2 else range / 2 - 1,
-                        } else .{ // odd
-                            .backward = range / 2 + 1, // backward includes current line
-                            .forward = range / 2,
-                        },
-                    };
-                    switch (range_mode) {
-                        .range_hard => {
-                            return readLines(buf, input, index, detect_line_num, read);
-                        },
-                        .range_soft => {
-                            // 1. read the planned number of lines backward and forward
-                            const info = readLines(buf, input, index, detect_line_num, read);
-                            const total_read = info.lines.len;
-                            const total_read_plan = read.bi.backward + read.bi.forward;
-                            const total_read_left = total_read_plan - total_read;
-                            const read_backward = info.curr_line_pos + 1;
-                            const read_forward = info.lines.len - info.curr_line_pos;
-                            const buf_left = buf[total_read..];
-
-                            if (buf_left.len == 0 or total_read_left == 0 or
-                                (read_backward < read.bi.backward and read_forward < read.bi.forward))
-                                return info; // no space left or no lines left to read
-
-                            // 2. compensate for any deficit
-                            if (read_backward < read.bi.backward) { // deficit in backward read, compensate by reading forward
-                                const rightmost_line_read = info.lines[info.lines.len -| 1];
-                                const next_rightmost_index = slice.indexOfSliceEnd(input, rightmost_line_read) + 1;
-                                const compensated = readLinesImpl(.forward, buf_left, input, next_rightmost_index, total_read_left, detect_line_num);
-                                return .{
-                                    .lines = buf[0 .. total_read + compensated.lines.len],
-                                    .curr_line_pos = info.curr_line_pos,
-                                    .first_line_num = info.first_line_num,
-                                    .index_pos = info.index_pos,
-                                };
-                            } else { // deficit in forward read, compensate by reading backward
-                                const leftmost_line_read = info.lines[0]; // safe, index <= input.len always produces at least one line
-                                const next_leftmost_index = slice.indexOfSliceStart(input, leftmost_line_read) -| 1;
-                                const compensated = readLinesImpl(.backward, buf_left, input, next_leftmost_index, total_read_left, detect_line_num);
-                                _ = compensated; // autofix
-                                @panic("not implemented");
-                            }
-                        },
-                        else => unreachable,
-                    }
-                },
-            }
-        },
+        else => unreachable,
     }
-}
-
-test "+readLines" {
-    const t = std.testing;
-
-    const case = struct {
-        fn run(
-            input: []const u8,
-            index: usize,
-            detect_ln: bool,
-            mode: ReadMode,
-            expect_lns: anytype,
-            expect: struct { pos: usize, clp: usize, fln: usize },
-        ) !void {
-            var buf: [32][]const u8 = undefined;
-            const actual = readLines(&buf, input, index, detect_ln, mode);
-            const expect_lines: [std.meta.fields(@TypeOf(expect_lns)).len][]const u8 = expect_lns;
-            try t.expectEqual(expect_lines.len, actual.lines.len);
-            for (expect_lines, actual.lines) |e, a| try t.expectEqualStrings(e, a);
-            try t.expectEqual(expect.clp, actual.curr_line_pos);
-            try t.expectEqual(expect.pos, actual.index_pos);
-            try t.expectEqual(expect.fln, actual.first_line_num);
-        }
-    }.run;
-
-    const input = "one\ntwo\nthree\nfour\n";
-    //             ^0 ^3   ^7     ^13   ^18
-
-    // bidirectional read
-    //
-    try case(input, 0, true, .{ .bi = .{ .backward = 0, .forward = 0 } }, .{}, .{ .pos = 0, .clp = 0, .fln = 0 });
-    try case(input, 100, true, .{ .bi = .{ .backward = 10, .forward = 10 } }, .{}, .{ .pos = 0, .clp = 0, .fln = 0 });
-
-    try case(input, 8, false, .{ .bi = .{ .backward = 1, .forward = 0 } }, .{"three"}, .{ .pos = 0, .clp = 0, .fln = 0 });
-    try case(input, 8, true, .{ .bi = .{ .backward = 1, .forward = 0 } }, .{"three"}, .{ .pos = 0, .clp = 0, .fln = 3 });
-    try case(input, 8, false, .{ .bi = .{ .backward = 0, .forward = 1 } }, .{"three"}, .{ .pos = 0, .clp = 0, .fln = 0 });
-    try case(input, 8, true, .{ .bi = .{ .backward = 0, .forward = 1 } }, .{"three"}, .{ .pos = 0, .clp = 0, .fln = 3 });
-
-    try case(input, 12, false, .{ .bi = .{ .backward = 1, .forward = 0 } }, .{"three"}, .{ .pos = 4, .clp = 0, .fln = 0 });
-    try case(input, 12, false, .{ .bi = .{ .backward = 0, .forward = 1 } }, .{"three"}, .{ .pos = 4, .clp = 0, .fln = 0 });
-    try case(input, 12, true, .{ .bi = .{ .backward = 2, .forward = 0 } }, .{ "two", "three" }, .{ .pos = 4, .clp = 1, .fln = 2 });
-    try case(input, 12, true, .{ .bi = .{ .backward = 0, .forward = 2 } }, .{ "three", "four" }, .{ .pos = 4, .clp = 0, .fln = 3 });
-
-    try case(input, 19, true, .{ .bi = .{ .backward = 5, .forward = 5 } }, .{
-        "one",
-        "two",
-        "three",
-        "four",
-        "",
-    }, .{ .pos = 0, .clp = 4, .fln = 1 });
-    try case(input, 0, true, .{ .bi = .{ .backward = 5, .forward = 5 } }, .{
-        "one",
-        "two",
-        "three",
-        "four",
-        "",
-    }, .{ .pos = 0, .clp = 0, .fln = 1 });
-
-    // range hard
-    //
-    try case(input, 0, true, .{ .range_hard = 1 }, .{"one"}, .{ .pos = 0, .clp = 0, .fln = 1 });
-    //                                                ^
-    try case(input, 19, true, .{ .range_hard = 1 }, .{""}, .{ .pos = 0, .clp = 0, .fln = 5 });
-    //                                                ^
-    try case(input, 0, true, .{ .range_hard = 2 }, .{ "one", "two" }, .{ .pos = 0, .clp = 0, .fln = 1 });
-    //                                                 ^
-    try case(input, 19, true, .{ .range_hard = 2 }, .{""}, .{ .pos = 0, .clp = 0, .fln = 5 });
-    //                                                ^
-    try case(input, 0, true, .{ .range_hard = 3 }, .{ "one", "two" }, .{ .pos = 0, .clp = 0, .fln = 1 });
-    //                                                 ^
-    try case(input, 19, true, .{ .range_hard = 3 }, .{ "four", "" }, .{ .pos = 0, .clp = 1, .fln = 4 });
-    //                                                         ^
-    try case(input, 10, true, .{ .range_hard = 3 }, .{ "two", "three", "four" }, .{ .pos = 2, .clp = 1, .fln = 2 });
-    //                                                           ^
-    try case(input, 6, true, .{ .range_hard = 4 }, .{ "one", "two", "three", "four" }, .{ .pos = 2, .clp = 1, .fln = 1 });
-    //                                                          ^
-    try case(input, 15, true, .{ .range_hard = 4 }, .{ "three", "four", "" }, .{ .pos = 1, .clp = 1, .fln = 3 });
-    //                                                            ^
-
-    // range soft
-    //
-    try case(input, 0, true, .{ .range_soft = 1 }, .{"one"}, .{ .pos = 0, .clp = 0, .fln = 1 });
-    //                                                ^
-    try case(input, 0, true, .{ .range_soft = 3 }, .{ "one", "two", "three" }, .{ .pos = 0, .clp = 0, .fln = 1 });
-    //                                                 ^
-    try case(input, 9, true, .{ .range_soft = 3 }, .{ "two", "three", "four" }, .{ .pos = 1, .clp = 1, .fln = 2 });
-    //                                                         ^
-    try case(input, 0, true, .{ .range_soft = 4 }, .{ "one", "two", "three", "four" }, .{ .pos = 0, .clp = 0, .fln = 1 });
-    //                                                 ^
-
 }
