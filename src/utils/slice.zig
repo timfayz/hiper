@@ -21,6 +21,10 @@
 //! - SliceAroundIndices
 //! - sliceAroundIndices()
 //! - isSubSlice()
+//! - moveSubSliceLeft()
+//! - moveSubSliceRight()
+//! - MoveSubSliceError
+//! - MoveSubSliceDirection
 
 const std = @import("std");
 const num = @import("num.zig");
@@ -600,4 +604,175 @@ test "+isSubSlice" {
     try equal(false, isSubSlice(u8, slice[5..10], slice[0..5]));
     try equal(false, isSubSlice(u8, slice[0..0], slice[11..11]));
     try equal(false, isSubSlice(u8, slice[0..6], slice[5..11]));
+}
+
+// Moves a valid sub-slice to the beginning of the given slice. The function
+// returns an error if slices are from different origins or the sub-slice length
+// exceeds 1024. Use `moveSubSliceImpl()` directly to increase the length.
+pub fn moveSubSliceLeft(T: type, slice: []T, sub: []T) MoveSubSliceError!void {
+    return moveSubSliceImpl(.left, 1024, T, slice, sub);
+}
+
+// Moves a valid sub-slice to the end of the given slice. The function returns
+// an error if slices are from different origins or the sub-slice length exceeds
+// 1024. Use `moveSubSliceImpl()` directly to increase the length.
+pub fn moveSubSliceRight(T: type, slice: []T, sub: []T) MoveSubSliceError!void {
+    return moveSubSliceImpl(.right, 1024, T, slice, sub);
+}
+
+pub const MoveSubSliceError = error{ IsNotSubSlice, SubSliceTooBig };
+pub const MoveSubSliceDirection = enum { left, right };
+
+/// Implementation function.
+pub fn moveSubSliceImpl(
+    comptime dir: MoveSubSliceDirection,
+    comptime max_sub_size: usize,
+    T: type,
+    slice: []T,
+    sub: []T,
+) MoveSubSliceError!void {
+    if (!isSubSlice(T, slice, sub)) return MoveSubSliceError.IsNotSubSlice;
+    if (sub.len > max_sub_size) return MoveSubSliceError.SubSliceTooBig;
+
+    // no need to move if
+    if (sub.len == 0 or sub.len == slice.len) return;
+    switch (dir) {
+        .right => if (indexOfSliceEnd(slice, sub) == slice.len) return,
+        .left => if (indexOfSliceStart(slice, sub) == 0) return,
+    }
+
+    // copy sub
+    var buf: [max_sub_size]T = undefined;
+    std.mem.copyForwards(T, &buf, sub);
+    const sub_copy = buf[0..sub.len];
+
+    // swap sub-slice with its opposite side
+    switch (dir) {
+        // [ [sub] [sub_rhs] ]
+        // [ [rhs_dst]       ]
+        .right => {
+            const sub_rhs = slice[indexOfSliceEnd(slice, sub)..];
+            const dst_start: usize = indexOfSliceStart(slice, sub);
+            const dst_end: usize = dst_start +| sub_rhs.len;
+            std.mem.copyForwards(T, slice[dst_start..dst_end], sub_rhs);
+
+            // copy sub to the end of slice
+            std.mem.copyForwards(T, slice[slice.len -| sub_copy.len..], sub_copy);
+        },
+        // [ [sub_lhs] [sub] ]
+        // [       [lhs_dst] ]
+        .left => {
+            const sub_lhs = slice[0..indexOfSliceStart(slice, sub)];
+            const dst_end: usize = indexOfSliceEnd(slice, sub);
+            const dst_start: usize = dst_end -| sub_lhs.len;
+            std.mem.copyBackwards(T, slice[dst_start..dst_end], sub_lhs);
+
+            // copy sub to the beginning of the slice
+            std.mem.copyForwards(T, slice[0..sub_copy.len], sub_copy);
+        },
+    }
+}
+
+test "+moveSubSliceRight" {
+    const t = std.testing;
+    const Err = MoveSubSliceError;
+
+    const case = struct {
+        pub fn run(
+            comptime dir: MoveSubSliceDirection,
+            expected_slice: []const u8,
+            expected_err: ?MoveSubSliceError,
+            slice: []u8,
+            sub: []u8,
+        ) !void {
+            moveSubSliceImpl(dir, 7, u8, slice, sub) catch |err| {
+                if (expected_err == null) return err;
+                try t.expectEqual(expected_err.?, err);
+                return;
+            };
+            if (expected_err != null) return error.ExpectedError;
+            try t.expectEqualStrings(expected_slice, slice);
+        }
+    }.run;
+
+    // format:
+    // try case(|move_dir|, |expected_slice|, |?expected_err|, |orig_slice|, |sub_to_move|)
+
+    const origin = "0123456";
+    var buf: [7]u8 = origin.*;
+    const slice = buf[0..];
+
+    // right
+    //
+    try case(.right, "3456012", null, slice, slice[0..3]);
+    //                    ---
+    buf = origin.*;
+
+    try case(.right, "0126345", null, slice, slice[3..6]);
+    //                    ---
+    buf = origin.*;
+
+    try case(.right, origin, null, slice, slice);
+    //               same input
+    buf = origin.*;
+
+    try case(.right, origin, null, slice, slice[4..]);
+    //               no need to move
+    buf = origin.*;
+
+    try case(.right, origin, null, slice, slice[7..]);
+    //               zero length sub-slice
+    buf = origin.*;
+
+    try case(.right, origin, null, slice, slice[3..3]);
+    //               zero length sub-slice
+    buf = origin.*;
+
+    try case(.right, "", Err.IsNotSubSlice, slice[0..4], slice[3..6]);
+    //               not a valid sub-slice
+    buf = origin.*;
+
+    var big_buf: [10]u8 = undefined;
+    try case(.right, "", Err.SubSliceTooBig, &big_buf, big_buf[0..]);
+    //               sub slice is to big to copy
+    buf = origin.*;
+
+    // left
+    //
+    try case(.left, "1234560", null, slice, slice[1..]);
+    //               ------
+    buf = origin.*;
+
+    try case(.left, "4560123", null, slice, slice[4..]);
+    //               ---
+    buf = origin.*;
+
+    try case(.left, "6012345", null, slice, slice[6..]);
+    //               -
+    buf = origin.*;
+
+    try case(.left, origin, null, slice, slice);
+    //              same input
+    buf = origin.*;
+
+    try case(.left, origin, null, slice, slice[0..3]);
+    //              no need to move
+    buf = origin.*;
+
+    try case(.left, origin, null, slice, slice[7..]);
+    //              zero length sub-slice
+    buf = origin.*;
+
+    try case(.left, origin, null, slice, slice[3..3]);
+    //              zero length sub-slice
+    buf = origin.*;
+
+    try case(.left, "", Err.IsNotSubSlice, slice[0..4], slice[3..6]);
+    //              not a valid sub-slice
+    buf = origin.*;
+
+    var big_buf2: [10]u8 = undefined;
+    try case(.left, "", Err.SubSliceTooBig, &big_buf2, big_buf2[0..]);
+    //               sub slice is to big to copy
+    buf = origin.*;
 }
