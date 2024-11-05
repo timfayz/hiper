@@ -147,7 +147,7 @@ pub fn StackFromSlice(T: type) type {
         const Self = @This();
         pub const Error = error{NoSpaceLeft};
 
-        pub fn initFilled(slc: []T) Self {
+        pub fn initFull(slc: []T) Self {
             return Self{
                 .slc = slc,
                 .nil = if (slc.len == 0) true else false,
@@ -159,7 +159,7 @@ pub fn StackFromSlice(T: type) type {
             return Self{ .slc = slc, .nil = true, .top = 0 };
         }
 
-        pub fn initLen(slc: []T, length: usize) Self {
+        pub fn initPrefill(slc: []T, length: usize) Self {
             if (length == 0) {
                 return Self{ .slc = slc, .nil = true, .top = 0 };
             }
@@ -218,38 +218,47 @@ pub fn StackFromSlice(T: type) type {
         pub fn slice(s: *Self) []T {
             return s.slc[0..s.top];
         }
+
+        pub fn sliceLeft(s: *Self) []T {
+            return s.slc[s.top..];
+        }
     };
 }
 
-pub inline fn initFromSliceFilled(T: type, slice: []T) StackFromSlice(T) {
-    return StackFromSlice(T).initFilled(slice);
+pub inline fn initFromSliceFull(T: type, slice: []T) StackFromSlice(T) {
+    return StackFromSlice(T).initFull(slice);
 }
 
 pub inline fn initFromSliceEmpty(T: type, slice: []T) StackFromSlice(T) {
     return StackFromSlice(T).initEmpty(slice);
 }
 
-pub inline fn initFromSliceSetLen(T: type, slice: []T, len: usize) StackFromSlice(T) {
-    return StackFromSlice(T).initLen(slice, len);
+pub inline fn initFromSlicePrefill(T: type, slice: []T, len: usize) StackFromSlice(T) {
+    return StackFromSlice(T).initPrefill(slice, len);
 }
 
-test "test StackFromSlice" {
+test "+StackFromSlice" {
     const t = std.testing;
 
     var buf: [5]u8 = undefined;
 
     var stack1 = initFromSliceEmpty(u8, buf[0..]);
+    try t.expectEqual(5, stack1.sliceLeft().len);
+
     try stack1.push('a');
     try stack1.push('b');
     try t.expectEqualSlices(u8, "ab", stack1.slice());
+    try t.expectEqual(3, stack1.sliceLeft().len);
 
-    var stack2 = initFromSliceSetLen(u8, buf[0..], 2);
+    var stack2 = initFromSlicePrefill(u8, buf[0..], 2);
     try stack2.push('c');
     try t.expectEqualSlices(u8, "abc", stack2.slice());
+    try t.expectEqual(2, stack2.sliceLeft().len);
 
     buf[3] = 'd';
     buf[4] = 'e';
 
-    var stack3 = initFromSliceFilled(u8, buf[0..]);
+    var stack3 = initFromSliceFull(u8, buf[0..]);
     try t.expectEqualSlices(u8, "abcde", stack3.slice());
+    try t.expectEqual(0, stack3.sliceLeft().len);
 }
