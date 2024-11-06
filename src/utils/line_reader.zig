@@ -92,14 +92,15 @@ test "+indexOfLineEnd, indexOfLineStart" {
     //               1 3  6
 }
 
-/// Returns the line number at the specified index in `input`. Line numbers
-/// start from 1.
-pub fn countLineNum(input: []const u8, index: usize) usize {
+/// Counts the line number in `input` up to the specified `end` index,
+/// starting from `start` and reading forward. Line numbering begins at 1.
+pub fn countLineNumForward(input: []const u8, start: usize, end: usize) usize {
     if (input.len == 0) return 1;
-    if (index == 0 and input[0] == '\n') return 1; // spacial case
-    const until = @min(input.len, index); // normalize
+
+    var i: usize, var until = if (start < end) .{ start, end } else .{ end, start };
+    until = @min(input.len, until); // normalize
+
     var line_num: usize = 1;
-    var i: usize = 0;
     while (i < until) : (i += 1) {
         if (input[i] == '\n') line_num += 1;
     }
@@ -109,24 +110,33 @@ pub fn countLineNum(input: []const u8, index: usize) usize {
 test "+countLineNum" {
     const expectLine = std.testing.expectEqual;
 
-    try expectLine(1, countLineNum("", 0));
-    try expectLine(1, countLineNum("", 100));
-    try expectLine(1, countLineNum("\n", 0));
-    //                              ^
-    try expectLine(2, countLineNum("\n", 1));
-    //                                ^
-    try expectLine(2, countLineNum("\n", 100));
-    //                                ^
-    try expectLine(2, countLineNum("\n\n", 1));
-    //                                ^
-    try expectLine(3, countLineNum("\n\n", 2));
-    //                                  ^
-    try expectLine(1, countLineNum("l1\nl2\nl3", 0));
-    //                              ^
-    try expectLine(2, countLineNum("l1\nl2\nl3", 3));
-    //                                  ^
-    try expectLine(3, countLineNum("l1\nl2\nl3", 6));
-    //                                      ^
+    try expectLine(1, countLineNumForward("", 0, 0));
+    try expectLine(1, countLineNumForward("", 0, 100));
+    try expectLine(1, countLineNumForward("", 100, 100));
+    try expectLine(2, countLineNumForward("\n", 0, 1));
+    //                                     ^ ^
+    try expectLine(2, countLineNumForward("\n", 0, 100));
+    //                                     ^ ^
+    try expectLine(2, countLineNumForward("\n", 100, 0)); // reversed
+    //                                     ^ ^
+    try expectLine(2, countLineNumForward("\n\n", 0, 1));
+    //                                     ^ ^
+    try expectLine(3, countLineNumForward("\n\n", 0, 2));
+    //                                     ^   ^
+    try expectLine(2, countLineNumForward("\n\n", 1, 2)); // partial range
+    //                                       ^ ^
+    try expectLine(2, countLineNumForward("\n\n", 2, 1)); // reversed
+    //                                       ^ ^
+    try expectLine(1, countLineNumForward("l1\nl2\nl3", 0, 0));
+    //                                     ^
+    try expectLine(2, countLineNumForward("l1\nl2\nl3", 0, 3));
+    //                                     ^   ^
+    try expectLine(3, countLineNumForward("l1\nl2\nl3", 0, 6));
+    //                                     ^       ^
+    try expectLine(3, countLineNumForward("l1\nl2\nl3", 2, 7)); // partial range
+    //                                       ^      ^
+    try expectLine(3, countLineNumForward("l1\nl2\nl3", 7, 2)); // reversed
+    //                                       ^      ^
 }
 
 /// The result of a single-line reading.
@@ -156,7 +166,7 @@ pub fn readLine(
         .index_pos = index_pos,
         .line_num = blk: {
             if (detect_line_num) {
-                break :blk countLineNum(input, line_start);
+                break :blk countLineNumForward(input, 0, line_start);
             } else break :blk 0;
         },
     };
@@ -238,6 +248,16 @@ pub const ReadRequest = union(enum) {
     /// that fall outside the available input boundaries.
     range_hard: usize,
 
+    /// Extends the requested amount by adding another request's value. Coerces
+    /// the result into a bidirectional `ReadRequest`.
+    pub fn extend(base: ReadRequest, extra: ReadRequest) ReadRequest {
+        return ReadRequest{ .bi = .{
+            .backward = base.amountBackward() + extra.amountBackward(),
+            .forward = base.amountForward() + extra.amountForward(),
+        } };
+    }
+
+    /// The total amount of lines requested, regardless of direction.
     pub fn amountTotal(req: ReadRequest) usize {
         return switch (req) {
             inline .backward, .forward, .range_soft, .range_hard => |amt| amt,
@@ -245,6 +265,7 @@ pub const ReadRequest = union(enum) {
         };
     }
 
+    /// The amount of lines requested in the backward direction.
     pub fn amountBackward(req: ReadRequest) usize {
         return switch (req) {
             .backward => |amt| amt,
@@ -254,6 +275,7 @@ pub const ReadRequest = union(enum) {
         };
     }
 
+    /// The amount of lines requested in the forward direction.
     pub fn amountForward(req: ReadRequest) usize {
         return switch (req) {
             .backward => 0,
@@ -263,6 +285,10 @@ pub const ReadRequest = union(enum) {
         };
     }
 
+    /// Creates a bidirectional `ReadRequest` with a specified range,
+    /// distributing lines evenly between forward and backward directions.
+    /// For even ranges, the range is shifted right by one line relative to
+    /// the current one.
     pub inline fn range(len: usize) ReadRequest {
         const rshift_even = true; // hardcoded for now
         return ReadRequest{
@@ -281,73 +307,98 @@ pub const ReadRequest = union(enum) {
 pub const ReadLinesInfo = struct {
     /// Retrieved lines.
     lines: [][]const u8,
-    /// The detected first line number of `lines` (starts from 1).
+    /// The detected line number of the first element in `lines` (starts from 1).
+    /// If automatic line number detection was disabled, this value is `0`.
     first_line_num: usize,
     /// The position of the current line where the index was located.
     curr_line_pos: usize,
     /// The index position within the current line.
     index_pos: usize,
 
+    /// Initializes an empty `ReadLinesInfo` structure with the provided buffer.
     pub inline fn initEmpty(buf: [][]const u8) ReadLinesInfo {
         return .{ .lines = buf[0..0], .first_line_num = 0, .curr_line_pos = 0, .index_pos = 0 };
     }
 
-    pub inline fn readBeforeCurr(s: *const ReadLinesInfo) usize {
+    /// Checks if no lines have been read.
+    pub inline fn isEmpty(s: *const ReadLinesInfo) bool {
+        return s.lines.len == 0;
+    }
+
+    /// The number of lines read before the current line.
+    pub inline fn linesBeforeCurr(s: *const ReadLinesInfo) usize {
         return s.curr_line_pos;
     }
 
-    pub inline fn readAfterCurr(s: *const ReadLinesInfo) usize {
+    /// The number of lines read after the current line.
+    pub inline fn linesAfterCurr(s: *const ReadLinesInfo) usize {
         return s.lines.len -| s.curr_line_pos -| 1;
     }
 
-    pub inline fn readTotal(r: *const ReadLinesInfo) usize {
+    /// The total number of lines read.
+    pub inline fn linesTotal(r: *const ReadLinesInfo) usize {
         return r.lines.len;
     }
 
-    pub inline fn readBackward(r: *const ReadLinesInfo, req: ReadRequest) usize {
+    /// The number of lines read in the backward direction based on the
+    /// specified request. Returns `0` if the request is forward-only.
+    pub inline fn linesReadBackward(r: *const ReadLinesInfo, req: ReadRequest) usize {
         return switch (req) {
             .forward => 0,
-            .backward => r.readTotal(),
-            else => r.readBeforeCurr() + 1,
+            .backward => r.linesTotal(),
+            else => r.linesBeforeCurr() + 1,
         };
     }
 
-    pub inline fn readForward(r: *const ReadLinesInfo, req: ReadRequest) usize {
+    /// The number of lines read in the forward direction based on the
+    /// specified request. Returns `0` if the request is backward-only.
+    pub inline fn linesReadForward(r: *const ReadLinesInfo, req: ReadRequest) usize {
         return switch (req) {
-            .forward => r.readTotal(),
+            .forward => r.linesTotal(),
             .backward => 0,
-            else => r.readAfterCurr(),
+            else => r.linesAfterCurr(),
         };
     }
 
+    /// Calculates the remaining number of lines to read based on the request’s total amount.
     pub inline fn leftTotal(r: *const ReadLinesInfo, req: ReadRequest) usize {
-        return req.amountTotal() - r.readTotal();
+        return req.amountTotal() - r.linesTotal();
     }
 
+    /// Calculates the remaining number of lines to read in the backward direction.
     pub inline fn leftBackward(r: *const ReadLinesInfo, req: ReadRequest) usize {
-        return req.amountBackward() - r.readBackward(req);
+        return req.amountBackward() - r.linesReadBackward(req);
     }
 
+    /// Calculates the remaining number of lines to read in the forward direction.
     pub inline fn leftForward(r: *const ReadLinesInfo, req: ReadRequest) usize {
-        return req.amountForward() - r.readForward(req);
+        return req.amountForward() - r.linesReadForward(req);
     }
 
+    /// Returns the current line being read.
     pub inline fn currLine(r: *const ReadLinesInfo) []const u8 {
         return r.lines[r.curr_line_pos];
     }
 
+    /// Returns the first line in the collection of read lines.
     pub inline fn firstLine(r: *const ReadLinesInfo) []const u8 {
         return r.lines[0];
     }
 
+    /// Returns the last line in the collection of read lines.
     pub inline fn lastLine(r: *const ReadLinesInfo) []const u8 {
         return r.lines[r.lines.len -| 1];
     }
 
+    /// Finds the index position in `input` where the last read line ends. Add
+    /// one to this index to start reading the next line in the forward direction.
     pub inline fn indexLastRead(r: *const ReadLinesInfo, input: []const u8) usize {
         return slice.indexOfSliceEnd(input, r.lastLine());
     }
 
+    /// Finds the index position in `input` where the first read line starts.
+    /// Subtract one from this index to start reading the next line in the
+    /// backward direction.
     pub inline fn indexFirstRead(r: *const ReadLinesInfo, input: []const u8) usize {
         return slice.indexOfSliceStart(input, r.firstLine());
     }
@@ -383,7 +434,7 @@ pub fn readLines(
                     // read planned amount backward/forward
                     const info = readLines(buf, input, index, detect_line_num, range);
                     const amt_left = info.leftTotal(range);
-                    const buf_left = buf[info.readTotal()..];
+                    const buf_left = buf[info.linesTotal()..];
                     const back_left = info.leftBackward(range) > 0;
                     const forw_left = info.leftForward(range) > 0;
 
@@ -540,7 +591,7 @@ fn readLinesImpl(
             if (detect_line_num) {
                 const first_line = s.slice()[0];
                 const first_line_start = slice.indexOfSliceStart(input, first_line);
-                break :blk countLineNum(input, first_line_start);
+                break :blk countLineNumForward(input, 0, first_line_start);
             } else break :blk 0;
         },
     };
