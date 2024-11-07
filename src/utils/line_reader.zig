@@ -93,16 +93,43 @@ test "+indexOfLineEnd, indexOfLineStart" {
 }
 
 /// Counts the line number in `input` up to the specified `end` index,
-/// starting from `start` and reading forward. Line numbering begins at 1.
+/// starting from `start` and reading forward. If `start` is greater than `end`,
+/// they are reversed automatically. Returns 1 if `start == end`. Line numbering
+/// begins at 1.
 pub fn countLineNumForward(input: []const u8, start: usize, end: usize) usize {
     if (input.len == 0) return 1;
 
-    var i: usize, var until = if (start < end) .{ start, end } else .{ end, start };
-    until = @min(input.len, until); // normalize
+    var from: usize, var until = if (start < end) .{ start, end } else .{ end, start };
+    if (until >= input.len) until = input.len; // normalize
 
     var line_num: usize = 1;
-    while (i < until) : (i += 1) {
-        if (input[i] == '\n') line_num += 1;
+    while (from < until) : (from += 1) {
+        if (input[from] == '\n') line_num += 1;
+    }
+    return line_num;
+}
+
+/// Counts the line number in `input` up to the specified `end` index,
+/// starting from `start` and reading backward. If `end` is greater than `start`,
+/// they are reversed automatically. Returns 1 if `start == end`. Line numbering
+/// begins at 1.
+pub fn countLineNumBackward(input: []const u8, start: usize, end: usize) usize {
+    if (input.len == 0) return 1;
+
+    var from: usize, const until = if (start > end) .{ start, end } else .{ end, start };
+
+    var line_num: usize = 1;
+    if (from >= input.len) {
+        // special case: count empty trailing line
+        if (input[input.len - 1] == '\n') line_num += 1;
+        from = input.len - 1; // normalize
+    }
+    // special case: avoid double-counting the current line
+    if (input[from] == '\n') line_num -= 1;
+
+    while (true) : (from -|= 1) {
+        if (input[from] == '\n') line_num += 1;
+        if (from <= until) break;
     }
     return line_num;
 }
@@ -110,8 +137,10 @@ pub fn countLineNumForward(input: []const u8, start: usize, end: usize) usize {
 test "+countLineNum" {
     const expectLine = std.testing.expectEqual;
 
+    // Forward
     try expectLine(1, countLineNumForward("", 0, 0));
     try expectLine(1, countLineNumForward("", 0, 100));
+    try expectLine(1, countLineNumForward("", 100, 0));
     try expectLine(1, countLineNumForward("", 100, 100));
     try expectLine(2, countLineNumForward("\n", 0, 1));
     //                                     ^ ^
@@ -133,10 +162,48 @@ test "+countLineNum" {
     //                                     ^   ^
     try expectLine(3, countLineNumForward("l1\nl2\nl3", 0, 6));
     //                                     ^       ^
-    try expectLine(3, countLineNumForward("l1\nl2\nl3", 2, 7)); // partial range
-    //                                       ^      ^
-    try expectLine(3, countLineNumForward("l1\nl2\nl3", 7, 2)); // reversed
-    //                                       ^      ^
+    try expectLine(3, countLineNumForward("l1\nl2\nl3", 2, 6)); // partial range
+    //                                       ^     ^
+    try expectLine(3, countLineNumForward("l1\nl2\nl3", 6, 2)); // reversed
+    //                                       ^     ^
+    try expectLine(3, countLineNumForward("l1\nl2\nl3", 0, 7)); // full range
+    //                                     ^        ^
+    try expectLine(3, countLineNumForward("l1\nl2\nl3", 7, 0)); // reversed
+    //                                     ^        ^
+
+    // Backward
+    try expectLine(1, countLineNumBackward("", 0, 0));
+    try expectLine(1, countLineNumBackward("", 0, 100));
+    try expectLine(1, countLineNumBackward("", 100, 0));
+    try expectLine(1, countLineNumBackward("", 100, 100));
+    try expectLine(2, countLineNumBackward("\n", 0, 1));
+    //                                      ^ ^
+    try expectLine(2, countLineNumBackward("\n", 0, 100));
+    //                                      ^ ^
+    try expectLine(2, countLineNumBackward("\n", 100, 0)); // reversed
+    //                                      ^ ^
+    try expectLine(2, countLineNumBackward("\n\n", 0, 1));
+    //                                      ^ ^
+    try expectLine(3, countLineNumBackward("\n\n", 0, 2));
+    //                                      ^   ^
+    try expectLine(2, countLineNumBackward("\n\n", 1, 2)); // partial range
+    //                                        ^ ^
+    try expectLine(2, countLineNumBackward("\n\n", 2, 1)); // reversed
+    //                                        ^ ^
+    try expectLine(1, countLineNumBackward("l1\nl2\nl3", 0, 0));
+    //                                      ^
+    try expectLine(2, countLineNumBackward("l1\nl2\nl3", 0, 3));
+    //                                      ^   ^
+    try expectLine(3, countLineNumBackward("l1\nl2\nl3", 0, 6));
+    //                                      ^       ^
+    try expectLine(3, countLineNumBackward("l1\nl2\nl3", 2, 6)); // partial range
+    //                                        ^     ^
+    try expectLine(3, countLineNumBackward("l1\nl2\nl3", 6, 2)); // reversed
+    //                                        ^     ^
+    try expectLine(3, countLineNumBackward("l1\nl2\nl3", 0, 7)); // full range
+    //                                      ^        ^
+    try expectLine(3, countLineNumBackward("l1\nl2\nl3", 7, 0)); // reversed
+    //                                      ^        ^
 }
 
 /// The result of a single-line reading.
