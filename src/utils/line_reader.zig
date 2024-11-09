@@ -460,14 +460,14 @@ pub const ReadLinesInfo = struct {
     /// Finds the index position in `input` where the last read line ends. Add
     /// one to this index to start reading the next line in the forward direction.
     pub inline fn indexLastRead(r: *const ReadLinesInfo, input: []const u8) usize {
-        return slice.indexOfSliceEnd(input, r.lastLine());
+        return slice.indexOfEnd(input, r.lastLine());
     }
 
     /// Finds the index position in `input` where the first read line starts.
     /// Subtract one from this index to start reading the next line in the
     /// backward direction.
     pub inline fn indexFirstRead(r: *const ReadLinesInfo, input: []const u8) usize {
-        return slice.indexOfSliceStart(input, r.firstLine());
+        return slice.indexOfStart(input, r.firstLine());
     }
 };
 
@@ -648,7 +648,7 @@ fn readLinesImpl(
         }
         s.push(input[line_start..line_end]) catch unreachable;
     }
-    if (dir == .backward) slice.reverseSlice(s.slice());
+    if (dir == .backward) slice.reverse(s.slice());
 
     return .{
         .lines = s.slice(),
@@ -657,7 +657,7 @@ fn readLinesImpl(
         .first_line_num = blk: {
             if (detect_line_num) {
                 const first_line = s.slice()[0];
-                const first_line_start = slice.indexOfSliceStart(input, first_line);
+                const first_line_start = slice.indexOfStart(input, first_line);
                 break :blk countLineNumForward(input, 0, first_line_start);
             } else break :blk 0;
         },

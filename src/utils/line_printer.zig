@@ -17,7 +17,7 @@ pub const LineOptions = struct {
     view_at: enum { start, end, cursor } = .cursor,
     line_len: usize = 80,
     trunc_sym: []const u8 = "..",
-    trunc_mode: slice.SliceAroundMode = .hard_flex,
+    trunc_mode: slice.SegAroundMode = .hard_flex,
     show_line_num: bool = true,
     line_num_sep: []const u8 = "| ",
     show_eof: bool = true,
@@ -97,9 +97,9 @@ fn printLineImpl(
         const curr_line = info.lines[info.curr_line_pos];
         const curr_line_len = if (line_opt.line_len == 0) std.math.maxInt(usize) else line_opt.line_len;
         const curr_line_slice = switch (line_opt.view_at) {
-            .cursor => slice.sliceAroundIndices(curr_line, info.index_pos, curr_line_len, .{ .slicing_mode = line_opt.trunc_mode }),
-            .end => slice.sliceEndIndices(curr_line, curr_line_len),
-            .start => slice.sliceStartIndices(curr_line, curr_line_len),
+            .cursor => slice.segAroundIndices(curr_line, info.index_pos, curr_line_len, .{ .slicing_mode = line_opt.trunc_mode }),
+            .end => slice.segEndIndices(curr_line, curr_line_len),
+            .start => slice.segStartIndices(curr_line, curr_line_len),
         };
 
         // print lines
@@ -107,12 +107,12 @@ fn printLineImpl(
             try writeLineNumImpl(writer, line_num, num_col_len, line_opt);
 
             // project current line on others
-            const sliced_line = slice.sliceRange([]const u8, line, curr_line_slice.start, curr_line_slice.end);
+            const sliced_line = slice.seg([]const u8, line, curr_line_slice.start, curr_line_slice.end);
             try writeLineImpl(writer, input, line, sliced_line, curr_line_slice.start > line.len, line_opt);
 
             // print cursor
             if (cursor and info.curr_line_pos == i) {
-                const trunc_sym_len = if (slice.indexOfSliceStart(line, sliced_line) > 0) line_opt.trunc_sym.len else 0;
+                const trunc_sym_len = if (slice.indexOfStart(line, sliced_line) > 0) line_opt.trunc_sym.len else 0;
                 const cursor_pos = num_col_len + line_num_sep_len + trunc_sym_len + curr_line_slice.index_pos;
                 try writeCursorImpl(writer, input, index, cursor_pos, opt.cursor_opt);
             }
@@ -143,12 +143,12 @@ fn writeLineImpl(
     // full line
     if (opt.line_len == 0) {
         try writer.writeAll(full);
-        if (slice.indexOfSliceEnd(input, full) >= input.len)
+        if (slice.indexOfEnd(input, full) >= input.len)
             try writer.writeAll("␃");
     } else
     // empty line
     if (opt.show_eof and full.len == 0) {
-        if (slice.indexOfSliceEnd(input, full) >= input.len)
+        if (slice.indexOfEnd(input, full) >= input.len)
             try writer.writeAll("␃");
     }
     // skipped line
@@ -157,14 +157,14 @@ fn writeLineImpl(
     }
     // sliced line
     else {
-        if (slice.indexOfSliceStart(full, sliced) > 0) {
+        if (slice.indexOfStart(full, sliced) > 0) {
             try writer.writeAll(opt.trunc_sym);
         }
         try writer.writeAll(sliced);
-        if (slice.indexOfSliceEnd(full, sliced) < full.len) {
+        if (slice.indexOfEnd(full, sliced) < full.len) {
             try writer.writeAll(opt.trunc_sym);
         } else if (opt.show_eof and
-            slice.indexOfSliceEnd(input, sliced) >= input.len)
+            slice.indexOfEnd(input, sliced) >= input.len)
         {
             try writer.writeAll("␃");
         }
