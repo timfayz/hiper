@@ -276,7 +276,7 @@ pub const SegAroundOptions = struct {
     /// Shifts even-length ranges by one index to the right.
     even_rshift: bool = true,
     /// See `SegAroundMode` for details.
-    slicing_mode: SegAroundMode,
+    slicing_mode: SegAroundMode = .hard_flex,
 };
 
 /// Controls how `segAround()` truncates a slice segment.
