@@ -107,7 +107,7 @@ fn printLineImpl(
             try writeLineNumImpl(writer, line_num, num_col_len, line_opt);
 
             // project current line on others
-            const sliced_line = slice.seg([]const u8, line, curr_line_slice.start, curr_line_slice.end);
+            const sliced_line = slice.segRange([]const u8, line, curr_line_slice.start, curr_line_slice.end);
             try writeLineImpl(writer, input, line, sliced_line, curr_line_slice.start > line.len, line_opt);
 
             // print cursor
