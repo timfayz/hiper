@@ -582,10 +582,12 @@ test "+segAround" {
 
 /// Checks if the provided segment is a valid sub-slice of the given slice.
 pub inline fn isSeg(T: type, slice: []const T, seg: []const T) bool {
-    const seg_ptr = @intFromPtr(seg.ptr);
-    const slice_ptr = @intFromPtr(slice.ptr);
-    return num.numInRangeInc(usize, seg_ptr, slice_ptr, slice_ptr + slice.len) and
-        num.numInRangeInc(usize, seg_ptr + seg.len, slice_ptr, slice_ptr + slice.len);
+    const slice_start = @intFromPtr(slice.ptr);
+    const slice_end = @intFromPtr(slice.ptr + slice.len);
+    const seg_start = @intFromPtr(seg.ptr);
+    const seg_end = @intFromPtr(seg.ptr + seg.len);
+    return num.isInRangeInc(usize, seg_start, slice_start, slice_end) and
+        num.isInRangeInc(usize, seg_end, slice_start, slice_end);
 }
 
 test "+isSeg" {
