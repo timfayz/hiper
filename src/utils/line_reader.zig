@@ -535,7 +535,7 @@ pub fn readLines(
             if (amt.backward == 0)
                 return readLinesImpl(.forward, buf, input, index, curr_ln, amt.forward);
             // both direction
-            const backward = readLinesImpl(.backward, buf, input, index, curr_ln, amt.backward);
+            var backward = readLinesImpl(.backward, buf, input, index, curr_ln, amt.backward);
             // if backward read failed, no reason to read forward
             if (backward.isEmpty())
                 return backward;
@@ -546,14 +546,9 @@ pub fn readLines(
             const next_index = backward.indexLastRead(input) +| 1;
             const next_curr_ln: CurrLineNum = .{ .set = 0 }; // ignore
             const forward = readLinesImpl(.forward, buf_left, input, next_index, next_curr_ln, amt.forward);
-            // merge
-            // return backward.join(buf, forward)
-            return .{
-                .lines = buf[0 .. backward.linesTotal() + forward.linesTotal()],
-                .first_line_num = backward.first_line_num,
-                .curr_line_pos = backward.curr_line_pos,
-                .index_pos = backward.index_pos,
-            };
+            // merge both directions
+            backward.lines = buf[0 .. backward.linesTotal() + forward.linesTotal()];
+            return backward;
         },
         inline .range_soft, .range_hard => |amt, req| {
             const range = ReadRequest.range(amt);
@@ -561,32 +556,43 @@ pub fn readLines(
                 .range_hard => return readLines(buf, input, index, curr_ln, range),
                 .range_soft => {
                     // read planned amount backward/forward
-                    const info = readLines(buf, input, index, curr_ln, range);
+                    var planned = readLines(buf, input, index, curr_ln, range);
                     // nothing to read
-                    if (info.isEmpty()) return info;
-
-                    // no space left
-                    const buf_left = buf[info.linesTotal()..];
-                    if (buf_left.len == 0) return info;
-
+                    if (planned.isEmpty()) return planned;
                     // no reading deficit
-                    const amt_left = info.leftTotal(range);
-                    if (amt_left == 0) return info;
-
-                    // compensate any read deficit
-                    const next_index = info.indexLastRead(input) +| 1;
-                    const next_curr_ln: CurrLineNum = .{ .set = 0 }; // ignore
-                    const deficit = if (info.leftBackward(range) > 0)
-                        readLinesImpl(.forward, buf_left, input, next_index, next_curr_ln, amt_left)
+                    const amt_left = planned.leftTotal(range);
+                    if (amt_left == 0) return planned;
+                    // no space to compensate deficit
+                    const buf_left = buf[planned.linesTotal()..];
+                    if (buf_left.len == 0) return planned;
+                    // calc deficit direction and boundaries
+                    const comp_dir: ReadDirection =
+                        if (planned.leftBackward(range) > 0) .forward else .backward;
+                    const next_read_back = planned.indexFirstRead(input) -| 1;
+                    const next_read_forw = planned.indexLastRead(input) +| 1;
+                    // compensate deficit only if possible
+                    if (comp_dir == .forward and next_read_forw >= input.len or
+                        comp_dir == .backward and next_read_back == 0)
+                        return planned;
+                    // perform compensate read
+                    const comp = if (comp_dir == .forward)
+                        readLinesImpl(.forward, buf_left, input, next_read_forw, .{
+                            .set = 0, // ignore
+                        }, amt_left)
                     else
-                        readLinesImpl(.backward, buf_left, input, next_index, next_curr_ln, amt_left);
-
-                    return .{
-                        .lines = buf[0 .. info.linesTotal() + deficit.linesTotal()],
-                        .first_line_num = info.first_line_num,
-                        .curr_line_pos = info.curr_line_pos,
-                        .index_pos = info.index_pos,
-                    };
+                        readLinesImpl(.backward, buf_left, input, next_read_back, .{
+                            .set = 0, // ignore
+                        }, amt_left);
+                    // merge results
+                    planned.lines = buf[0 .. planned.linesTotal() + comp.linesTotal()];
+                    // fix lines order if deficit was backward
+                    if (comp_dir == .backward) {
+                        slice.moveSegLeft([]const u8, planned.lines, comp.lines) catch
+                            return planned;
+                        planned.first_line_num = planned.first_line_num -| comp.linesTotal();
+                        planned.curr_line_pos = planned.curr_line_pos +| comp.linesTotal();
+                    }
+                    return planned;
                 },
                 else => unreachable,
             }
@@ -609,8 +615,16 @@ test "+readLines" {
             var buf: [32][]const u8 = undefined;
             const actual = readLines(&buf, input, index, line_num, request);
             const expect_lines: [std.meta.fields(@TypeOf(expect_lns)).len][]const u8 = expect_lns;
-            try t.expectEqual(expect_lines.len, actual.lines.len);
-            for (expect_lines, actual.lines) |e, a| try t.expectEqualStrings(e, a);
+            t.expectEqual(expect_lines.len, actual.lines.len) catch |err| {
+                for (actual.lines) |l| std.log.err("\"{s}\"", .{l});
+                return err;
+            };
+            for (expect_lines, actual.lines) |e, a| {
+                t.expectEqualStrings(e, a) catch |err| {
+                    for (actual.lines) |l| std.log.err("\"{s}\"", .{l});
+                    return err;
+                };
+            }
             try t.expectEqual(expect.clp, actual.curr_line_pos);
             try t.expectEqual(expect.pos, actual.index_pos);
             try t.expectEqual(expect.fln, actual.first_line_num);
@@ -788,15 +802,16 @@ test "+readLines" {
     try case(input, 0, .detect, .{ .range_soft = 0 }, .{}, .{ .pos = 0, .clp = 0, .fln = 0 });
     // test reading deficit compensation (right direction)
     try case(input, 0, .detect, .{ .range_soft = 1 }, .{"one"}, .{ .pos = 0, .clp = 0, .fln = 1 });
-    //                                                   ^
     try case(input, 0, .detect, .{ .range_soft = 3 }, .{ "one", "two", "three" }, .{ .pos = 0, .clp = 0, .fln = 1 });
-    //                                                    ^
     try case(input, 9, .detect, .{ .range_soft = 3 }, .{ "two", "three", "four" }, .{ .pos = 1, .clp = 1, .fln = 2 });
-    //                                                            ^
     try case(input, 0, .detect, .{ .range_soft = 4 }, .{ "one", "two", "three", "four" }, .{ .pos = 0, .clp = 0, .fln = 1 });
-    //                                                    ^
-    // TODO
+
     // test reading deficit compensation (left direction)
+    try case(input, 19, .detect, .{ .range_soft = 4 }, .{ "two", "three", "four", "" }, .{ .pos = 0, .clp = 3, .fln = 2 });
+    try case(input, 18, .detect, .{ .range_soft = 4 }, .{ "two", "three", "four", "" }, .{ .pos = 4, .clp = 2, .fln = 2 });
+    //                                                                         ^
+    try case(input, 13, .detect, .{ .range_soft = 4 }, .{ "two", "three", "four", "" }, .{ .pos = 5, .clp = 1, .fln = 2 });
+    //                                                                 ^
 }
 
 /// Implementation function. Reads lines in both directions.
