@@ -14,6 +14,7 @@
 //! - segStartIndices()
 //! - segEnd()
 //! - segEndIndices()
+//! - segRange()
 //! - SegAroundOptions
 //! - SegAroundMode
 //! - SegAroundInfo
@@ -196,7 +197,7 @@ pub fn segRange(T: type, slice: T, start: usize, end: usize) T {
     return slice[@min(slice.len, start)..@min(slice.len, end)];
 }
 
-test "+seg" {
+test "+segRange" {
     const equal = std.testing.expectEqualStrings;
     try equal("", segRange([]const u8, "abcd", 0, 0));
     try equal("", segRange([]const u8, "abcd", 100, 100));
