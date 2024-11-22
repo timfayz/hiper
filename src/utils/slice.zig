@@ -8,13 +8,12 @@
 //! - indexOfStart()
 //! - indexOfEnd()
 //! - Indices
-//! - segRange()
-//! - segRangeIndices()
 //! - segStart()
 //! - segStartIndices()
 //! - segEnd()
 //! - segEndIndices()
 //! - segRange()
+//! - segRangeIndices()
 //! - SegAroundOptions
 //! - SegAroundMode
 //! - SegAroundInfo
@@ -29,6 +28,7 @@
 
 const std = @import("std");
 const num = @import("num.zig");
+const mem = std.mem;
 
 /// Reverses slice items in-place.
 pub fn reverse(slice: anytype) void {
@@ -69,15 +69,16 @@ test "+reverse" {
     try case("12345", "54321");
 }
 
-/// Returns the intersection of two slices. Note: This function works correctly
-/// only if both slices originate from the same source.
+/// Returns the intersection of two slices. Note: This function assumes that
+/// both slices originate from the same source. Use `isSeg` manually to ensure
+/// both slices belong to the same source before calling this function.
 /// ```txt
-/// [slice1+] [+slice2]    (slices disjoint)
-///         null
+/// [slice1 ] [ slice2]    (disjoint slices)
+///         null           (intersection)
 ///
-/// [slice1+++]            (slices intersect)
-///         [+++slice2]
-///         [+]            (intersection)
+/// [slice1   ]            (intersecting slices)
+///         [   slice2]
+///         [ ]            (intersection)
 /// ```
 pub fn intersect(T: type, slice1: T, slice2: T) ?T {
     var slice: T = undefined;
@@ -191,30 +192,6 @@ pub const Indices = struct {
     end: usize,
 };
 
-/// Returns a normal `[start..end]` slice segment with indices normalized to not
-/// exceed the `slice.len`.
-pub fn segRange(T: type, slice: T, start: usize, end: usize) T {
-    return slice[@min(slice.len, start)..@min(slice.len, end)];
-}
-
-test "+segRange" {
-    const equal = std.testing.expectEqualStrings;
-    try equal("", segRange([]const u8, "abcd", 0, 0));
-    try equal("", segRange([]const u8, "abcd", 100, 100));
-    try equal("", segRange([]const u8, "abcd", 3, 3));
-    try equal("a", segRange([]const u8, "abcd", 0, 1));
-    try equal("bc", segRange([]const u8, "abcd", 1, 3));
-    try equal("d", segRange([]const u8, "abcd", 3, 4));
-}
-
-/// Retrieves the starting and ending positions of a slice in source.
-pub inline fn segRangeIndices(source: anytype, slice: anytype) Indices {
-    return .{
-        .start = indexOfStart(source, slice),
-        .end = indexOfEnd(source, slice),
-    };
-}
-
 /// Returns the beginning slice segment with a specified length. If `len` is
 /// larger than the slice length, the entire slice is returned.
 pub inline fn segStart(T: type, slice: T, len: usize) T {
@@ -270,6 +247,30 @@ test "+segStart, segStartIndices, segEnd, segEndIndices" {
     try case(.end, "abc", []const u8, "abc", 3);
     try case(.end, "abc", []const u8, "abc", 4);
     try case(.end, "abc", []const u8, "abc", 100);
+}
+
+/// Returns a normal `[start..end]` slice segment with indices normalized to not
+/// exceed the `slice.len`.
+pub fn segRange(T: type, slice: T, start: usize, end: usize) T {
+    return slice[@min(slice.len, start)..@min(slice.len, end)];
+}
+
+test "+segRange" {
+    const equal = std.testing.expectEqualStrings;
+    try equal("", segRange([]const u8, "abcd", 0, 0));
+    try equal("", segRange([]const u8, "abcd", 100, 100));
+    try equal("", segRange([]const u8, "abcd", 3, 3));
+    try equal("a", segRange([]const u8, "abcd", 0, 1));
+    try equal("bc", segRange([]const u8, "abcd", 1, 3));
+    try equal("d", segRange([]const u8, "abcd", 3, 4));
+}
+
+/// Retrieves the starting and ending positions of a slice in source.
+pub inline fn segRangeIndices(source: anytype, slice: anytype) Indices {
+    return .{
+        .start = indexOfStart(source, slice),
+        .end = indexOfEnd(source, slice),
+    };
 }
 
 /// Options for `segAround()`.
@@ -616,21 +617,21 @@ test "+isSeg" {
 /// returns an error if the segment is of different origin or its length exceeds
 /// 1024. Use `moveSegImpl()` directly to increase the length.
 pub fn moveSegLeft(T: type, slice: []T, seg: []T) MoveSegError!void {
-    return moveSegImpl(.left, 1024, T, slice, seg);
+    return moveSeg(.left, 1024, T, slice, seg);
 }
 
 /// Moves a valid slice segment to the end of the given slice. The function
 /// returns an error if the segment is different origins or its length exceeds
 /// 1024. Use `moveSegImpl()` directly to increase the length.
 pub fn moveSegRight(T: type, slice: []T, seg: []T) MoveSegError!void {
-    return moveSegImpl(.right, 1024, T, slice, seg);
+    return moveSeg(.right, 1024, T, slice, seg);
 }
 
 pub const MoveSegError = error{ IsNotSeg, SegIsTooBig };
 pub const MoveSegDirection = enum { left, right };
 
-/// Implementation function.
-pub fn moveSegImpl(
+/// Moves a valid slice segment to the start or end of the given slice.
+pub fn moveSeg(
     comptime dir: MoveSegDirection,
     comptime max_seg_size: usize,
     T: type,
@@ -647,34 +648,34 @@ pub fn moveSegImpl(
         .left => if (indexOfStart(slice, seg) == 0) return,
     }
 
-    // copy seg
+    // copy segment
     var buf: [max_seg_size]T = undefined;
-    std.mem.copyForwards(T, &buf, seg);
     const seg_copy = buf[0..seg.len];
+    mem.copyForwards(T, seg_copy, seg);
 
-    // swap seg-slice with its opposite side
+    // swap slice segment with its opposite side
     switch (dir) {
-        // [ [seg] [seg_rhs] ]
-        // [ [rhs_dst]       ]
+        // [ [seg][seg_rhs] ] (step 0)
+        // [ [seg_rhs]..... ] (step 1)
+        // [ [seg_rhs][seg] ] (step 2)
         .right => {
-            const seg_rhs = slice[indexOfEnd(slice, seg)..];
-            const dst_start: usize = indexOfStart(slice, seg);
-            const dst_end: usize = dst_start +| seg_rhs.len;
-            std.mem.copyForwards(T, slice[dst_start..dst_end], seg_rhs);
-
+            const seg_rhs = slice[indexOfEnd(slice, seg)..]; // step 0
+            const start: usize = indexOfStart(slice, seg);
+            const end: usize = start +| seg_rhs.len;
+            mem.copyForwards(T, slice[start..end], seg_rhs); // step 1
             // copy seg to the end of slice
-            std.mem.copyForwards(T, slice[slice.len -| seg_copy.len..], seg_copy);
+            mem.copyForwards(T, slice[slice.len -| seg_copy.len..], seg_copy); // step 2
         },
-        // [ [seg_lhs] [seg] ]
-        // [       [lhs_dst] ]
+        // [ [seg_lhs][seg] ] (step 0)
+        // [ .....[seg_lhs] ] (step 1)
+        // [ [seg][seg_lhs] ] (step 2)
         .left => {
-            const seg_lhs = slice[0..indexOfStart(slice, seg)];
-            const dst_end: usize = indexOfEnd(slice, seg);
-            const dst_start: usize = dst_end -| seg_lhs.len;
-            std.mem.copyBackwards(T, slice[dst_start..dst_end], seg_lhs);
-
+            const seg_lhs = slice[0..indexOfStart(slice, seg)]; // step 0
+            const end: usize = indexOfEnd(slice, seg);
+            const start: usize = end -| seg_lhs.len;
+            mem.copyBackwards(T, slice[start..end], seg_lhs); // step 1
             // copy seg to the beginning of the slice
-            std.mem.copyForwards(T, slice[0..seg_copy.len], seg_copy);
+            mem.copyForwards(T, slice[0..seg_copy.len], seg_copy); // step 2
         },
     }
 }
@@ -691,7 +692,7 @@ test "+moveSeg" {
             slice: []u8,
             seg: []u8,
         ) !void {
-            moveSegImpl(dir, 7, u8, slice, seg) catch |err| {
+            moveSeg(dir, 7, u8, slice, seg) catch |err| {
                 if (expected_err == null) return err;
                 try t.expectEqual(expected_err.?, err);
                 return;
