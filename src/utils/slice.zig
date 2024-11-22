@@ -8,23 +8,24 @@
 //! - indexOfStart()
 //! - indexOfEnd()
 //! - Indices
-//! - segStart()
+//! - indices()
 //! - segStartIndices()
-//! - segEnd()
+//! - segStart()
 //! - segEndIndices()
+//! - segEnd()
 //! - segRange()
-//! - segRangeIndices()
 //! - SegAroundOptions
 //! - SegAroundMode
-//! - SegAroundInfo
-//! - segAround()
 //! - SegAroundIndices
 //! - segAroundIndices()
+//! - SegAroundInfo
+//! - segAround()
 //! - isSeg()
-//! - moveSegLeft()
-//! - moveSegRight()
 //! - MoveSegError
 //! - MoveSegDirection
+//! - moveSeg()
+//! - moveSegLeft()
+//! - moveSegRight()
 
 const std = @import("std");
 const num = @import("num.zig");
@@ -48,7 +49,7 @@ pub fn reverse(slice: anytype) void {
     }
 }
 
-test "+reverse" {
+test ":reverse" {
     const t = std.testing;
 
     const case = struct {
@@ -92,7 +93,7 @@ pub fn intersect(T: type, slice1: T, slice2: T) ?T {
     return slice;
 }
 
-test "+intersect" {
+test ":intersect" {
     const equal = struct {
         pub fn check(expect: ?[]const u8, actual: ?[]const u8) !void {
             if (expect == null) return std.testing.expectEqual(null, actual);
@@ -120,12 +121,12 @@ test "+intersect" {
 /// Returns the union of two slices. Note: This function works correctly only if
 /// both slices originate from the same source.
 /// ```txt
-/// [slice1+] [+slice2]    (slices disjoint)
-/// |+++++++++++++++++|    (merged)
+/// [slice1 ] [ slice2]    (slices disjoint)
+/// [                 ]    (merged)
 ///
-/// [slice1+++]            (slices intersect)
-///         [+++slice2]
-/// |+++++++++++++++++|    (merged)
+/// [slice1   ]            (slices intersect)
+///         [   slice2]
+/// [                 ]    (merged)
 /// ```
 pub fn merge(
     T: type,
@@ -142,7 +143,7 @@ pub fn merge(
     return slice;
 }
 
-test "+merge" {
+test ":merge" {
     const equal = std.testing.expectEqualStrings;
     const in1 = "abcd";
     try equal("abcd", merge([]const u8, in1[0..0], in1[4..4])); // zero slices
@@ -166,7 +167,7 @@ pub inline fn indexOfEnd(source: anytype, slice: anytype) usize {
     return (slice.ptr - source.ptr) +| slice.len;
 }
 
-test "+indexOfStart, indexOfEnd" {
+test ":indexOfStart, indexOfEnd" {
     const equal = std.testing.expectEqual;
 
     const empty = "";
@@ -192,10 +193,12 @@ pub const Indices = struct {
     end: usize,
 };
 
-/// Returns the beginning slice segment with a specified length. If `len` is
-/// larger than the slice length, the entire slice is returned.
-pub inline fn segStart(T: type, slice: T, len: usize) T {
-    return slice[0..@min(slice.len, len)];
+/// Retrieves the starting and ending positions of a slice in source.
+pub inline fn indices(source: anytype, slice: anytype) Indices {
+    return .{
+        .start = indexOfStart(source, slice),
+        .end = indexOfEnd(source, slice),
+    };
 }
 
 /// Returns indices corresponding to the beginning slice segment with specified
@@ -205,10 +208,10 @@ pub inline fn segStartIndices(slice: anytype, len: usize) Indices {
     return .{ .start = 0, .end = @min(slice.len, len) };
 }
 
-/// Returns the ending slice segment with a specified length. If `len`
-/// is larger than the slice length, the entire slice is returned.
-pub inline fn segEnd(T: type, slice: T, len: usize) T {
-    return slice[slice.len -| len..];
+/// Returns the beginning slice segment with a specified length. If `len` is
+/// larger than the slice length, the entire slice is returned.
+pub inline fn segStart(T: type, slice: T, len: usize) T {
+    return slice[0..@min(slice.len, len)];
 }
 
 /// Returns indices corresponding to the ending slice segment with specified
@@ -218,7 +221,13 @@ pub inline fn segEndIndices(slice: anytype, len: usize) Indices {
     return .{ .start = slice.len -| len, .end = slice.len };
 }
 
-test "+segStart, segStartIndices, segEnd, segEndIndices" {
+/// Returns the ending slice segment with a specified length. If `len`
+/// is larger than the slice length, the entire slice is returned.
+pub inline fn segEnd(T: type, slice: T, len: usize) T {
+    return slice[slice.len -| len..];
+}
+
+test ":segStart, segStartIndices, segEnd, segEndIndices" {
     const t = std.testing;
     const case = struct {
         fn run(comptime mode: enum { start, end }, expect: []const u8, T: type, slice: anytype, len: usize) !void {
@@ -249,13 +258,13 @@ test "+segStart, segStartIndices, segEnd, segEndIndices" {
     try case(.end, "abc", []const u8, "abc", 100);
 }
 
-/// Returns a normal `[start..end]` slice segment with indices normalized to not
+/// Returns a `[start..end]` slice segment with indices normalized to not
 /// exceed the `slice.len`.
 pub fn segRange(T: type, slice: T, start: usize, end: usize) T {
     return slice[@min(slice.len, start)..@min(slice.len, end)];
 }
 
-test "+segRange" {
+test ":segRange" {
     const equal = std.testing.expectEqualStrings;
     try equal("", segRange([]const u8, "abcd", 0, 0));
     try equal("", segRange([]const u8, "abcd", 100, 100));
@@ -293,29 +302,6 @@ pub const SegAroundMode = enum {
     /// bounds, even with out-of-bounds indices.
     soft,
 };
-
-/// Return structure of `segAround()`.
-pub fn SegAroundInfo(T: type) type {
-    return struct { slice: T, index_pos: usize };
-}
-
-/// Returns a slice segment of length `len` centered around the index, along
-/// with relative position of the original index within the segment. The returned
-/// index can be out of segment bounds if the original index was out of slice.
-/// See `SegAroundOptions` for additional options.
-pub fn segAround(
-    T: type,
-    slice: T,
-    index: usize,
-    len: usize,
-    comptime opt: SegAroundOptions,
-) SegAroundInfo(T) {
-    const info = segAroundIndices(slice, index, len, opt);
-    return .{
-        .slice = slice[info.start..info.end],
-        .index_pos = info.index_pos,
-    };
-}
 
 /// Return structure of `segAroundIndices()`.
 const SegAroundIndices = struct {
@@ -385,7 +371,232 @@ pub fn segAroundIndices(
     };
 }
 
-test "+segAround" {
+/// Return structure of `segAround()`.
+pub fn SegAroundInfo(T: type) type {
+    return struct { slice: T, index_pos: usize };
+}
+
+/// Returns a slice segment of length `len` centered around the index, along
+/// with relative position of the original index within the segment. The returned
+/// index can be out of segment bounds if the original index was out of slice.
+/// See `SegAroundOptions` for additional options.
+pub fn segAround(
+    T: type,
+    slice: T,
+    index: usize,
+    len: usize,
+    comptime opt: SegAroundOptions,
+) SegAroundInfo(T) {
+    const seg = segAroundIndices(slice, index, len, opt);
+    return .{
+        .slice = slice[seg.start..seg.end],
+        .index_pos = seg.index_pos,
+    };
+}
+
+/// Checks if the provided segment is a valid sub-slice of the given slice.
+pub inline fn isSeg(T: type, slice: []const T, seg: []const T) bool {
+    const slice_start = @intFromPtr(slice.ptr);
+    const slice_end = @intFromPtr(slice.ptr + slice.len);
+    const seg_start = @intFromPtr(seg.ptr);
+    const seg_end = @intFromPtr(seg.ptr + seg.len);
+    return num.isInRangeInc(usize, seg_start, slice_start, slice_end) and
+        num.isInRangeInc(usize, seg_end, slice_start, slice_end);
+}
+
+test ":isSeg" {
+    const equal = std.testing.expectEqual;
+    const slice: [11]u8 = "hello_world".*;
+
+    try equal(true, isSeg(u8, slice[0..], slice[0..0]));
+    try equal(true, isSeg(u8, slice[0..], slice[11..11]));
+    try equal(true, isSeg(u8, slice[0..], slice[0..1]));
+    try equal(true, isSeg(u8, slice[0..], slice[3..6]));
+    try equal(true, isSeg(u8, slice[0..], slice[10..11]));
+    try equal(false, isSeg(u8, slice[0..], "hello_world"));
+    // intersecting
+    try equal(true, isSeg(u8, slice[0..5], slice[0..5])); // same
+    try equal(true, isSeg(u8, slice[0..0], slice[0..0]));
+    try equal(true, isSeg(u8, slice[11..11], slice[11..11])); // last zero
+    try equal(false, isSeg(u8, slice[0..5], slice[0..6]));
+    try equal(false, isSeg(u8, slice[0..5], slice[5..10]));
+    try equal(false, isSeg(u8, slice[5..10], slice[0..5]));
+    try equal(false, isSeg(u8, slice[0..0], slice[11..11]));
+    try equal(false, isSeg(u8, slice[0..6], slice[5..11]));
+}
+
+pub const MoveSegError = error{ IsNotSeg, SegIsTooBig };
+pub const MoveSegDirection = enum { left, right };
+
+/// Moves a valid segment to the start or end of the given slice.
+pub fn moveSeg(
+    comptime dir: MoveSegDirection,
+    comptime max_seg_size: usize,
+    T: type,
+    slice: []T,
+    seg: []T,
+) MoveSegError!void {
+    if (!isSeg(T, slice, seg)) return MoveSegError.IsNotSeg;
+    if (seg.len > max_seg_size) return MoveSegError.SegIsTooBig;
+
+    // no need to move if
+    if (seg.len == 0 or seg.len == slice.len) return;
+    switch (dir) {
+        .right => if (indexOfEnd(slice, seg) == slice.len) return,
+        .left => if (indexOfStart(slice, seg) == 0) return,
+    }
+
+    // copy segment
+    var buf: [max_seg_size]T = undefined;
+    const seg_copy = buf[0..seg.len];
+    mem.copyForwards(T, seg_copy, seg);
+
+    // swap slice segment with its opposite side
+    switch (dir) {
+        // [ [seg][seg_rhs] ] (step 0)
+        // [ [seg_rhs]..... ] (step 1)
+        // [ [seg_rhs][seg] ] (step 2)
+        .right => {
+            const seg_rhs = slice[indexOfEnd(slice, seg)..]; // step 0
+            const start: usize = indexOfStart(slice, seg);
+            const end: usize = start +| seg_rhs.len;
+            mem.copyForwards(T, slice[start..end], seg_rhs); // step 1
+            // copy seg to the end of slice
+            mem.copyForwards(T, slice[slice.len -| seg_copy.len..], seg_copy); // step 2
+        },
+        // [ [seg_lhs][seg] ] (step 0)
+        // [ .....[seg_lhs] ] (step 1)
+        // [ [seg][seg_lhs] ] (step 2)
+        .left => {
+            const seg_lhs = slice[0..indexOfStart(slice, seg)]; // step 0
+            const end: usize = indexOfEnd(slice, seg);
+            const start: usize = end -| seg_lhs.len;
+            mem.copyBackwards(T, slice[start..end], seg_lhs); // step 1
+            // copy seg to the beginning of the slice
+            mem.copyForwards(T, slice[0..seg_copy.len], seg_copy); // step 2
+        },
+    }
+}
+
+test ":moveSeg" {
+    const t = std.testing;
+    const Err = MoveSegError;
+
+    const case = struct {
+        pub fn run(
+            comptime dir: MoveSegDirection,
+            expected_slice: []const u8,
+            expected_err: ?MoveSegError,
+            slice: []u8,
+            seg: []u8,
+        ) !void {
+            moveSeg(dir, 7, u8, slice, seg) catch |err| {
+                if (expected_err == null) return err;
+                try t.expectEqual(expected_err.?, err);
+                return;
+            };
+            if (expected_err != null) return error.ExpectedError;
+            try t.expectEqualStrings(expected_slice, slice);
+        }
+    }.run;
+
+    // format:
+    // try case(|move_dir|, |expected_slice|, |?expected_err|, |orig_slice|, |seg_to_move|)
+
+    const origin = "0123456";
+    var buf: [7]u8 = origin.*;
+    const slice = buf[0..];
+
+    // right
+    //
+    try case(.right, "3456012", null, slice, slice[0..3]);
+    //                    ---
+    buf = origin.*;
+
+    try case(.right, "0126345", null, slice, slice[3..6]);
+    //                    ---
+    buf = origin.*;
+
+    try case(.right, origin, null, slice, slice);
+    //               same input
+    buf = origin.*;
+
+    try case(.right, origin, null, slice, slice[4..]);
+    //               no need to move
+    buf = origin.*;
+
+    try case(.right, origin, null, slice, slice[7..]);
+    //               zero length slice segment
+    buf = origin.*;
+
+    try case(.right, origin, null, slice, slice[3..3]);
+    //               zero length slice segment
+    buf = origin.*;
+
+    try case(.right, "", Err.IsNotSeg, slice[0..4], slice[3..6]);
+    //               not a valid slice segment
+    buf = origin.*;
+
+    var big_buf: [10]u8 = undefined;
+    try case(.right, "", Err.SegIsTooBig, &big_buf, big_buf[0..]);
+    //               slice segment is to big to copy
+    buf = origin.*;
+
+    // left
+    //
+    try case(.left, "1234560", null, slice, slice[1..]);
+    //               ------
+    buf = origin.*;
+
+    try case(.left, "4560123", null, slice, slice[4..]);
+    //               ---
+    buf = origin.*;
+
+    try case(.left, "6012345", null, slice, slice[6..]);
+    //               -
+    buf = origin.*;
+
+    try case(.left, origin, null, slice, slice);
+    //              same input
+    buf = origin.*;
+
+    try case(.left, origin, null, slice, slice[0..3]);
+    //              no need to move
+    buf = origin.*;
+
+    try case(.left, origin, null, slice, slice[7..]);
+    //              zero length slice segment
+    buf = origin.*;
+
+    try case(.left, origin, null, slice, slice[3..3]);
+    //              zero length slice segment
+    buf = origin.*;
+
+    try case(.left, "", Err.IsNotSeg, slice[0..4], slice[3..6]);
+    //              not a valid slice segment
+    buf = origin.*;
+
+    var big_buf2: [10]u8 = undefined;
+    try case(.left, "", Err.SegIsTooBig, &big_buf2, big_buf2[0..]);
+    //               slice segment is to big to copy
+    buf = origin.*;
+}
+
+/// Moves a valid slice segment to the beginning of the given slice. The function
+/// returns an error if the segment is of different origin or its length exceeds
+/// 1024. Use `moveSeg()` directly to increase the length.
+pub fn moveSegLeft(T: type, slice: []T, seg: []T) MoveSegError!void {
+    return moveSeg(.left, 1024, T, slice, seg);
+}
+
+/// Moves a valid slice segment to the end of the given slice. The function
+/// returns an error if the segment is different origins or its length exceeds
+/// 1024. Use `moveSeg()` directly to increase the length.
+pub fn moveSegRight(T: type, slice: []T, seg: []T) MoveSegError!void {
+    return moveSeg(.right, 1024, T, slice, seg);
+}
+
+test ":segAround" {
     const t = std.testing;
 
     const equal = struct {
