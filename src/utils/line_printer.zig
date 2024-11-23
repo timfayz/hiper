@@ -2,8 +2,7 @@
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
 //! Public API:
-//! - LineOptions
-//! - CursorOptions
+//! - PrintLineOptions
 //! - printLine()
 //! - printLineWithCursor()
 
@@ -13,7 +12,7 @@ const slice = @import("slice.zig");
 const num = @import("num.zig");
 
 /// Line printing options.
-pub const LineOptions = struct {
+pub const PrintLineOptions = struct {
     view_at: enum { start, end, cursor } = .cursor,
     line_len: usize = 80,
     trunc_sym: []const u8 = "..",
@@ -24,50 +23,45 @@ pub const LineOptions = struct {
     /// The size of the stack-allocated buffer is the maximum amount of
     /// lines that can be read (upper bound).
     buf_size: usize = 256,
-};
 
-/// Cursor printing options.
-pub const CursorOptions = struct {
+    // applies only when `.show_cursor = true`
+    show_cursor: bool = false,
     show_cursor_hint: bool = true,
     hint_printable_chars: bool = false,
     cursor_head_char: u8 = '^',
 };
 
-/// Line with cursor printing options.
-pub const LineWithCursorOptions = struct {
-    line_opt: LineOptions = .{},
-    cursor_opt: CursorOptions = .{},
-};
-
-/// Reads an `amount` of lines from the input at the specified index and writes
-/// it to the writer. If `line_number` is 0, it is automatically detected;
-/// otherwise, the specified number is used as is. If `index > input.len`, no
-/// line will be read or written. See `LineOptions` for additional details.
+/// Prints `amount` of lines from `input` starting at `index`, writes them to
+/// the writer, and renders line numbers calculated relative to `curr_ln`. If
+/// `index > input.len`, no line will be read or written. See `PrintLineOptions`
+/// for additional details.
 pub fn printLine(
     writer: anytype,
     input: []const u8,
     index: usize,
     amount: lr.ReadRequest,
     curr_ln: lr.CurrLineNum,
-    comptime opt: LineOptions,
+    comptime opt: PrintLineOptions,
 ) !void {
-    try printLineImpl(writer, input, index, amount, curr_ln, false, opt);
+    try printLineImpl(writer, input, index, amount, curr_ln, opt);
 }
 
-/// Prints an `amount` of lines from the input at the specified index, writes it
-/// to the writer, and renders a cursor at the specified position with an
-/// optional hint. If `line_number` is 0, it is automatically detected;
-/// otherwise, the specified number is used as is. If `index > input.len`, no
-/// line will be read or written. See `CursorOptions` for additional details.
+/// Prints `amount` of lines from `input` starting at `index`, writes them to
+/// the writer, and renders a cursor with the line number calculated relative to
+/// `curr_ln`. If `index > input.len`, no line will be read or written. See
+/// `PrintLineOptions` for additional details.
 pub fn printLineWithCursor(
     writer: anytype,
     input: []const u8,
     index: usize,
     amount: lr.ReadRequest,
     curr_ln: lr.CurrLineNum,
-    comptime opt: LineWithCursorOptions,
+    comptime opt: PrintLineOptions,
 ) !void {
-    try printLineImpl(writer, input, index, amount, curr_ln, true, opt);
+    comptime var opt_ = opt;
+    opt_.show_cursor = true; // force
+    opt_.view_at = .cursor; // force
+    try printLineImpl(writer, input, index, amount, curr_ln, opt_);
 }
 
 /// Implementation function.
@@ -77,43 +71,39 @@ fn printLineImpl(
     index: usize,
     amount: lr.ReadRequest,
     curr_ln: lr.CurrLineNum,
-    comptime cursor: bool,
-    comptime opt: if (cursor) LineWithCursorOptions else LineOptions,
+    comptime opt: PrintLineOptions,
 ) !void {
-    comptime var line_opt = if (cursor) opt.line_opt else opt;
-    if (cursor) line_opt.view_at = .cursor; // force
-
     // read lines
-    var buf: [line_opt.buf_size][]const u8 = undefined;
+    var buf: [opt.buf_size][]const u8 = undefined;
     const info = lr.readLines(&buf, input, index, curr_ln, amount);
 
     if (info.lines.len > 0) {
-        const first_line_num = if (curr_ln == .detect) info.first_line_num else curr_ln.set - info.curr_line_pos;
+        const first_line_num = if (curr_ln == .detect) info.first_line_num else (curr_ln.set - info.curr_line_pos);
         const last_line_num = first_line_num + info.lines.len -| 1;
-        const num_col_len = if (line_opt.show_line_num) num.countIntLen(last_line_num) else 0;
-        const line_num_sep_len = if (line_opt.show_line_num) line_opt.line_num_sep.len else 0;
+        const num_col_len = if (opt.show_line_num) num.countIntLen(last_line_num) else 0;
+        const line_num_sep_len = if (opt.show_line_num) opt.line_num_sep.len else 0;
 
         const curr_line = info.lines[info.curr_line_pos];
-        const curr_line_len = if (line_opt.line_len == 0) std.math.maxInt(usize) else line_opt.line_len;
-        const curr_line_slice = switch (line_opt.view_at) {
-            .cursor => slice.segAroundIndices(curr_line, info.index_pos, curr_line_len, .{ .slicing_mode = line_opt.trunc_mode }),
+        const curr_line_len = if (opt.line_len == 0) std.math.maxInt(usize) else opt.line_len;
+        const curr_line_seg = switch (opt.view_at) {
+            .cursor => slice.segAroundIndices(curr_line, info.index_pos, curr_line_len, .{ .slicing_mode = opt.trunc_mode }),
             .end => slice.segEndIndices(curr_line, curr_line_len),
             .start => slice.segStartIndices(curr_line, curr_line_len),
         };
 
         // print lines
         for (info.lines, 0.., first_line_num..) |line, i, line_num| {
-            try writeLineNumImpl(writer, line_num, num_col_len, line_opt);
+            try writeLineNumImpl(writer, line_num, num_col_len, opt);
 
             // project current line on others
-            const sliced_line = slice.segRange([]const u8, line, curr_line_slice.start, curr_line_slice.end);
-            try writeLineImpl(writer, input, line, sliced_line, curr_line_slice.start > line.len, line_opt);
+            const sliced_line = slice.segRange([]const u8, line, curr_line_seg.start, curr_line_seg.end);
+            try writeLineImpl(writer, input, line, sliced_line, curr_line_seg.start > line.len, opt);
 
             // print cursor
-            if (cursor and info.curr_line_pos == i) {
-                const trunc_sym_len = if (slice.indexOfStart(line, sliced_line) > 0) line_opt.trunc_sym.len else 0;
-                const cursor_pos = num_col_len + line_num_sep_len + trunc_sym_len + curr_line_slice.index_pos;
-                try writeCursorImpl(writer, input, index, cursor_pos, opt.cursor_opt);
+            if (opt.show_cursor and opt.view_at == .cursor and info.curr_line_pos == i) {
+                const trunc_sym_len = if (slice.indexOfStart(line, sliced_line) > 0) opt.trunc_sym.len else 0;
+                const cursor_pos = num_col_len + line_num_sep_len + trunc_sym_len + curr_line_seg.index_pos;
+                try writeCursorImpl(writer, input, index, cursor_pos, opt);
             }
         }
     }
@@ -124,7 +114,7 @@ inline fn writeLineNumImpl(
     writer: anytype,
     line_num: usize,
     pad_size: usize,
-    comptime opt: LineOptions,
+    comptime opt: PrintLineOptions,
 ) !void {
     if (!opt.show_line_num) return;
     try writer.print("{d: <[1]}" ++ opt.line_num_sep, .{ line_num, pad_size });
@@ -137,7 +127,7 @@ fn writeLineImpl(
     full: []const u8,
     sliced: []const u8,
     skip_status: bool,
-    comptime opt: LineOptions,
+    comptime opt: PrintLineOptions,
 ) !void {
     // full line
     if (opt.line_len == 0) {
@@ -177,7 +167,7 @@ fn writeCursorImpl(
     input: []const u8,
     index: usize,
     index_pos: usize,
-    comptime opt: CursorOptions,
+    comptime opt: PrintLineOptions,
 ) !void {
     try writer.writeByteNTimes(' ', index_pos);
     try writer.writeByte(opt.cursor_head_char);
@@ -212,17 +202,16 @@ test "+printLine, printLineWithCursor" {
             index: usize,
             amount: lr.ReadRequest,
             curr_ln: lr.CurrLineNum,
-            comptime line_opt: LineOptions,
-            comptime cursor_opt: CursorOptions,
+            comptime opt: PrintLineOptions,
         ) !void {
             var out = std.BoundedArray(u8, 256){};
             if (expect) |exp| {
-                try printLine(out.writer(), input, index, amount, curr_ln, line_opt);
+                try printLine(out.writer(), input, index, amount, curr_ln, opt);
                 try t.expectEqualStrings(exp, out.slice());
             }
             if (expect_with_cursor) |exp_with_cursor| {
                 out.len = 0; // reset
-                try printLineWithCursor(out.writer(), input, index, amount, curr_ln, .{ .cursor_opt = cursor_opt, .line_opt = line_opt });
+                try printLineWithCursor(out.writer(), input, index, amount, curr_ln, opt);
                 try t.expectEqualStrings(if (exp_with_cursor.len == 0) "" else exp_with_cursor ++ "\n", out.slice());
             }
         }
@@ -240,7 +229,7 @@ test "+printLine, printLineWithCursor" {
         \\
     ,
         \\
-    , "hello", 100, .{ .forward = 1 }, .detect, .{}, .{});
+    , "hello", 100, .{ .forward = 1 }, .detect, .{});
 
     // .show_line_num
     // --------------------
@@ -250,7 +239,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\␃
         \\^ (end of string)
-    , "", 0, .{ .forward = 1 }, .detect, .{ .show_line_num = false }, .{});
+    , "", 0, .{ .forward = 1 }, .detect, .{ .show_line_num = false });
 
     try case(
         \\1| ␃
@@ -258,7 +247,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\1| ␃
         \\   ^ (end of string)
-    , "", 0, .{ .forward = 1 }, .detect, .{ .show_line_num = true }, .{});
+    , "", 0, .{ .forward = 1 }, .detect, .{ .show_line_num = true });
 
     // .show_eof
     // --------------------
@@ -268,7 +257,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\1| 
         \\   ^ (end of string)
-    , "", 0, .{ .forward = 1 }, .detect, .{ .show_eof = false, .show_line_num = true }, .{});
+    , "", 0, .{ .forward = 1 }, .detect, .{ .show_eof = false, .show_line_num = true });
 
     try case(
         \\
@@ -276,7 +265,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\
         \\^ (end of string)
-    , "", 0, .{ .forward = 1 }, .detect, .{ .show_eof = false, .show_line_num = false }, .{});
+    , "", 0, .{ .forward = 1 }, .detect, .{ .show_eof = false, .show_line_num = false });
 
     // .line_num_sep
     // --------------------
@@ -286,7 +275,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\1__hello␃
         \\   ^
-    , "hello", 0, .{ .forward = 1 }, .detect, .{ .line_len = 0, .line_num_sep = "__" }, .{});
+    , "hello", 0, .{ .forward = 1 }, .detect, .{ .line_len = 0, .line_num_sep = "__" });
 
     try case(
         \\1hello␃
@@ -294,7 +283,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\1hello␃
         \\ ^
-    , "hello", 0, .{ .forward = 1 }, .detect, .{ .line_len = 0, .line_num_sep = "" }, .{});
+    , "hello", 0, .{ .forward = 1 }, .detect, .{ .line_len = 0, .line_num_sep = "" });
 
     // .view_at and .line_len
     // --------------------
@@ -304,7 +293,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\1| ..ell..
         \\      ^
-    , "hello", 2, .{ .forward = 1 }, .detect, .{ .line_len = 3, .view_at = .end }, .{});
+    , "hello", 2, .{ .forward = 1 }, .detect, .{ .line_len = 3, .view_at = .end });
 
     try case(
         \\1| hel..
@@ -312,7 +301,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\1| ..ell..
         \\      ^
-    , "hello", 2, .{ .forward = 1 }, .detect, .{ .line_len = 3, .view_at = .start }, .{});
+    , "hello", 2, .{ .forward = 1 }, .detect, .{ .line_len = 3, .view_at = .start });
 
     // `.view_at == .cursor` is a default for other cases
 
@@ -325,7 +314,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\1| hel..
         \\   ^
-    , "hello", 0, .{ .forward = 1 }, .detect, .{ .line_len = 3, .trunc_mode = .soft }, .{});
+    , "hello", 0, .{ .forward = 1 }, .detect, .{ .line_len = 3, .trunc_mode = .soft });
 
     try case(
         \\1| ..llo␃
@@ -333,7 +322,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\1| ..llo␃
         \\       ^
-    , "hello", 4, .{ .forward = 1 }, .detect, .{ .line_len = 3, .trunc_mode = .soft }, .{});
+    , "hello", 4, .{ .forward = 1 }, .detect, .{ .line_len = 3, .trunc_mode = .soft });
 
     try case(
         \\1| ..ell..
@@ -341,7 +330,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\1| ..ell..
         \\      ^
-    , "hello", 2, .{ .forward = 1 }, .detect, .{ .line_len = 3, .trunc_mode = .soft }, .{});
+    , "hello", 2, .{ .forward = 1 }, .detect, .{ .line_len = 3, .trunc_mode = .soft });
 
     // .hard
     try case(
@@ -350,7 +339,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\1| he..
         \\   ^
-    , "hello", 0, .{ .forward = 1 }, .detect, .{ .line_len = 3, .trunc_mode = .hard }, .{});
+    , "hello", 0, .{ .forward = 1 }, .detect, .{ .line_len = 3, .trunc_mode = .hard });
 
     try case(
         \\1| ..lo␃
@@ -358,7 +347,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\1| ..lo␃
         \\      ^
-    , "hello", 4, .{ .forward = 1 }, .detect, .{ .line_len = 3, .trunc_mode = .hard }, .{});
+    , "hello", 4, .{ .forward = 1 }, .detect, .{ .line_len = 3, .trunc_mode = .hard });
 
     // .hard_flex
     try case(
@@ -367,7 +356,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\1| hel..
         \\   ^
-    , "hello", 0, .{ .forward = 1 }, .detect, .{ .line_len = 3, .trunc_mode = .hard_flex }, .{});
+    , "hello", 0, .{ .forward = 1 }, .detect, .{ .line_len = 3, .trunc_mode = .hard_flex });
 
     try case(
         \\1| ..llo␃
@@ -375,7 +364,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\1| ..llo␃
         \\       ^
-    , "hello", 4, .{ .forward = 1 }, .detect, .{ .line_len = 3, .trunc_mode = .hard_flex }, .{});
+    , "hello", 4, .{ .forward = 1 }, .detect, .{ .line_len = 3, .trunc_mode = .hard_flex });
 
     try case(
         \\1| ..ell..
@@ -383,7 +372,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\1| ..ell..
         \\      ^
-    , "hello", 2, .{ .forward = 1 }, .detect, .{ .line_len = 3, .trunc_mode = .hard_flex }, .{});
+    , "hello", 2, .{ .forward = 1 }, .detect, .{ .line_len = 3, .trunc_mode = .hard_flex });
 
     // manual line numbering
     // --------------------
@@ -393,7 +382,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\42| hello␃
         \\    ^
-    , "hello", 0, .{ .forward = 1 }, .{ .set = 42 }, .{ .line_len = 0 }, .{});
+    , "hello", 0, .{ .forward = 1 }, .{ .set = 42 }, .{ .line_len = 0 });
 
     // automatic line number detection
     // --------------------
@@ -409,7 +398,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\1| first line
         \\   ^
-    , input1, 0, .{ .forward = 1 }, .detect, .{ .line_len = 0 }, .{});
+    , input1, 0, .{ .forward = 1 }, .detect, .{ .line_len = 0 });
 
     try case(
         \\1| first line
@@ -417,7 +406,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\1| first line
         \\        ^ (space)
-    , input1, 5, .{ .forward = 1 }, .detect, .{ .line_len = 0 }, .{});
+    , input1, 5, .{ .forward = 1 }, .detect, .{ .line_len = 0 });
 
     try case(
         \\2| second line
@@ -425,7 +414,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\2| second line
         \\    ^
-    , input1, 12, .{ .forward = 1 }, .detect, .{ .line_len = 0 }, .{});
+    , input1, 12, .{ .forward = 1 }, .detect, .{ .line_len = 0 });
 
     try case(
         \\2| second line
@@ -433,7 +422,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\2| second line
         \\              ^ (newline)
-    , input1, 22, .{ .forward = 1 }, .detect, .{ .line_len = 0 }, .{});
+    , input1, 22, .{ .forward = 1 }, .detect, .{ .line_len = 0 });
 
     try case(
         \\3| ␃
@@ -441,7 +430,7 @@ test "+printLine, printLineWithCursor" {
     ,
         \\3| ␃
         \\   ^ (end of string)
-    , input1, 23, .{ .forward = 1 }, .detect, .{ .line_len = 0 }, .{});
+    , input1, 23, .{ .forward = 1 }, .detect, .{ .line_len = 0 });
 
     // multi-line read
     //
@@ -468,7 +457,7 @@ test "+printLine, printLineWithCursor" {
         \\    ^
         \\11| This is the second.
         \\12| A third line is a longer one.
-    , input2, 0, .{ .forward = 3 }, .{ .set = 10 }, .{ .line_len = 0 }, .{});
+    , input2, 0, .{ .forward = 3 }, .{ .set = 10 }, .{ .line_len = 0 });
 
     try case(
         \\8 | First..
@@ -480,7 +469,7 @@ test "+printLine, printLineWithCursor" {
         \\9 | This ..
         \\10| A thi..
         \\     ^ (space)
-    , input2, 28, .{ .backward = 3 }, .{ .set = 10 }, .{ .line_len = 5 }, .{});
+    , input2, 28, .{ .backward = 3 }, .{ .set = 10 }, .{ .line_len = 5 });
 
     try case(
         \\10| ..third..
@@ -492,7 +481,7 @@ test "+printLine, printLineWithCursor" {
         \\        ^
         \\11| ..es fo..
         \\12| ..st.␃
-    , input2, 31, .{ .forward = 3 }, .{ .set = 10 }, .{ .line_len = 5 }, .{});
+    , input2, 31, .{ .forward = 3 }, .{ .set = 10 }, .{ .line_len = 5 });
 
     try case(
         \\9 | ..
@@ -506,7 +495,7 @@ test "+printLine, printLineWithCursor" {
         \\          ^ (newline)
         \\11| ..
         \\12| ..
-    , input2, 56, .{ .bi = .{ .backward = 2, .forward = 2 } }, .{ .set = 10 }, .{ .line_len = 5 }, .{});
+    , input2, 56, .{ .bi = .{ .backward = 2, .forward = 2 } }, .{ .set = 10 }, .{ .line_len = 5 });
 
     // empty and last empty lines
     //
@@ -529,5 +518,5 @@ test "+printLine, printLineWithCursor" {
         \\         ^
         \\2| 
         \\3| ␃
-    , input3, 40, .{ .forward = 3 }, .detect, .{ .line_len = 5 }, .{});
+    , input3, 40, .{ .forward = 3 }, .detect, .{ .line_len = 5 });
 }
