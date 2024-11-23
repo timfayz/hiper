@@ -76,99 +76,97 @@ fn printLineImpl(
     // read lines
     var buf: [opt.buf_size][]const u8 = undefined;
     const info = lr.readLines(&buf, input, index, curr_ln, amount);
+    if (info.isEmpty()) return;
 
-    if (info.lines.len > 0) {
-        const first_line_num = if (curr_ln == .detect) info.first_line_num else (curr_ln.set - info.curr_line_pos);
-        const last_line_num = first_line_num + info.lines.len -| 1;
-        const num_col_len = if (opt.show_line_num) num.countIntLen(last_line_num) else 0;
-        const line_num_sep_len = if (opt.show_line_num) opt.line_num_sep.len else 0;
+    const num_col_len = if (opt.show_line_num) num.countIntLen(info.lastLineNum()) else 0;
+    const num_col_sep_len = if (opt.show_line_num) opt.line_num_sep.len else 0;
 
-        const curr_line = info.lines[info.curr_line_pos];
-        const curr_line_len = if (opt.line_len == 0) std.math.maxInt(usize) else opt.line_len;
-        const curr_line_seg = switch (opt.view_at) {
-            .cursor => slice.segAroundIndices(curr_line, info.index_pos, curr_line_len, .{ .slicing_mode = opt.trunc_mode }),
-            .end => slice.segEndIndices(curr_line, curr_line_len),
-            .start => slice.segStartIndices(curr_line, curr_line_len),
-        };
+    const cursor_line_len = if (opt.line_len == 0) std.math.maxInt(usize) else opt.line_len;
+    const cursor_line_indices: slice.SegAroundIndices = switch (opt.view_at) {
+        .cursor => slice.segAroundIndices(info.currLine(), info.index_pos, cursor_line_len, .{ .slicing_mode = opt.trunc_mode }),
+        .end => blk: {
+            const indices = slice.segEndIndices(info.currLine(), cursor_line_len);
+            break :blk .{ .start = indices.start, .end = indices.end, .index_pos = 0 };
+        },
+        .start => blk: {
+            const indices = slice.segStartIndices(info.currLine(), cursor_line_len);
+            break :blk .{ .start = indices.start, .end = indices.end, .index_pos = 0 };
+        },
+    };
 
-        // print lines
-        for (info.lines, 0.., first_line_num..) |line, i, line_num| {
-            try writeLineNumImpl(writer, line_num, num_col_len, opt);
-
-            // project current line on others
-            const sliced_line = slice.segRange([]const u8, line, curr_line_seg.start, curr_line_seg.end);
-            try writeLineImpl(writer, input, line, sliced_line, curr_line_seg.start > line.len, opt);
-
-            // print cursor
-            if (opt.show_cursor and opt.view_at == .cursor and info.curr_line_pos == i) {
-                const trunc_sym_len = if (slice.indexOfStart(line, sliced_line) > 0) opt.trunc_sym.len else 0;
-                const cursor_pos = num_col_len + line_num_sep_len + trunc_sym_len + curr_line_seg.index_pos;
-                try writeCursorImpl(writer, input, index, cursor_pos, opt);
-            }
+    // print lines
+    for (info.lines, info.firstLineNum().., 0..) |line, line_num, i| {
+        if (opt.show_line_num) try writeLineNum(writer, line_num, num_col_len, opt);
+        const trim_len = try writeLine(writer, input, line, cursor_line_indices, opt);
+        // cursor
+        if (opt.show_cursor and info.curr_line_pos == i) {
+            const index_pos = num_col_len + num_col_sep_len + trim_len + cursor_line_indices.index_pos;
+            try writeCursor(writer, input, index, index_pos, opt);
         }
     }
 }
 
 /// Implementation function.
-inline fn writeLineNumImpl(
+inline fn writeLineNum(
     writer: anytype,
     line_num: usize,
     pad_size: usize,
     comptime opt: PrintLineOptions,
 ) !void {
-    if (!opt.show_line_num) return;
     try writer.print("{d: <[1]}" ++ opt.line_num_sep, .{ line_num, pad_size });
 }
 
 /// Implementation function.
-fn writeLineImpl(
+fn writeLine(
     writer: anytype,
     input: []const u8,
-    full: []const u8,
-    sliced: []const u8,
-    skip_status: bool,
+    line: []const u8,
+    cursor_line_indices: slice.SegAroundIndices,
     comptime opt: PrintLineOptions,
-) !void {
-    // full line
+) !usize {
+    var trunc_len: usize = 0;
+    // complete line
     if (opt.line_len == 0) {
-        try writer.writeAll(full);
-        if (slice.indexOfEnd(input, full) >= input.len)
+        try writer.writeAll(line);
+        if (opt.show_eof and slice.indexOfEnd(input, line) >= input.len)
             try writer.writeAll("␃");
-    } else
+    }
     // empty line
-    if (opt.show_eof and full.len == 0) {
-        if (slice.indexOfEnd(input, full) >= input.len)
+    else if (line.len == 0) {
+        if (opt.show_eof and slice.indexOfEnd(input, line) >= input.len)
             try writer.writeAll("␃");
     }
     // skipped line
-    else if (skip_status) {
+    else if (cursor_line_indices.start > line.len) {
         try writer.writeAll(opt.trunc_sym);
     }
     // sliced line
     else {
-        if (slice.indexOfStart(full, sliced) > 0) {
+        const line_seg = slice.segRange([]const u8, line, cursor_line_indices.start, cursor_line_indices.end);
+        if (slice.indexOfStart(line, line_seg) > 0) {
             try writer.writeAll(opt.trunc_sym);
+            trunc_len = opt.trunc_sym.len;
         }
-        try writer.writeAll(sliced);
-        if (slice.indexOfEnd(full, sliced) < full.len) {
+        try writer.writeAll(line_seg);
+        if (slice.indexOfEnd(line, line_seg) < line.len) {
             try writer.writeAll(opt.trunc_sym);
-        } else if (opt.show_eof and
-            slice.indexOfEnd(input, sliced) >= input.len)
-        {
+        } else if (opt.show_eof and slice.indexOfEnd(input, line_seg) >= input.len) {
             try writer.writeAll("␃");
         }
     }
     try writer.writeByte('\n');
+    return trunc_len;
 }
 
 /// Implementation function.
-fn writeCursorImpl(
+fn writeCursor(
     writer: anytype,
     input: []const u8,
     index: usize,
     index_pos: usize,
     comptime opt: PrintLineOptions,
 ) !void {
+    if (opt.view_at != .cursor) return;
     try writer.writeByteNTimes(' ', index_pos);
     try writer.writeByte(opt.cursor_head_char);
     if (opt.show_cursor_hint) {
