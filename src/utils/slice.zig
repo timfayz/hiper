@@ -157,14 +157,14 @@ test ":merge" {
     try equal("abcd", merge([]const u8, in1[0..4], in1[0..4])); // same slices
 }
 
-/// Retrieves the starting position of a slice in source.
-pub inline fn indexOfStart(source: anytype, slice: anytype) usize {
-    return slice.ptr - source.ptr;
+/// Retrieves the starting position of a segment in slice.
+pub inline fn indexOfStart(slice: anytype, seg: anytype) usize {
+    return seg.ptr - slice.ptr;
 }
 
-/// Retrieves the ending position of a slice in source.
-pub inline fn indexOfEnd(source: anytype, slice: anytype) usize {
-    return (slice.ptr - source.ptr) +| slice.len;
+/// Retrieves the ending position of a segment in slice.
+pub inline fn indexOfEnd(slice: anytype, seg: anytype) usize {
+    return (seg.ptr - slice.ptr) +| seg.len;
 }
 
 test ":indexOfStart, indexOfEnd" {
@@ -186,18 +186,18 @@ test ":indexOfStart, indexOfEnd" {
     try equal(10, indexOfStart(input, input[10..10]));
 }
 
-/// Return structure for `segIndices()`, `segStartIndices()` and
-/// `segEndIndices()`.
+/// Return structure for `indices()`, `segStartIndices()`,
+/// `segEndIndices()`, and alike.
 pub const Indices = struct {
     start: usize,
     end: usize,
 };
 
-/// Retrieves the starting and ending positions of a slice in source.
-pub inline fn indices(source: anytype, slice: anytype) Indices {
+/// Retrieves the starting and ending positions of a segment in slice.
+pub inline fn indices(slice: anytype, seg: anytype) Indices {
     return .{
-        .start = indexOfStart(source, slice),
-        .end = indexOfEnd(source, slice),
+        .start = indexOfStart(slice, seg),
+        .end = indexOfEnd(slice, seg),
     };
 }
 
@@ -274,14 +274,6 @@ test ":segRange" {
     try equal("d", segRange([]const u8, "abcd", 3, 4));
 }
 
-/// Retrieves the starting and ending positions of a slice in source.
-pub inline fn segRangeIndices(source: anytype, slice: anytype) Indices {
-    return .{
-        .start = indexOfStart(source, slice),
-        .end = indexOfEnd(source, slice),
-    };
-}
-
 /// Options for `segAround()`.
 pub const SegAroundOptions = struct {
     /// Shifts even-length ranges by one index to the right.
@@ -321,28 +313,23 @@ pub fn segAroundIndices(
     len: usize,
     comptime opt: SegAroundOptions,
 ) SegAroundIndices {
-    if (slice.len == 0) return .{
-        .start = 0,
-        .end = 0,
-        .index_pos = index,
-    };
+    if (slice.len == 0)
+        return .{ .start = 0, .end = 0, .index_pos = index };
 
     if (len == 0) {
-        const idx = @min(index, slice.len);
-        return .{
-            .start = idx,
-            .end = idx,
-            .index_pos = index -| idx,
-        };
+        const i = @min(index, slice.len);
+        return .{ .start = i, .end = i, .index_pos = index -| i };
     }
 
-    const len_is_even = len & 1 == 0;
-    const rshift_start: usize = if (opt.even_rshift and len_is_even) 1 else 0;
-    const rshift_end: usize = if (len_is_even) rshift_start else 1;
-
     const dist = len / 2;
-    const dist_to_start = dist -| rshift_start;
-    const dist_to_end = dist +| rshift_end;
+    const dist_to_start, const dist_to_end = blk: {
+        if (len & 1 == 0) { // even
+            break :blk if (opt.even_rshift) .{ dist -| 1, dist +| 1 } else .{ dist, dist };
+        } else { // odd
+            // adjust for the single item lost during integer division (ie. 3 / 2 = 1)
+            break :blk .{ dist, dist + 1 };
+        }
+    };
 
     const start = @min(
         index -| dist_to_start,
@@ -363,12 +350,7 @@ pub fn segAroundIndices(
             .hard_flex, .soft => start +| len,
         },
     );
-
-    return .{
-        .start = start,
-        .end = end,
-        .index_pos = index - start,
-    };
+    return .{ .start = start, .end = end, .index_pos = index - start };
 }
 
 /// Return structure of `segAround()`.
@@ -392,6 +374,202 @@ pub fn segAround(
         .slice = slice[seg.start..seg.end],
         .index_pos = seg.index_pos,
     };
+}
+
+test ":segAround" {
+    const t = std.testing;
+
+    const equal = struct {
+        fn run(
+            expect_slice: []const u8,
+            expect_index_pos: usize,
+            result: SegAroundInfo([]const u8),
+        ) !void {
+            try t.expectEqualStrings(expect_slice, result.slice);
+            try t.expectEqual(expect_index_pos, result.index_pos);
+        }
+    }.run;
+
+    // format:
+    // try equal(|expected seg|, |expected index_pos|, |fn result|)
+
+    const T = []const u8;
+
+    // any truncation mode
+    {
+        // zero segment or slice length
+        try equal("", 10, segAround(T, "", 10, 100, .{ .slicing_mode = .hard }));
+        //         ^+                     ^+
+        try equal("", 10, segAround(T, "", 10, 0, .{ .slicing_mode = .hard }));
+        //         ^+                     ^+
+        try equal("", 0, segAround(T, "abc", 0, 0, .{ .slicing_mode = .hard }));
+        //         ^                   ^
+        try equal("", 0, segAround(T, "abc", 3, 0, .{ .slicing_mode = .hard }));
+        //         ^                      ^
+        try equal("", 2, segAround(T, "abc", 5, 0, .{ .slicing_mode = .hard }));
+        //           ^                      ^
+    }
+
+    // .soft truncation mode
+    {
+        // bypass truncation
+        try equal("abcd", 3, segAround(T, "abcd", 3, 100, .{ .slicing_mode = .soft }));
+        //            ^                       ^
+
+        // odd segment length
+        try equal("abcd", 0, segAround(T, "abcd", 0, 100, .{ .slicing_mode = .soft }));
+        //         ^                       ^
+        try equal("abc", 0, segAround(T, "abcd", 0, 3, .{ .slicing_mode = .soft }));
+        //         ^                      ^
+        try equal("abc", 1, segAround(T, "abcd", 1, 3, .{ .slicing_mode = .soft }));
+        //          ^                      ^
+        try equal("bcd", 1, segAround(T, "abcd", 2, 3, .{ .slicing_mode = .soft }));
+        //          ^                       ^
+        try equal("bcd", 2, segAround(T, "abcd", 3, 3, .{ .slicing_mode = .soft }));
+        //           ^                       ^
+        try equal("bcd", 3, segAround(T, "abcd", 4, 3, .{ .slicing_mode = .soft }));
+        //            ^                       ^
+        try equal("bcd", 4, segAround(T, "abcd", 5, 3, .{ .slicing_mode = .soft }));
+        //             ^                       ^
+
+        // even segment length (right shifted)
+        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
+        //         ^                     ^
+        try equal("bc", 0, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
+        //         ^                      ^
+        try equal("cd", 0, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
+        //         ^                       ^
+        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
+        //          ^                       ^
+        try equal("cd", 2, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
+        //           ^                       ^
+        try equal("cd", 3, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
+        //            ^                       ^
+
+        // even segment length (left shifted)
+        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
+        //         ^                     ^
+        try equal("ab", 1, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
+        //          ^                     ^
+        try equal("bc", 1, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
+        //          ^                      ^
+        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
+        //          ^                       ^
+        try equal("cd", 2, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
+        //           ^                       ^
+        try equal("cd", 3, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
+        //            ^                       ^
+    }
+
+    // .hard truncation mode
+    {
+        // bypass truncation
+        try equal("abcd", 3, segAround(T, "abcd", 3, 100, .{ .slicing_mode = .hard }));
+        //            ^                         ^
+
+        // odd segment length
+        try equal("ab", 0, segAround(T, "abcd", 0, 3, .{ .slicing_mode = .hard }));
+        //         ^                     ^
+        try equal("abc", 1, segAround(T, "abcd", 1, 3, .{ .slicing_mode = .hard }));
+        //          ^                      ^
+        try equal("bcd", 1, segAround(T, "abcd", 2, 3, .{ .slicing_mode = .hard }));
+        //          ^                       ^
+        try equal("cd", 1, segAround(T, "abcd", 3, 3, .{ .slicing_mode = .hard }));
+        //          ^                       ^
+        try equal("d", 1, segAround(T, "abcd", 4, 3, .{ .slicing_mode = .hard }));
+        //          ^                       ^
+        try equal("", 1, segAround(T, "abcd", 5, 3, .{ .slicing_mode = .hard }));
+        //          ^                       ^
+        try equal("", 2, segAround(T, "abcd", 6, 3, .{ .slicing_mode = .hard }));
+        //           ^                       ^
+
+        // even segment length (right shifted)
+        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
+        //         ^                     ^
+        try equal("bc", 0, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
+        //         ^                      ^
+        try equal("cd", 0, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
+        //         ^                       ^
+        try equal("d", 0, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
+        //         ^                       ^
+        try equal("", 0, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
+        //         ^                       ^
+        try equal("", 1, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
+        //          ^                       ^
+        try equal("", 2, segAround(T, "abcd", 6, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
+        //           ^                       ^
+
+        // even segment length (left shifted)
+        try equal("a", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
+        //         ^                    ^
+        try equal("ab", 1, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
+        //          ^                     ^
+        try equal("bc", 1, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
+        //          ^                      ^
+        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
+        //          ^                       ^
+        try equal("d", 1, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
+        //          ^                       ^
+        try equal("", 1, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
+        //          ^                       ^
+        try equal("", 2, segAround(T, "abcd", 6, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
+        //           ^                       ^
+    }
+
+    // .hard_flex truncation mode
+    {
+        // bypass truncation
+        try equal("abcd", 3, segAround(T, "abcd", 3, 100, .{ .slicing_mode = .hard_flex }));
+        //            ^                       ^
+
+        // odd segment length
+        try equal("abc", 0, segAround(T, "abcd", 0, 3, .{ .slicing_mode = .hard_flex }));
+        //         ^                      ^
+        try equal("abc", 1, segAround(T, "abcd", 1, 3, .{ .slicing_mode = .hard_flex }));
+        //          ^                      ^
+        try equal("bcd", 1, segAround(T, "abcd", 2, 3, .{ .slicing_mode = .hard_flex }));
+        //          ^                       ^
+        try equal("bcd", 2, segAround(T, "abcd", 3, 3, .{ .slicing_mode = .hard_flex }));
+        //           ^                       ^
+        try equal("cd", 2, segAround(T, "abcd", 4, 3, .{ .slicing_mode = .hard_flex }));
+        //           ^                       ^
+        try equal("d", 2, segAround(T, "abcd", 5, 3, .{ .slicing_mode = .hard_flex }));
+        //           ^                       ^
+        try equal("", 2, segAround(T, "abcd", 6, 3, .{ .slicing_mode = .hard_flex }));
+        //           ^                       ^
+
+        // even segment length (right shifted)
+        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
+        //         ^                     ^
+        try equal("bc", 0, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
+        //         ^                      ^
+        try equal("cd", 0, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
+        //         ^                       ^
+        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
+        //          ^                       ^
+        try equal("d", 1, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
+        //          ^                       ^
+        try equal("", 1, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
+        //          ^                       ^
+        try equal("", 2, segAround(T, "abcd", 6, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
+        //           ^                       ^
+
+        // even segment length (left shifted)
+        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
+        //         ^                     ^
+        try equal("ab", 1, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
+        //          ^                     ^
+        try equal("bc", 1, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
+        //          ^                      ^
+        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
+        //          ^                       ^
+        try equal("d", 1, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
+        //          ^                       ^
+        try equal("", 1, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
+        //          ^                       ^
+        try equal("", 2, segAround(T, "abcd", 6, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
+        //           ^                       ^
+    }
 }
 
 /// Checks if the provided segment is a valid sub-slice of the given slice.
@@ -596,401 +774,3 @@ pub fn moveSegRight(T: type, slice: []T, seg: []T) MoveSegError!void {
     return moveSeg(.right, 1024, T, slice, seg);
 }
 
-test ":segAround" {
-    const t = std.testing;
-
-    const equal = struct {
-        fn run(
-            expect_slice: []const u8,
-            expect_index_pos: usize,
-            result: SegAroundInfo([]const u8),
-        ) !void {
-            try t.expectEqualStrings(expect_slice, result.slice);
-            try t.expectEqual(expect_index_pos, result.index_pos);
-        }
-    }.run;
-
-    // Format:
-    //
-    // try equal(|expected seg|, |expected index_pos|, |fn result|)
-
-    const T = []const u8;
-
-    // Any truncation mode
-    {
-        // Zero segment or slice length
-        try equal("", 10, segAround(T, "", 10, 100, .{ .slicing_mode = .hard }));
-        //         ^+                     ^+
-        try equal("", 10, segAround(T, "", 10, 0, .{ .slicing_mode = .hard }));
-        //         ^+                     ^+
-        try equal("", 0, segAround(T, "abc", 0, 0, .{ .slicing_mode = .hard }));
-        //         ^                     ^
-        try equal("", 0, segAround(T, "abc", 3, 0, .{ .slicing_mode = .hard }));
-        //         ^                        ^
-        try equal("", 2, segAround(T, "abc", 5, 0, .{ .slicing_mode = .hard }));
-        //           ^                        ^
-    }
-
-    // .soft truncation mode
-    {
-        // Bypass truncation
-        try equal("abcd", 3, segAround(T, "abcd", 3, 100, .{ .slicing_mode = .soft }));
-        //            ^                      ^
-
-        // Odd segment length
-        try equal("abcd", 0, segAround(T, "abcd", 0, 100, .{ .slicing_mode = .soft }));
-        //         ^                         ^
-        try equal("abc", 0, segAround(T, "abcd", 0, 3, .{ .slicing_mode = .soft }));
-        //         ^                        ^
-        try equal("abc", 1, segAround(T, "abcd", 1, 3, .{ .slicing_mode = .soft }));
-        //          ^                        ^
-        try equal("bcd", 1, segAround(T, "abcd", 2, 3, .{ .slicing_mode = .soft }));
-        //          ^                         ^
-        try equal("bcd", 2, segAround(T, "abcd", 3, 3, .{ .slicing_mode = .soft }));
-        //           ^                         ^
-        try equal("bcd", 3, segAround(T, "abcd", 4, 3, .{ .slicing_mode = .soft }));
-        //            ^                         ^
-        try equal("bcd", 4, segAround(T, "abcd", 5, 3, .{ .slicing_mode = .soft }));
-        //             ^                         ^
-
-        // Even segment length (right shifted)
-        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
-        //         ^                       ^
-        try equal("bc", 0, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
-        //         ^                        ^
-        try equal("cd", 0, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
-        //         ^                         ^
-        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
-        //          ^                         ^
-        try equal("cd", 2, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
-        //           ^                         ^
-        try equal("cd", 3, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
-        //            ^                         ^
-
-        // Even segment length (left shifted)
-        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
-        //         ^                       ^
-        try equal("ab", 1, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
-        //          ^                       ^
-        try equal("bc", 1, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
-        //          ^                        ^
-        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
-        //          ^                         ^
-        try equal("cd", 2, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
-        //           ^                         ^
-        try equal("cd", 3, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
-        //            ^                         ^
-    }
-
-    // .hard truncation mode
-    {
-        // Bypass truncation
-        try equal("abcd", 3, segAround(T, "abcd", 3, 100, .{ .slicing_mode = .hard }));
-        //            ^                         ^
-
-        // Odd segment length
-        try equal("ab", 0, segAround(T, "abcd", 0, 3, .{ .slicing_mode = .hard }));
-        //         ^                       ^
-        try equal("abc", 1, segAround(T, "abcd", 1, 3, .{ .slicing_mode = .hard }));
-        //          ^                        ^
-        try equal("bcd", 1, segAround(T, "abcd", 2, 3, .{ .slicing_mode = .hard }));
-        //          ^                         ^
-        try equal("cd", 1, segAround(T, "abcd", 3, 3, .{ .slicing_mode = .hard }));
-        //          ^                         ^
-        try equal("d", 1, segAround(T, "abcd", 4, 3, .{ .slicing_mode = .hard }));
-        //          ^                         ^
-        try equal("", 1, segAround(T, "abcd", 5, 3, .{ .slicing_mode = .hard }));
-        //          ^                         ^
-        try equal("", 2, segAround(T, "abcd", 6, 3, .{ .slicing_mode = .hard }));
-        //           ^                         ^
-
-        // Even segment length (right shifted)
-        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
-        //         ^                       ^
-        try equal("bc", 0, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
-        //         ^                        ^
-        try equal("cd", 0, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
-        //         ^                         ^
-        try equal("d", 0, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
-        //         ^                         ^
-        try equal("", 0, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
-        //         ^                         ^
-        try equal("", 1, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
-        //          ^                         ^
-        try equal("", 2, segAround(T, "abcd", 6, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
-        //           ^                         ^
-
-        // Even segment length (left shifted)
-        try equal("a", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
-        //         ^                      ^
-        try equal("ab", 1, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
-        //          ^                       ^
-        try equal("bc", 1, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
-        //          ^                        ^
-        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
-        //          ^                         ^
-        try equal("d", 1, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
-        //          ^                         ^
-        try equal("", 1, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
-        //          ^                         ^
-        try equal("", 2, segAround(T, "abcd", 6, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
-        //           ^                         ^
-    }
-
-    // .hard_flex truncation mode
-    {
-        // Bypass truncation
-        try equal("abcd", 3, segAround(T, "abcd", 3, 100, .{ .slicing_mode = .hard_flex }));
-        //            ^                         ^
-
-        // Odd segment length
-        try equal("abc", 0, segAround(T, "abcd", 0, 3, .{ .slicing_mode = .hard_flex }));
-        //         ^                        ^
-        try equal("abc", 1, segAround(T, "abcd", 1, 3, .{ .slicing_mode = .hard_flex }));
-        //          ^                        ^
-        try equal("bcd", 1, segAround(T, "abcd", 2, 3, .{ .slicing_mode = .hard_flex }));
-        //          ^                         ^
-        try equal("bcd", 2, segAround(T, "abcd", 3, 3, .{ .slicing_mode = .hard_flex }));
-        //           ^                         ^
-        try equal("cd", 2, segAround(T, "abcd", 4, 3, .{ .slicing_mode = .hard_flex }));
-        //           ^                         ^
-        try equal("d", 2, segAround(T, "abcd", 5, 3, .{ .slicing_mode = .hard_flex }));
-        //           ^                         ^
-        try equal("", 2, segAround(T, "abcd", 6, 3, .{ .slicing_mode = .hard_flex }));
-        //           ^                         ^
-
-        // Even segment length (right shifted)
-        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
-        //         ^                       ^
-        try equal("bc", 0, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
-        //         ^                        ^
-        try equal("cd", 0, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
-        //         ^                         ^
-        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
-        //          ^                         ^
-        try equal("d", 1, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
-        //          ^                         ^
-        try equal("", 1, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
-        //          ^                         ^
-        try equal("", 2, segAround(T, "abcd", 6, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
-        //           ^                         ^
-
-        // Even segment length (left shifted)
-        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
-        //         ^                       ^
-        try equal("ab", 1, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
-        //          ^                       ^
-        try equal("bc", 1, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
-        //          ^                        ^
-        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
-        //          ^                         ^
-        try equal("d", 1, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
-        //          ^                         ^
-        try equal("", 1, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
-        //          ^                         ^
-        try equal("", 2, segAround(T, "abcd", 6, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
-        //           ^                         ^
-    }
-}
-
-/// Checks if the provided segment is a valid sub-slice of the given slice.
-pub inline fn isSeg(T: type, slice: []const T, seg: []const T) bool {
-    const slice_start = @intFromPtr(slice.ptr);
-    const slice_end = @intFromPtr(slice.ptr + slice.len);
-    const seg_start = @intFromPtr(seg.ptr);
-    const seg_end = @intFromPtr(seg.ptr + seg.len);
-    return num.isInRangeInc(usize, seg_start, slice_start, slice_end) and
-        num.isInRangeInc(usize, seg_end, slice_start, slice_end);
-}
-
-test "+isSeg" {
-    const equal = std.testing.expectEqual;
-    const slice: [11]u8 = "hello_world".*;
-
-    try equal(true, isSeg(u8, slice[0..], slice[0..0]));
-    try equal(true, isSeg(u8, slice[0..], slice[11..11]));
-    try equal(true, isSeg(u8, slice[0..], slice[0..1]));
-    try equal(true, isSeg(u8, slice[0..], slice[3..6]));
-    try equal(true, isSeg(u8, slice[0..], slice[10..11]));
-    try equal(false, isSeg(u8, slice[0..], "hello_world"));
-    // intersecting
-    try equal(true, isSeg(u8, slice[0..5], slice[0..5])); // same
-    try equal(true, isSeg(u8, slice[0..0], slice[0..0]));
-    try equal(true, isSeg(u8, slice[11..11], slice[11..11])); // last zero
-    try equal(false, isSeg(u8, slice[0..5], slice[0..6]));
-    try equal(false, isSeg(u8, slice[0..5], slice[5..10]));
-    try equal(false, isSeg(u8, slice[5..10], slice[0..5]));
-    try equal(false, isSeg(u8, slice[0..0], slice[11..11]));
-    try equal(false, isSeg(u8, slice[0..6], slice[5..11]));
-}
-
-/// Moves a valid slice segment to the beginning of the given slice. The function
-/// returns an error if the segment is of different origin or its length exceeds
-/// 1024. Use `moveSegImpl()` directly to increase the length.
-pub fn moveSegLeft(T: type, slice: []T, seg: []T) MoveSegError!void {
-    return moveSeg(.left, 1024, T, slice, seg);
-}
-
-/// Moves a valid slice segment to the end of the given slice. The function
-/// returns an error if the segment is different origins or its length exceeds
-/// 1024. Use `moveSegImpl()` directly to increase the length.
-pub fn moveSegRight(T: type, slice: []T, seg: []T) MoveSegError!void {
-    return moveSeg(.right, 1024, T, slice, seg);
-}
-
-pub const MoveSegError = error{ IsNotSeg, SegIsTooBig };
-pub const MoveSegDirection = enum { left, right };
-
-/// Moves a valid slice segment to the start or end of the given slice.
-pub fn moveSeg(
-    comptime dir: MoveSegDirection,
-    comptime max_seg_size: usize,
-    T: type,
-    slice: []T,
-    seg: []T,
-) MoveSegError!void {
-    if (!isSeg(T, slice, seg)) return MoveSegError.IsNotSeg;
-    if (seg.len > max_seg_size) return MoveSegError.SegIsTooBig;
-
-    // no need to move if
-    if (seg.len == 0 or seg.len == slice.len) return;
-    switch (dir) {
-        .right => if (indexOfEnd(slice, seg) == slice.len) return,
-        .left => if (indexOfStart(slice, seg) == 0) return,
-    }
-
-    // copy segment
-    var buf: [max_seg_size]T = undefined;
-    const seg_copy = buf[0..seg.len];
-    mem.copyForwards(T, seg_copy, seg);
-
-    // swap slice segment with its opposite side
-    switch (dir) {
-        // [ [seg][seg_rhs] ] (step 0)
-        // [ [seg_rhs]..... ] (step 1)
-        // [ [seg_rhs][seg] ] (step 2)
-        .right => {
-            const seg_rhs = slice[indexOfEnd(slice, seg)..]; // step 0
-            const start: usize = indexOfStart(slice, seg);
-            const end: usize = start +| seg_rhs.len;
-            mem.copyForwards(T, slice[start..end], seg_rhs); // step 1
-            // copy seg to the end of slice
-            mem.copyForwards(T, slice[slice.len -| seg_copy.len..], seg_copy); // step 2
-        },
-        // [ [seg_lhs][seg] ] (step 0)
-        // [ .....[seg_lhs] ] (step 1)
-        // [ [seg][seg_lhs] ] (step 2)
-        .left => {
-            const seg_lhs = slice[0..indexOfStart(slice, seg)]; // step 0
-            const end: usize = indexOfEnd(slice, seg);
-            const start: usize = end -| seg_lhs.len;
-            mem.copyBackwards(T, slice[start..end], seg_lhs); // step 1
-            // copy seg to the beginning of the slice
-            mem.copyForwards(T, slice[0..seg_copy.len], seg_copy); // step 2
-        },
-    }
-}
-
-test "+moveSeg" {
-    const t = std.testing;
-    const Err = MoveSegError;
-
-    const case = struct {
-        pub fn run(
-            comptime dir: MoveSegDirection,
-            expected_slice: []const u8,
-            expected_err: ?MoveSegError,
-            slice: []u8,
-            seg: []u8,
-        ) !void {
-            moveSeg(dir, 7, u8, slice, seg) catch |err| {
-                if (expected_err == null) return err;
-                try t.expectEqual(expected_err.?, err);
-                return;
-            };
-            if (expected_err != null) return error.ExpectedError;
-            try t.expectEqualStrings(expected_slice, slice);
-        }
-    }.run;
-
-    // format:
-    // try case(|move_dir|, |expected_slice|, |?expected_err|, |orig_slice|, |seg_to_move|)
-
-    const origin = "0123456";
-    var buf: [7]u8 = origin.*;
-    const slice = buf[0..];
-
-    // right
-    //
-    try case(.right, "3456012", null, slice, slice[0..3]);
-    //                    ---
-    buf = origin.*;
-
-    try case(.right, "0126345", null, slice, slice[3..6]);
-    //                    ---
-    buf = origin.*;
-
-    try case(.right, origin, null, slice, slice);
-    //               same input
-    buf = origin.*;
-
-    try case(.right, origin, null, slice, slice[4..]);
-    //               no need to move
-    buf = origin.*;
-
-    try case(.right, origin, null, slice, slice[7..]);
-    //               zero length slice segment
-    buf = origin.*;
-
-    try case(.right, origin, null, slice, slice[3..3]);
-    //               zero length slice segment
-    buf = origin.*;
-
-    try case(.right, "", Err.IsNotSeg, slice[0..4], slice[3..6]);
-    //               not a valid slice segment
-    buf = origin.*;
-
-    var big_buf: [10]u8 = undefined;
-    try case(.right, "", Err.SegIsTooBig, &big_buf, big_buf[0..]);
-    //               slice segment is to big to copy
-    buf = origin.*;
-
-    // left
-    //
-    try case(.left, "1234560", null, slice, slice[1..]);
-    //               ------
-    buf = origin.*;
-
-    try case(.left, "4560123", null, slice, slice[4..]);
-    //               ---
-    buf = origin.*;
-
-    try case(.left, "6012345", null, slice, slice[6..]);
-    //               -
-    buf = origin.*;
-
-    try case(.left, origin, null, slice, slice);
-    //              same input
-    buf = origin.*;
-
-    try case(.left, origin, null, slice, slice[0..3]);
-    //              no need to move
-    buf = origin.*;
-
-    try case(.left, origin, null, slice, slice[7..]);
-    //              zero length slice segment
-    buf = origin.*;
-
-    try case(.left, origin, null, slice, slice[3..3]);
-    //              zero length slice segment
-    buf = origin.*;
-
-    try case(.left, "", Err.IsNotSeg, slice[0..4], slice[3..6]);
-    //              not a valid slice segment
-    buf = origin.*;
-
-    var big_buf2: [10]u8 = undefined;
-    try case(.left, "", Err.SegIsTooBig, &big_buf2, big_buf2[0..]);
-    //               slice segment is to big to copy
-    buf = origin.*;
-}
