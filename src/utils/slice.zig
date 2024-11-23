@@ -296,7 +296,7 @@ pub const SegAroundMode = enum {
 };
 
 /// Return structure of `segAroundIndices()`.
-const SegAroundIndices = struct {
+pub const SegAroundIndices = struct {
     start: usize,
     end: usize,
     index_pos: usize,
