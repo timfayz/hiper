@@ -20,6 +20,8 @@
 //! - segAroundIndices()
 //! - SegAroundInfo
 //! - segAround()
+//! - SegAroundRangeIndices
+//! - segAroundRangeIndices()
 //! - isSeg()
 //! - MoveSegError
 //! - MoveSegDirection
@@ -465,7 +467,7 @@ test ":segAround" {
     {
         // bypass truncation
         try equal("abcd", 3, segAround(T, "abcd", 3, 100, .{ .slicing_mode = .hard }));
-        //            ^                         ^
+        //            ^                       ^
 
         // odd segment length
         try equal("ab", 0, segAround(T, "abcd", 0, 3, .{ .slicing_mode = .hard }));
@@ -788,16 +790,28 @@ pub const SegAroundRangeIndices = struct {
     }
 
     /// Returns the length of the requested segment range.
-    pub inline fn range_len(self: *const SegAroundRangeIndices) usize {
-        return self.end_pos - self.start_pos;
+    pub inline fn rangeLen(self: *const SegAroundRangeIndices) usize {
+        return self.end_pos - self.start_pos +| 1;
+    }
+
+    /// Checks if the relative range start position exceeds the actual segment
+    /// length.
+    pub inline fn startPosExceeds(self: *const SegAroundRangeIndices) bool {
+        return self.start_pos > self.seg_len();
+    }
+
+    /// Checks if the relative range start position exceeds the actual segment
+    /// length.
+    pub inline fn endPosExceeds(self: *const SegAroundRangeIndices) bool {
+        return self.end_pos > self.seg_len();
     }
 };
 
-/// Returns indices of a slice segment within the `start` and `end` range,
-/// extended by `len / 2` elements around it, along with the relative
-/// positions of the original `start` and `end` indices within the segment.
-/// The returned indices position can be out of segment bounds if the original
-/// indices were out of slice.
+/// Returns indices of a slice segment within the `start`:`end` range, extended
+/// by `len / 2` elements around it, along with the relative positions of the
+/// original `start`, `end` indices within the segment. The `end` index is
+/// inclusive. The returned indices position can be out of segment bounds if the
+/// original indices were out of slice.
 pub fn segAroundRangeIndices(
     slice: anytype,
     start: usize,
@@ -805,14 +819,14 @@ pub fn segAroundRangeIndices(
     len: usize,
 ) SegAroundRangeIndices {
     if (start == end) {
-        const s = segAroundIndices(slice, start, len, .{ .slicing_mode = .hard_flex });
+        const s = segAroundIndices(slice, start, if (len == 0) 1 else len, .{ .slicing_mode = .hard_flex });
         return .{ .start = s.start, .end = s.end, .start_pos = s.index_pos, .end_pos = s.index_pos };
     }
     // ensure start <= end
     const s, const e = if (start < end) .{ start, end } else .{ end, start };
     const dist = len / 2;
     const seg_start = @min(slice.len, s -| dist);
-    const seg_end = @min(slice.len, e +| dist +| 1);
+    const seg_end = @min(slice.len, e +| dist +| 1); // +1 ensures end index is inclusive
     return .{
         .start = seg_start,
         .end = seg_end,
@@ -828,41 +842,73 @@ test ":segAroundRangeIndices" {
             start: usize,
             end: usize,
             len: usize,
-            comptime expect: anytype,
+            comptime expect: struct {
+                seg: []const u8,
+                s_pos: usize,
+                e_pos: usize,
+                rng_len: usize,
+                s_out: bool,
+                e_out: bool,
+            },
         ) !void {
             const res = segAroundRangeIndices(input, start, end, len);
-            try std.testing.expectEqualStrings(expect[0], input[res.start..res.end]);
-            try std.testing.expectEqual(expect[1], res.start_pos);
-            try std.testing.expectEqual(expect[2], res.end_pos);
+            try std.testing.expectEqualStrings(expect.seg, input[res.start..res.end]);
+            try std.testing.expectEqual(expect.s_pos, res.start_pos);
+            try std.testing.expectEqual(expect.e_pos, res.end_pos);
+            try std.testing.expectEqual(expect.rng_len, res.rangeLen());
+            try std.testing.expectEqual(expect.s_out, res.startPosExceeds());
+            try std.testing.expectEqual(expect.e_out, res.endPosExceeds());
         }
     }.run;
 
     // format:
-    // try case(|input|, |start|, |end|, |len|, |expected seg, start_pos, end_pos|)
+    // try case(|input|, |start|, |end|, |len|, |expected seg, start_pos, end_pos, range_len, start_exceeds, end_exceeds|)
 
-    // empty input range
-    try case("", 0, 0, 0, .{ "", 0, 0 });
+    // test empty input range
+    try case("", 0, 0, 0, .{ .seg = "", .s_pos = 0, .e_pos = 0, .rng_len = 1, .s_out = false, .e_out = false });
+    //        ^
+    try case("", 5, 20, 10, .{ .seg = "", .s_pos = 5, .e_pos = 20, .rng_len = 16, .s_out = true, .e_out = true });
+    //        -----^^^...
 
-    // out-of-bounds range
-    try case("", 5, 10, 20, .{ "", 5, 10 });
-    try case("0123456789", 50, 100, 20, .{ "", 40, 90 });
+    // test out-of-bounds range
+    try case("0123456789", 5, 20, 0, .{ .seg = "56789", .s_pos = 0, .e_pos = 15, .rng_len = 16, .s_out = false, .e_out = true });
+    //             ^^^^^^^..
+    try case("0123456789", 5, 20, 10, .{ .seg = "0123456789", .s_pos = 5, .e_pos = 20, .rng_len = 16, .s_out = false, .e_out = true });
+    //        -----^^^^^^^..
+    try case("0123456789", 10, 11, 0, .{ .seg = "", .s_pos = 0, .e_pos = 1, .rng_len = 2, .s_out = false, .e_out = true });
+    //                  ^^
+    try case("0123456789", 11, 12, 0, .{ .seg = "", .s_pos = 1, .e_pos = 2, .rng_len = 2, .s_out = true, .e_out = true });
+    //                   ^^
+    try case("0123456789", 12, 20, 0, .{ .seg = "", .s_pos = 2, .e_pos = 10, .rng_len = 9, .s_out = true, .e_out = true });
+    //                    ^^^..
+    try case("0123456789", 12, 20, 10, .{ .seg = "789", .s_pos = 5, .e_pos = 13, .rng_len = 9, .s_out = true, .e_out = true });
+    //               -----^^^..
 
-    // zero range (start == end)
-    try case("0123456789", 4, 4, 3, .{ "345", 1, 1 });
-    try case("0123456789", 4, 4, 0, .{ "", 0, 0 });
+    // test zero-item range (start == end)
+    try case("0123456789", 4, 4, 0, .{ .seg = "4", .s_pos = 0, .e_pos = 0, .rng_len = 1, .s_out = false, .e_out = false });
+    //            ^
+    try case("0123456789", 4, 4, 1, .{ .seg = "4", .s_pos = 0, .e_pos = 0, .rng_len = 1, .s_out = false, .e_out = false });
+    //            ^             1/2 = 0 -> zero extent
 
-    // zero-extend range
-    try case("0123456789", 2, 4, 0, .{ "234", 0, 2 });
+    // test single-item range
+    try case("0123456789", 4, 4, 3, .{ .seg = "345", .s_pos = 1, .e_pos = 1, .rng_len = 1, .s_out = false, .e_out = false });
+    //           -^-
+    try case("0123456789", 4, 5, 3, .{ .seg = "3456", .s_pos = 1, .e_pos = 2, .rng_len = 2, .s_out = false, .e_out = false });
+    //           -^^-
 
-    // range with left deficit
-    try case("0123456789", 0, 3, 4, .{ "012345", 0, 3 });
-    //      --    --
+    // test zero-extend range
+    try case("0123456789", 2, 4, 0, .{ .seg = "234", .s_pos = 0, .e_pos = 2, .rng_len = 3, .s_out = false, .e_out = false });
+    //          ^^^
 
-    // range with right deficit
-    try case("0123456789", 6, 9, 4, .{ "456789", 2, 5 });
-    //            --    --
+    // test range with left deficit
+    try case("0123456789", 0, 3, 4, .{ .seg = "012345", .s_pos = 0, .e_pos = 3, .rng_len = 4, .s_out = false, .e_out = false });
+    //      --^^^^--
 
-    // normal range, no deficit
-    try case("0123456789", 3, 6, 4, .{ "12345678", 2, 5 });
-    //         --    --
+    // test range with right deficit
+    try case("0123456789", 6, 9, 4, .{ .seg = "456789", .s_pos = 2, .e_pos = 5, .rng_len = 4, .s_out = false, .e_out = false });
+    //            --^^^^--
+
+    // test normal range, no deficit
+    try case("0123456789", 3, 6, 4, .{ .seg = "12345678", .s_pos = 2, .e_pos = 5, .rng_len = 4, .s_out = false, .e_out = false });
+    //         --^^^^--
 }
