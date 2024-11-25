@@ -295,7 +295,7 @@ pub const SegAroundMode = enum {
     soft,
 };
 
-/// Return structure of `segAroundIndices()`.
+/// Return structure of `segAroundIndices()`. See the function for details.
 pub const SegAroundIndices = struct {
     start: usize,
     end: usize,
@@ -304,9 +304,9 @@ pub const SegAroundIndices = struct {
 
 /// Returns the start and end indices of a slice segment of length `len`
 /// centered around the index, along with the relative position of the original
-/// index within the segment. The returned index can be out of segment bounds if
-/// the original index was out of slice. See `SegAroundOptions` for additional
-/// options.
+/// index within the segment. The returned index position can be out of segment
+/// bounds if the original index was out of slice. See `SegAroundOptions` for
+/// additional options.
 pub fn segAroundIndices(
     slice: anytype,
     index: usize,
@@ -353,7 +353,7 @@ pub fn segAroundIndices(
     return .{ .start = start, .end = end, .index_pos = index - start };
 }
 
-/// Return structure of `segAround()`.
+/// Return structure of `segAround()`. See the function for details.
 pub fn SegAroundInfo(T: type) type {
     return struct { slice: T, index_pos: usize };
 }
@@ -774,3 +774,95 @@ pub fn moveSegRight(T: type, slice: []T, seg: []T) MoveSegError!void {
     return moveSeg(.right, 1024, T, slice, seg);
 }
 
+/// Return structure of `segAroundRangeIndices()`. See the function for details.
+pub const SegAroundRangeIndices = struct {
+    start: usize,
+    end: usize,
+    start_pos: usize,
+    end_pos: usize,
+
+    /// Returns the actual segment length retrieved within the slice for the
+    /// given range and extra length.
+    pub inline fn seg_len(self: *const SegAroundRangeIndices) usize {
+        return self.end - self.start;
+    }
+
+    /// Returns the length of the requested segment range.
+    pub inline fn range_len(self: *const SegAroundRangeIndices) usize {
+        return self.end_pos - self.start_pos;
+    }
+};
+
+/// Returns indices of a slice segment within the `start` and `end` range,
+/// extended by `len / 2` elements around it, along with the relative
+/// positions of the original `start` and `end` indices within the segment.
+/// The returned indices position can be out of segment bounds if the original
+/// indices were out of slice.
+pub fn segAroundRangeIndices(
+    slice: anytype,
+    start: usize,
+    end: usize,
+    len: usize,
+) SegAroundRangeIndices {
+    if (start == end) {
+        const s = segAroundIndices(slice, start, len, .{ .slicing_mode = .hard_flex });
+        return .{ .start = s.start, .end = s.end, .start_pos = s.index_pos, .end_pos = s.index_pos };
+    }
+    // ensure start <= end
+    const s, const e = if (start < end) .{ start, end } else .{ end, start };
+    const dist = len / 2;
+    const seg_start = @min(slice.len, s -| dist);
+    const seg_end = @min(slice.len, e +| dist +| 1);
+    return .{
+        .start = seg_start,
+        .end = seg_end,
+        .start_pos = s - seg_start,
+        .end_pos = e - seg_start,
+    };
+}
+
+test ":segAroundRangeIndices" {
+    const case = struct {
+        pub fn run(
+            comptime input: []const u8,
+            start: usize,
+            end: usize,
+            len: usize,
+            comptime expect: anytype,
+        ) !void {
+            const res = segAroundRangeIndices(input, start, end, len);
+            try std.testing.expectEqualStrings(expect[0], input[res.start..res.end]);
+            try std.testing.expectEqual(expect[1], res.start_pos);
+            try std.testing.expectEqual(expect[2], res.end_pos);
+        }
+    }.run;
+
+    // format:
+    // try case(|input|, |start|, |end|, |len|, |expected seg, start_pos, end_pos|)
+
+    // empty input range
+    try case("", 0, 0, 0, .{ "", 0, 0 });
+
+    // out-of-bounds range
+    try case("", 5, 10, 20, .{ "", 5, 10 });
+    try case("0123456789", 50, 100, 20, .{ "", 40, 90 });
+
+    // zero range (start == end)
+    try case("0123456789", 4, 4, 3, .{ "345", 1, 1 });
+    try case("0123456789", 4, 4, 0, .{ "", 0, 0 });
+
+    // zero-extend range
+    try case("0123456789", 2, 4, 0, .{ "234", 0, 2 });
+
+    // range with left deficit
+    try case("0123456789", 0, 3, 4, .{ "012345", 0, 3 });
+    //      --    --
+
+    // range with right deficit
+    try case("0123456789", 6, 9, 4, .{ "456789", 2, 5 });
+    //            --    --
+
+    // normal range, no deficit
+    try case("0123456789", 3, 6, 4, .{ "12345678", 2, 5 });
+    //         --    --
+}
