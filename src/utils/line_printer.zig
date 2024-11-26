@@ -15,6 +15,7 @@ const num = @import("num.zig");
 pub const PrintLineOptions = struct {
     line_len: usize = 80,
     trunc_sym: []const u8 = "..",
+    /// Applies only when printing mode is `.cursor`.
     trunc_mode: slice.SegAroundMode = .hard_flex,
     show_line_num: bool = true,
     line_num_sep: []const u8 = "| ",
@@ -28,6 +29,7 @@ pub const PrintLineOptions = struct {
     show_cursor_hint: bool = true,
     hint_printable_chars: bool = false,
     cursor_head_char: u8 = '^',
+    cursor_body_char: u8 = '~',
 };
 
 /// Specifies which part of the line(s) should be rendered. Each mode optionally
@@ -37,7 +39,7 @@ pub const PrintLineMode = union(enum) {
     start: struct { index: usize, curr_ln: lr.CurrLineNum = .detect },
     end: struct { index: usize, curr_ln: lr.CurrLineNum = .detect },
     cursor: struct { index: usize, curr_ln: lr.CurrLineNum = .detect },
-    range: struct { index: usize, index_end: usize, curr_ln: lr.CurrLineNum = .detect },
+    range: struct { index_start: usize, index_end: usize, curr_ln: lr.CurrLineNum = .detect },
 
     pub inline fn curr_ln(self: *const PrintLineMode) lr.CurrLineNum {
         return switch (self.*) {
@@ -47,6 +49,7 @@ pub const PrintLineMode = union(enum) {
 
     pub inline fn index(self: *const PrintLineMode) usize {
         return switch (self.*) {
+            .range => |r| r.index_start,
             inline else => |any| any.index,
         };
     }
@@ -66,30 +69,35 @@ fn printLine(
 ) !void {
     var buf: [opt.buf_size][]const u8 = undefined;
 
-    // ensure index <= index_end when reading at .range
-    const index, const index_end: ?usize = switch (mode) {
-        .range => |r| if (r.index <= r.index_end) .{ r.index, r.index_end } else .{ r.index_end, r.index },
+    // ensure index <= index_end when reading mode is .range
+    const index_start, const index_end: ?usize = switch (mode) {
+        .range => |r| if (r.index_start <= r.index_end) .{ r.index_start, r.index_end } else .{ r.index_end, r.index_start },
         inline else => |any| .{ any.index, null },
     };
-    _ = index_end; // autofix
 
-    // read lines
-    const info = lr.readLines(&buf, input, index, mode.curr_ln(), amount);
+    // read first index
+    const info = lr.readLines(&buf, input, index_start, mode.curr_ln(), amount);
     if (info.isEmpty()) return;
 
-    const cursor_line_len = if (opt.line_len == 0) std.math.maxInt(usize) else opt.line_len;
-    const cursor_line_indices: slice.SegAroundIndices = switch (mode) {
-        .start, .end => blk: {
-            const indices = if (mode == .start)
-                slice.segStartIndices(info.currLine(), cursor_line_len)
-            else
-                slice.segEndIndices(info.currLine(), cursor_line_len);
-            break :blk .{ .start = indices.start, .end = indices.end, .index_pos = 0 };
+    // calc cursor line indices
+    const cursor_len = if (opt.line_len == 0) std.math.maxInt(usize) else opt.line_len;
+    const cursor_indices: slice.SegAroundRangeIndices = switch (mode) {
+        .start => blk: {
+            const indices = slice.segStartIndices(info.currLine(), cursor_len);
+            break :blk .{ .start = indices.start, .end = indices.end, .start_pos = 0, .end_pos = 0 };
         },
-        .cursor => slice.segAroundIndices(info.currLine(), info.index_pos, cursor_line_len, .{
-            .slicing_mode = opt.trunc_mode,
-        }),
-        else => unreachable,
+        .end => blk: {
+            const indices = slice.segEndIndices(info.currLine(), cursor_len);
+            break :blk .{ .start = indices.start, .end = indices.end, .start_pos = 0, .end_pos = 0 };
+        },
+        .cursor => blk: {
+            const indices = slice.segAroundIndices(info.currLine(), info.index_pos, cursor_len, .{ .slicing_mode = opt.trunc_mode });
+            break :blk .{ .start = indices.start, .end = indices.end, .start_pos = indices.index_pos, .end_pos = 0 };
+        },
+        .range => blk: {
+            const range_len = index_end.? - index_start;
+            break :blk slice.segAroundRangeIndices(info.currLine(), info.index_pos, info.index_pos + range_len, cursor_len);
+        },
     };
 
     const num_col_len = if (opt.show_line_num) num.countIntLen(info.lastLineNum()) else 0;
@@ -98,11 +106,11 @@ fn printLine(
     // render lines
     for (info.lines, info.firstLineNum().., 0..) |line, line_num, i| {
         if (opt.show_line_num) try writeLineNum(writer, line_num, num_col_len, opt);
-        const trim_len = try writeLine(writer, input, line, cursor_line_indices, opt);
+        const trim_len = try writeLine(writer, input, line, cursor_indices, opt);
         // cursor
         if (opt.show_cursor and info.curr_line_pos == i) {
-            const index_pos = num_col_len + num_col_sep_len + trim_len + cursor_line_indices.index_pos;
-            try writeCursor(writer, input, index, index_pos, opt);
+            const extra_pad = num_col_len + num_col_sep_len + trim_len;
+            try writeCursor(writer, input, mode, cursor_indices, extra_pad, opt);
         }
     }
 }
@@ -137,7 +145,7 @@ fn writeLine(
     writer: anytype,
     input: []const u8,
     line: []const u8,
-    cursor_line_indices: slice.SegAroundIndices,
+    cursor: slice.SegAroundRangeIndices,
     comptime opt: PrintLineOptions,
 ) !usize {
     var trunc_len: usize = 0;
@@ -153,12 +161,12 @@ fn writeLine(
             try writer.writeAll("␃");
     }
     // skipped line
-    else if (cursor_line_indices.start > line.len) {
+    else if (cursor.start > line.len) {
         try writer.writeAll(opt.trunc_sym);
     }
     // sliced line
     else {
-        const line_seg = slice.segRange([]const u8, line, cursor_line_indices.start, cursor_line_indices.end);
+        const line_seg = slice.segRange([]const u8, line, cursor.start, cursor.end);
         if (slice.indexOfStart(line, line_seg) > 0) {
             try writer.writeAll(opt.trunc_sym);
             trunc_len = opt.trunc_sym.len;
@@ -178,16 +186,30 @@ fn writeLine(
 fn writeCursor(
     writer: anytype,
     input: []const u8,
-    index: usize,
-    index_pos: usize,
+    mode: PrintLineMode,
+    cursor_indices: slice.SegAroundRangeIndices,
+    extra_pad: usize,
     comptime opt: PrintLineOptions,
 ) !void {
-    try writer.writeByteNTimes(' ', index_pos);
+    // render cursor head
+    try writer.writeByteNTimes(' ', cursor_indices.start_pos +| extra_pad);
     try writer.writeByte(opt.cursor_head_char);
+
+    if (mode == .range) {
+        const body_len = cursor_indices.rangeLen() -| 1; // 1 excludes head
+        if (cursor_indices.endPosExceeds() and body_len > 0) { // `^~~`
+            try writer.writeByteNTimes(opt.cursor_body_char, body_len -| 1); // 1 excludes newline
+        } else if (body_len == 1) { // `^^`
+            try writer.writeByte(opt.cursor_head_char);
+        } else if (body_len > 1) { // `^~~^`
+            try writer.writeByteNTimes(opt.cursor_body_char, body_len -| 1); // 1 excludes tail
+            try writer.writeByte(opt.cursor_head_char);
+        }
+    }
     if (opt.show_cursor_hint) {
-        const hint = if (index >= input.len)
+        const hint = if (mode.index() >= input.len)
             " (end of string)"
-        else switch (input[index]) {
+        else switch (input[mode.index()]) {
             '\n' => " (newline)",
             ' ' => " (space)",
             inline '!'...'~',
@@ -234,7 +256,7 @@ test ":printLine, printLineWithCursor" {
     // |input|, |idx|, |amount|, |line_num|, |line_opts|, |cursor_opts|)
 
     // out of bounds read
-    //
+    // --------------------
     try case(
         \\
     ,
@@ -295,25 +317,7 @@ test ":printLine, printLineWithCursor" {
         \\ ^
     , "hello", .{ .cursor = .{ .index = 0 } }, .{ .forward = 1 }, .{ .line_len = 0, .line_num_sep = "" });
 
-    // .line_len
-    // --------------------
-    try case(
-        \\1| ..llo␃
-        \\
-    ,
-        \\1| ..llo␃
-        \\     ^
-    , "hello", .{ .end = .{ .index = 2 } }, .{ .forward = 1 }, .{ .line_len = 3 });
-
-    try case(
-        \\1| hel..
-        \\
-    ,
-        \\1| hel..
-        \\   ^
-    , "hello", .{ .start = .{ .index = 2 } }, .{ .forward = 1 }, .{ .line_len = 3 });
-
-    // .trunc_mode
+    // .trunc_mode and .line_len
     // --------------------
     // .soft
     try case(
@@ -357,7 +361,7 @@ test ":printLine, printLineWithCursor" {
         \\      ^
     , "hello", .{ .cursor = .{ .index = 4 } }, .{ .forward = 1 }, .{ .line_len = 3, .trunc_mode = .hard });
 
-    // .hard_flex
+    // .hard_flex (default)
     try case(
         \\1| hel..
         \\
@@ -527,4 +531,34 @@ test ":printLine, printLineWithCursor" {
         \\2| 
         \\3| ␃
     , input3, .{ .cursor = .{ .index = 40 } }, .{ .forward = 3 }, .{ .line_len = 5 });
+
+    // mode .end
+    // --------------------
+    try case(
+        \\1| ..llo␃
+        \\
+    ,
+        \\1| ..llo␃
+        \\     ^
+    , "hello", .{ .end = .{ .index = 2 } }, .{ .forward = 1 }, .{ .line_len = 3 });
+
+    // mode .start
+    // --------------------
+    try case(
+        \\1| hel..
+        \\
+    ,
+        \\1| hel..
+        \\   ^
+    , "hello", .{ .start = .{ .index = 2 } }, .{ .forward = 1 }, .{ .line_len = 3 });
+
+    // mode .range
+    // --------------------
+    try case(
+        \\1| ..234..
+        \\
+    ,
+        \\1| ..234..
+        \\     ^~^
+    , "012345678", .{ .range = .{ .index_start = 2, .index_end = 4 } }, .{ .forward = 1 }, .{ .line_len = 1 });
 }
