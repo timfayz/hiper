@@ -187,17 +187,17 @@ fn writeCursor(
     writer: anytype,
     input: []const u8,
     mode: PrintLineMode,
-    cursor_indices: slice.SegAroundRangeIndices,
+    cursor: slice.SegAroundRangeIndices,
     extra_pad: usize,
     comptime opt: PrintLineOptions,
 ) !void {
     // render cursor head
-    try writer.writeByteNTimes(' ', cursor_indices.start_pos +| extra_pad);
+    try writer.writeByteNTimes(' ', cursor.start_pos +| extra_pad);
     try writer.writeByte(opt.cursor_head_char);
 
     if (mode == .range) {
-        const body_len = cursor_indices.rangeLen() -| 1; // 1 excludes head
-        if (cursor_indices.endPosExceeds() and body_len > 0) { // `^~~`
+        const body_len = cursor.rangeLen() -| 1; // 1 excludes head
+        if (cursor.endPosExceeds() and body_len > 0) { // `^~~`
             try writer.writeByteNTimes(opt.cursor_body_char, body_len -| 1); // 1 excludes newline
         } else if (body_len == 1) { // `^^`
             try writer.writeByte(opt.cursor_head_char);
