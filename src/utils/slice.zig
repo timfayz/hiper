@@ -812,25 +812,25 @@ pub const SegAroundRangeIndices = struct {
 };
 
 /// Returns indices of a slice segment within the `start`:`end` range, extended
-/// by `len / 2` elements around it, along with the relative positions of the
-/// original `start`, `end` indices within the segment. The `end` index is
-/// inclusive. The returned indices position (`*_pos`) can be out of segment
-/// bounds if the original `start`:`end` indices were out of slice.
+/// by `pad` elements around each side, along with the relative positions of the
+/// original `start` and `end` indices within the segment. The `end` index is
+/// inclusive. The returned positions (`*_pos`) may fall outside the segment
+/// if the original `start` or `end` indices were out of slice bounds.
 pub fn segAroundRangeIndices(
     slice: anytype,
     start: usize,
     end: usize,
-    len: usize,
+    pad: usize,
 ) SegAroundRangeIndices {
     if (start == end) {
-        const s = segAroundIndices(slice, start, if (len == 0) 1 else len, .{ .slicing_mode = .hard_flex });
+        const range = if (pad == 0) 1 else (pad *| 2 +| 1); // 1 to include the cursor itself
+        const s = segAroundIndices(slice, start, range, .{ .slicing_mode = .hard_flex });
         return .{ .start = s.start, .end = s.end, .start_pos = s.index_pos, .end_pos = s.index_pos };
     }
     // ensure start <= end
     const s, const e = if (start < end) .{ start, end } else .{ end, start };
-    const dist = len / 2;
-    const seg_start = @min(slice.len, s -| dist);
-    const seg_end = @min(slice.len, e +| dist +| 1); // +1 ensures end index is inclusive
+    const seg_start = @min(slice.len, s -| pad);
+    const seg_end = @min(slice.len, e +| pad +| 1); // +1 ensures end index is inclusive
     return .{
         .start = seg_start,
         .end = seg_end,
@@ -868,51 +868,53 @@ test ":segAroundRangeIndices" {
     // format:
     // try case(|input|, |start|, |end|, |len|, |expected seg, start_pos, end_pos, range_len, start_exceeds, end_exceeds|)
 
-    // test empty input range
+    // test empty input ranges
     try case("", 0, 0, 0, .{ .seg = "", .s_pos = 0, .e_pos = 0, .rng_len = 1, .s_out = false, .e_out = false });
     //        ^
-    try case("", 5, 20, 10, .{ .seg = "", .s_pos = 5, .e_pos = 20, .rng_len = 16, .s_out = true, .e_out = true });
-    //        -----^^^...
+    try case("", 5, 20, 4, .{ .seg = "", .s_pos = 5, .e_pos = 20, .rng_len = 16, .s_out = true, .e_out = true });
+    //        ----^^^...
 
-    // test out-of-bounds range
+    // test out-of-bounds ranges
     try case("0123456789", 5, 20, 0, .{ .seg = "56789", .s_pos = 0, .e_pos = 15, .rng_len = 16, .s_out = false, .e_out = true });
     //             ^^^^^^^..
-    try case("0123456789", 5, 20, 10, .{ .seg = "0123456789", .s_pos = 5, .e_pos = 20, .rng_len = 16, .s_out = false, .e_out = true });
-    //        -----^^^^^^^..
+    try case("0123456789", 5, 20, 4, .{ .seg = "123456789", .s_pos = 4, .e_pos = 19, .rng_len = 16, .s_out = false, .e_out = true });
+    //         ----^^^^^^^..
     try case("0123456789", 10, 11, 0, .{ .seg = "", .s_pos = 0, .e_pos = 1, .rng_len = 2, .s_out = false, .e_out = true });
     //                  ^^
     try case("0123456789", 11, 12, 0, .{ .seg = "", .s_pos = 1, .e_pos = 2, .rng_len = 2, .s_out = true, .e_out = true });
     //                   ^^
     try case("0123456789", 12, 20, 0, .{ .seg = "", .s_pos = 2, .e_pos = 10, .rng_len = 9, .s_out = true, .e_out = true });
     //                    ^^^..
-    try case("0123456789", 12, 20, 10, .{ .seg = "789", .s_pos = 5, .e_pos = 13, .rng_len = 9, .s_out = true, .e_out = true });
-    //               -----^^^..
+    try case("0123456789", 12, 20, 4, .{ .seg = "89", .s_pos = 4, .e_pos = 12, .rng_len = 9, .s_out = true, .e_out = true });
+    //                ----^^^..
 
-    // test zero-item range (start == end)
+    // test single-item ranges (start == end)
     try case("0123456789", 4, 4, 0, .{ .seg = "4", .s_pos = 0, .e_pos = 0, .rng_len = 1, .s_out = false, .e_out = false });
     //            ^
-    try case("0123456789", 4, 4, 1, .{ .seg = "4", .s_pos = 0, .e_pos = 0, .rng_len = 1, .s_out = false, .e_out = false });
-    //            ^             1/2 = 0 -> zero extent
-
-    // test single-item range
-    try case("0123456789", 4, 4, 3, .{ .seg = "345", .s_pos = 1, .e_pos = 1, .rng_len = 1, .s_out = false, .e_out = false });
+    try case("0123456789", 4, 4, 1, .{ .seg = "345", .s_pos = 1, .e_pos = 1, .rng_len = 1, .s_out = false, .e_out = false });
     //           -^-
-    try case("0123456789", 4, 5, 3, .{ .seg = "3456", .s_pos = 1, .e_pos = 2, .rng_len = 2, .s_out = false, .e_out = false });
+    try case("0123456789", 4, 4, 2, .{ .seg = "23456", .s_pos = 2, .e_pos = 2, .rng_len = 1, .s_out = false, .e_out = false });
+    //          --^--
+
+    // test normal ranges
+    try case("0123456789", 4, 5, 0, .{ .seg = "45", .s_pos = 0, .e_pos = 1, .rng_len = 2, .s_out = false, .e_out = false });
+    //            ^^
+    try case("0123456789", 4, 5, 1, .{ .seg = "3456", .s_pos = 1, .e_pos = 2, .rng_len = 2, .s_out = false, .e_out = false });
     //           -^^-
+    try case("0123456789", 4, 5, 2, .{ .seg = "234567", .s_pos = 2, .e_pos = 3, .rng_len = 2, .s_out = false, .e_out = false });
+    //          --^^--
+    try case("0123456789", 3, 5, 0, .{ .seg = "345", .s_pos = 0, .e_pos = 2, .rng_len = 3, .s_out = false, .e_out = false });
+    //           ^^^
+    try case("0123456789", 3, 5, 1, .{ .seg = "23456", .s_pos = 1, .e_pos = 3, .rng_len = 3, .s_out = false, .e_out = false });
+    //          -^^^-
+    try case("0123456789", 3, 5, 2, .{ .seg = "1234567", .s_pos = 2, .e_pos = 4, .rng_len = 3, .s_out = false, .e_out = false });
+    //         --^^^--
 
-    // test zero-extend range
-    try case("0123456789", 2, 4, 0, .{ .seg = "234", .s_pos = 0, .e_pos = 2, .rng_len = 3, .s_out = false, .e_out = false });
-    //          ^^^
-
-    // test range with left deficit
-    try case("0123456789", 0, 3, 4, .{ .seg = "012345", .s_pos = 0, .e_pos = 3, .rng_len = 4, .s_out = false, .e_out = false });
+    // test left out-of-bounds pad
+    try case("0123456789", 0, 3, 2, .{ .seg = "012345", .s_pos = 0, .e_pos = 3, .rng_len = 4, .s_out = false, .e_out = false });
     //      --^^^^--
 
-    // test range with right deficit
-    try case("0123456789", 6, 9, 4, .{ .seg = "456789", .s_pos = 2, .e_pos = 5, .rng_len = 4, .s_out = false, .e_out = false });
+    // test right out-of-bounds pad
+    try case("0123456789", 6, 9, 2, .{ .seg = "456789", .s_pos = 2, .e_pos = 5, .rng_len = 4, .s_out = false, .e_out = false });
     //            --^^^^--
-
-    // test normal range, no deficit
-    try case("0123456789", 3, 6, 4, .{ .seg = "12345678", .s_pos = 2, .e_pos = 5, .rng_len = 4, .s_out = false, .e_out = false });
-    //         --^^^^--
 }

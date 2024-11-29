@@ -96,7 +96,7 @@ fn printLine(
         },
         .range => blk: {
             const range_len = index_end.? - index_start;
-            break :blk slice.segAroundRangeIndices(info.currLine(), info.index_pos, info.index_pos + range_len, cursor_len);
+            break :blk slice.segAroundRangeIndices(info.currLine(), info.index_pos, info.index_pos + range_len, cursor_len / 2);
         },
     };
 
