@@ -778,9 +778,13 @@ pub fn moveSegRight(T: type, slice: []T, seg: []T) MoveSegError!void {
 
 /// Return structure of `segAroundRangeIndices()`. See the function for details.
 pub const SegAroundRangeIndices = struct {
+    /// The start index of the segment (within slice boundaries).
     start: usize,
+    /// The end index of the segment (inclusive; within slice boundaries).
     end: usize,
+    /// Position of the original `start` index relative to the segment.
     start_pos: usize,
+    /// Position of the original `end` index relative to the segment.
     end_pos: usize,
 
     /// Returns the actual segment length retrieved within the slice for the
@@ -810,8 +814,8 @@ pub const SegAroundRangeIndices = struct {
 /// Returns indices of a slice segment within the `start`:`end` range, extended
 /// by `len / 2` elements around it, along with the relative positions of the
 /// original `start`, `end` indices within the segment. The `end` index is
-/// inclusive. The returned indices position can be out of segment bounds if the
-/// original indices were out of slice.
+/// inclusive. The returned indices position (`*_pos`) can be out of segment
+/// bounds if the original `start`:`end` indices were out of slice.
 pub fn segAroundRangeIndices(
     slice: anytype,
     start: usize,
