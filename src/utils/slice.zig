@@ -281,7 +281,7 @@ pub const SegAroundOptions = struct {
     /// Shifts even-length ranges by one index to the right.
     even_rshift: bool = true,
     /// See `SegAroundMode` for details.
-    slicing_mode: SegAroundMode = .hard_flex,
+    trunc_mode: SegAroundMode = .hard_flex,
 };
 
 /// Controls how `segAround()` truncates a slice segment.
@@ -335,7 +335,7 @@ pub fn segAroundIndices(
 
     const start = @min(
         index -| dist_to_start,
-        switch (opt.slicing_mode) {
+        switch (opt.trunc_mode) {
             .hard => slice.len,
             .hard_flex => b: {
                 const last_idx = slice.len -| 1;
@@ -347,7 +347,7 @@ pub fn segAroundIndices(
     );
     const end = @min(
         slice.len,
-        switch (opt.slicing_mode) {
+        switch (opt.trunc_mode) {
             .hard => index +| dist_to_end,
             .hard_flex, .soft => start +| len,
         },
@@ -400,176 +400,176 @@ test ":segAround" {
     // any truncation mode
     {
         // zero segment or slice length
-        try equal("", 10, segAround(T, "", 10, 100, .{ .slicing_mode = .hard }));
+        try equal("", 10, segAround(T, "", 10, 100, .{ .trunc_mode = .hard }));
         //         ^+                     ^+
-        try equal("", 10, segAround(T, "", 10, 0, .{ .slicing_mode = .hard }));
+        try equal("", 10, segAround(T, "", 10, 0, .{ .trunc_mode = .hard }));
         //         ^+                     ^+
-        try equal("", 0, segAround(T, "abc", 0, 0, .{ .slicing_mode = .hard }));
+        try equal("", 0, segAround(T, "abc", 0, 0, .{ .trunc_mode = .hard }));
         //         ^                   ^
-        try equal("", 0, segAround(T, "abc", 3, 0, .{ .slicing_mode = .hard }));
+        try equal("", 0, segAround(T, "abc", 3, 0, .{ .trunc_mode = .hard }));
         //         ^                      ^
-        try equal("", 2, segAround(T, "abc", 5, 0, .{ .slicing_mode = .hard }));
+        try equal("", 2, segAround(T, "abc", 5, 0, .{ .trunc_mode = .hard }));
         //           ^                      ^
     }
 
     // .soft truncation mode
     {
         // bypass truncation
-        try equal("abcd", 3, segAround(T, "abcd", 3, 100, .{ .slicing_mode = .soft }));
+        try equal("abcd", 3, segAround(T, "abcd", 3, 100, .{ .trunc_mode = .soft }));
         //            ^                       ^
 
         // odd segment length
-        try equal("abcd", 0, segAround(T, "abcd", 0, 100, .{ .slicing_mode = .soft }));
+        try equal("abcd", 0, segAround(T, "abcd", 0, 100, .{ .trunc_mode = .soft }));
         //         ^                       ^
-        try equal("abc", 0, segAround(T, "abcd", 0, 3, .{ .slicing_mode = .soft }));
+        try equal("abc", 0, segAround(T, "abcd", 0, 3, .{ .trunc_mode = .soft }));
         //         ^                      ^
-        try equal("abc", 1, segAround(T, "abcd", 1, 3, .{ .slicing_mode = .soft }));
+        try equal("abc", 1, segAround(T, "abcd", 1, 3, .{ .trunc_mode = .soft }));
         //          ^                      ^
-        try equal("bcd", 1, segAround(T, "abcd", 2, 3, .{ .slicing_mode = .soft }));
+        try equal("bcd", 1, segAround(T, "abcd", 2, 3, .{ .trunc_mode = .soft }));
         //          ^                       ^
-        try equal("bcd", 2, segAround(T, "abcd", 3, 3, .{ .slicing_mode = .soft }));
+        try equal("bcd", 2, segAround(T, "abcd", 3, 3, .{ .trunc_mode = .soft }));
         //           ^                       ^
-        try equal("bcd", 3, segAround(T, "abcd", 4, 3, .{ .slicing_mode = .soft }));
+        try equal("bcd", 3, segAround(T, "abcd", 4, 3, .{ .trunc_mode = .soft }));
         //            ^                       ^
-        try equal("bcd", 4, segAround(T, "abcd", 5, 3, .{ .slicing_mode = .soft }));
+        try equal("bcd", 4, segAround(T, "abcd", 5, 3, .{ .trunc_mode = .soft }));
         //             ^                       ^
 
         // even segment length (right shifted)
-        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
+        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .trunc_mode = .soft, .even_rshift = true }));
         //         ^                     ^
-        try equal("bc", 0, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
+        try equal("bc", 0, segAround(T, "abcd", 1, 2, .{ .trunc_mode = .soft, .even_rshift = true }));
         //         ^                      ^
-        try equal("cd", 0, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
+        try equal("cd", 0, segAround(T, "abcd", 2, 2, .{ .trunc_mode = .soft, .even_rshift = true }));
         //         ^                       ^
-        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
+        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .trunc_mode = .soft, .even_rshift = true }));
         //          ^                       ^
-        try equal("cd", 2, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
+        try equal("cd", 2, segAround(T, "abcd", 4, 2, .{ .trunc_mode = .soft, .even_rshift = true }));
         //           ^                       ^
-        try equal("cd", 3, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .soft, .even_rshift = true }));
+        try equal("cd", 3, segAround(T, "abcd", 5, 2, .{ .trunc_mode = .soft, .even_rshift = true }));
         //            ^                       ^
 
         // even segment length (left shifted)
-        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
+        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .trunc_mode = .soft, .even_rshift = false }));
         //         ^                     ^
-        try equal("ab", 1, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
+        try equal("ab", 1, segAround(T, "abcd", 1, 2, .{ .trunc_mode = .soft, .even_rshift = false }));
         //          ^                     ^
-        try equal("bc", 1, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
+        try equal("bc", 1, segAround(T, "abcd", 2, 2, .{ .trunc_mode = .soft, .even_rshift = false }));
         //          ^                      ^
-        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
+        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .trunc_mode = .soft, .even_rshift = false }));
         //          ^                       ^
-        try equal("cd", 2, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
+        try equal("cd", 2, segAround(T, "abcd", 4, 2, .{ .trunc_mode = .soft, .even_rshift = false }));
         //           ^                       ^
-        try equal("cd", 3, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .soft, .even_rshift = false }));
+        try equal("cd", 3, segAround(T, "abcd", 5, 2, .{ .trunc_mode = .soft, .even_rshift = false }));
         //            ^                       ^
     }
 
     // .hard truncation mode
     {
         // bypass truncation
-        try equal("abcd", 3, segAround(T, "abcd", 3, 100, .{ .slicing_mode = .hard }));
+        try equal("abcd", 3, segAround(T, "abcd", 3, 100, .{ .trunc_mode = .hard }));
         //            ^                       ^
 
         // odd segment length
-        try equal("ab", 0, segAround(T, "abcd", 0, 3, .{ .slicing_mode = .hard }));
+        try equal("ab", 0, segAround(T, "abcd", 0, 3, .{ .trunc_mode = .hard }));
         //         ^                     ^
-        try equal("abc", 1, segAround(T, "abcd", 1, 3, .{ .slicing_mode = .hard }));
+        try equal("abc", 1, segAround(T, "abcd", 1, 3, .{ .trunc_mode = .hard }));
         //          ^                      ^
-        try equal("bcd", 1, segAround(T, "abcd", 2, 3, .{ .slicing_mode = .hard }));
+        try equal("bcd", 1, segAround(T, "abcd", 2, 3, .{ .trunc_mode = .hard }));
         //          ^                       ^
-        try equal("cd", 1, segAround(T, "abcd", 3, 3, .{ .slicing_mode = .hard }));
+        try equal("cd", 1, segAround(T, "abcd", 3, 3, .{ .trunc_mode = .hard }));
         //          ^                       ^
-        try equal("d", 1, segAround(T, "abcd", 4, 3, .{ .slicing_mode = .hard }));
+        try equal("d", 1, segAround(T, "abcd", 4, 3, .{ .trunc_mode = .hard }));
         //          ^                       ^
-        try equal("", 1, segAround(T, "abcd", 5, 3, .{ .slicing_mode = .hard }));
+        try equal("", 1, segAround(T, "abcd", 5, 3, .{ .trunc_mode = .hard }));
         //          ^                       ^
-        try equal("", 2, segAround(T, "abcd", 6, 3, .{ .slicing_mode = .hard }));
+        try equal("", 2, segAround(T, "abcd", 6, 3, .{ .trunc_mode = .hard }));
         //           ^                       ^
 
         // even segment length (right shifted)
-        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
+        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .trunc_mode = .hard, .even_rshift = true }));
         //         ^                     ^
-        try equal("bc", 0, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
+        try equal("bc", 0, segAround(T, "abcd", 1, 2, .{ .trunc_mode = .hard, .even_rshift = true }));
         //         ^                      ^
-        try equal("cd", 0, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
+        try equal("cd", 0, segAround(T, "abcd", 2, 2, .{ .trunc_mode = .hard, .even_rshift = true }));
         //         ^                       ^
-        try equal("d", 0, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
+        try equal("d", 0, segAround(T, "abcd", 3, 2, .{ .trunc_mode = .hard, .even_rshift = true }));
         //         ^                       ^
-        try equal("", 0, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
+        try equal("", 0, segAround(T, "abcd", 4, 2, .{ .trunc_mode = .hard, .even_rshift = true }));
         //         ^                       ^
-        try equal("", 1, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
+        try equal("", 1, segAround(T, "abcd", 5, 2, .{ .trunc_mode = .hard, .even_rshift = true }));
         //          ^                       ^
-        try equal("", 2, segAround(T, "abcd", 6, 2, .{ .slicing_mode = .hard, .even_rshift = true }));
+        try equal("", 2, segAround(T, "abcd", 6, 2, .{ .trunc_mode = .hard, .even_rshift = true }));
         //           ^                       ^
 
         // even segment length (left shifted)
-        try equal("a", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
+        try equal("a", 0, segAround(T, "abcd", 0, 2, .{ .trunc_mode = .hard, .even_rshift = false }));
         //         ^                    ^
-        try equal("ab", 1, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
+        try equal("ab", 1, segAround(T, "abcd", 1, 2, .{ .trunc_mode = .hard, .even_rshift = false }));
         //          ^                     ^
-        try equal("bc", 1, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
+        try equal("bc", 1, segAround(T, "abcd", 2, 2, .{ .trunc_mode = .hard, .even_rshift = false }));
         //          ^                      ^
-        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
+        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .trunc_mode = .hard, .even_rshift = false }));
         //          ^                       ^
-        try equal("d", 1, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
+        try equal("d", 1, segAround(T, "abcd", 4, 2, .{ .trunc_mode = .hard, .even_rshift = false }));
         //          ^                       ^
-        try equal("", 1, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
+        try equal("", 1, segAround(T, "abcd", 5, 2, .{ .trunc_mode = .hard, .even_rshift = false }));
         //          ^                       ^
-        try equal("", 2, segAround(T, "abcd", 6, 2, .{ .slicing_mode = .hard, .even_rshift = false }));
+        try equal("", 2, segAround(T, "abcd", 6, 2, .{ .trunc_mode = .hard, .even_rshift = false }));
         //           ^                       ^
     }
 
     // .hard_flex truncation mode
     {
         // bypass truncation
-        try equal("abcd", 3, segAround(T, "abcd", 3, 100, .{ .slicing_mode = .hard_flex }));
+        try equal("abcd", 3, segAround(T, "abcd", 3, 100, .{ .trunc_mode = .hard_flex }));
         //            ^                       ^
 
         // odd segment length
-        try equal("abc", 0, segAround(T, "abcd", 0, 3, .{ .slicing_mode = .hard_flex }));
+        try equal("abc", 0, segAround(T, "abcd", 0, 3, .{ .trunc_mode = .hard_flex }));
         //         ^                      ^
-        try equal("abc", 1, segAround(T, "abcd", 1, 3, .{ .slicing_mode = .hard_flex }));
+        try equal("abc", 1, segAround(T, "abcd", 1, 3, .{ .trunc_mode = .hard_flex }));
         //          ^                      ^
-        try equal("bcd", 1, segAround(T, "abcd", 2, 3, .{ .slicing_mode = .hard_flex }));
+        try equal("bcd", 1, segAround(T, "abcd", 2, 3, .{ .trunc_mode = .hard_flex }));
         //          ^                       ^
-        try equal("bcd", 2, segAround(T, "abcd", 3, 3, .{ .slicing_mode = .hard_flex }));
+        try equal("bcd", 2, segAround(T, "abcd", 3, 3, .{ .trunc_mode = .hard_flex }));
         //           ^                       ^
-        try equal("cd", 2, segAround(T, "abcd", 4, 3, .{ .slicing_mode = .hard_flex }));
+        try equal("cd", 2, segAround(T, "abcd", 4, 3, .{ .trunc_mode = .hard_flex }));
         //           ^                       ^
-        try equal("d", 2, segAround(T, "abcd", 5, 3, .{ .slicing_mode = .hard_flex }));
+        try equal("d", 2, segAround(T, "abcd", 5, 3, .{ .trunc_mode = .hard_flex }));
         //           ^                       ^
-        try equal("", 2, segAround(T, "abcd", 6, 3, .{ .slicing_mode = .hard_flex }));
+        try equal("", 2, segAround(T, "abcd", 6, 3, .{ .trunc_mode = .hard_flex }));
         //           ^                       ^
 
         // even segment length (right shifted)
-        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
+        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true }));
         //         ^                     ^
-        try equal("bc", 0, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
+        try equal("bc", 0, segAround(T, "abcd", 1, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true }));
         //         ^                      ^
-        try equal("cd", 0, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
+        try equal("cd", 0, segAround(T, "abcd", 2, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true }));
         //         ^                       ^
-        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
+        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true }));
         //          ^                       ^
-        try equal("d", 1, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
+        try equal("d", 1, segAround(T, "abcd", 4, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true }));
         //          ^                       ^
-        try equal("", 1, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
+        try equal("", 1, segAround(T, "abcd", 5, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true }));
         //          ^                       ^
-        try equal("", 2, segAround(T, "abcd", 6, 2, .{ .slicing_mode = .hard_flex, .even_rshift = true }));
+        try equal("", 2, segAround(T, "abcd", 6, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true }));
         //           ^                       ^
 
         // even segment length (left shifted)
-        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
+        try equal("ab", 0, segAround(T, "abcd", 0, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false }));
         //         ^                     ^
-        try equal("ab", 1, segAround(T, "abcd", 1, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
+        try equal("ab", 1, segAround(T, "abcd", 1, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false }));
         //          ^                     ^
-        try equal("bc", 1, segAround(T, "abcd", 2, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
+        try equal("bc", 1, segAround(T, "abcd", 2, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false }));
         //          ^                      ^
-        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
+        try equal("cd", 1, segAround(T, "abcd", 3, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false }));
         //          ^                       ^
-        try equal("d", 1, segAround(T, "abcd", 4, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
+        try equal("d", 1, segAround(T, "abcd", 4, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false }));
         //          ^                       ^
-        try equal("", 1, segAround(T, "abcd", 5, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
+        try equal("", 1, segAround(T, "abcd", 5, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false }));
         //          ^                       ^
-        try equal("", 2, segAround(T, "abcd", 6, 2, .{ .slicing_mode = .hard_flex, .even_rshift = false }));
+        try equal("", 2, segAround(T, "abcd", 6, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false }));
         //           ^                       ^
     }
 }
@@ -824,7 +824,7 @@ pub fn segAroundRangeIndices(
 ) SegAroundRangeIndices {
     if (start == end) {
         const range = if (pad == 0) 1 else (pad *| 2 +| 1); // 1 to include the cursor itself
-        const s = segAroundIndices(slice, start, range, .{ .slicing_mode = .hard_flex });
+        const s = segAroundIndices(slice, start, range, .{ .trunc_mode = .hard_flex });
         return .{ .start = s.start, .end = s.end, .start_pos = s.index_pos, .end_pos = s.index_pos };
     }
     // ensure start <= end
