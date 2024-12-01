@@ -10,12 +10,12 @@ const std = @import("std");
 const lr = @import("line_reader.zig");
 const slice = @import("slice.zig");
 const num = @import("num.zig");
-const CurrLineScope = slice.SegAroundRangeIndices;
+const CurrLineScope = slice.Indices.Range;
 
 /// Line printing options.
 pub const PrintLineOptions = struct {
-    /// This option applies only in `.cursor` mode.
-    trunc_mode: slice.SegAroundMode = .hard_flex,
+    /// This option applies only in `.around` mode.
+    trunc_mode: slice.Indices.Around.Mode = .hard_flex,
     trunc_sym: []const u8 = "..",
     show_line_num: bool = true,
     line_num_sep: []const u8 = "| ",
@@ -24,7 +24,6 @@ pub const PrintLineOptions = struct {
     /// of lines that can be read (upper bound).
     buf_size: usize = 256,
 
-    // These options apply only in `.cursor` mode.
     show_cursor: bool = false,
     show_cursor_hint: bool = true,
     hint_printable_chars: bool = false,
@@ -115,25 +114,25 @@ fn printLine(
     switch (mode) {
         .full => {},
         .start => |m| if (m.view_len) |len| {
-            const indices = slice.segStartIndices(info.currLine(), len);
+            const indices = slice.indicesStart(info.currLine(), len);
             scope.start = indices.start;
             scope.end = indices.end;
         },
         .end => |m| if (m.view_len) |len| {
-            const indices = slice.segEndIndices(info.currLine(), len);
+            const indices = slice.indicesEnd(info.currLine(), len);
             scope.start = indices.start;
             scope.end = indices.end;
             scope.start_pos = info.index_pos -| indices.start;
         },
         .around => |m| if (m.view_len) |len| {
-            const indices = slice.segAroundIndices(info.currLine(), info.index_pos, len, .{ .trunc_mode = opt.trunc_mode });
+            const indices = slice.indicesAround(info.currLine(), info.index_pos, len, .{ .trunc_mode = opt.trunc_mode });
             scope.start = indices.start;
             scope.end = indices.end;
             scope.start_pos = indices.index_pos;
         },
         .range => |m| {
             const range_len = index_end.? - index_start;
-            scope = slice.segAroundRangeIndices(info.currLine(), info.index_pos, info.index_pos + range_len, m.pad);
+            scope = slice.indicesAroundRange(info.currLine(), info.index_pos, info.index_pos + range_len, m.pad);
         },
     }
 
@@ -152,9 +151,9 @@ fn printLine(
     }
 }
 
-/// A simple wrapper around `printLine` that enables cursor rendering by
-/// setting `PrintLineOptions.show_cursor` to `true`. See `printLine` for
-/// more details.
+/// A simple wrapper around `printLine` that forces cursor rendering by
+/// setting `PrintLineOptions.show_cursor` to `true`. See `printLine`
+/// for more details.
 fn printLineWithCursor(
     writer: anytype,
     input: []const u8,
@@ -197,7 +196,7 @@ fn writeLine(
     } else if (scope.start > line.len) { // skipped line
         try writer.writeAll(opt.trunc_sym);
     } else { // trimmed line
-        const seg = slice.segRange([]const u8, line, scope.start, scope.end);
+        const seg = slice.segment([]const u8, line, scope.start, scope.end);
         if (slice.indexOfStart(line, seg) > 0) {
             try writer.writeAll(opt.trunc_sym);
             left_trunc_len = opt.trunc_sym.len;

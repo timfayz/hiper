@@ -587,7 +587,7 @@ pub fn readLines(
                     planned.lines = buf[0 .. planned.linesTotal() + comp.linesTotal()];
                     // fix lines order if deficit was backward
                     if (comp_dir == .backward) {
-                        slice.moveSegLeft([]const u8, planned.lines, comp.lines) catch
+                        slice.moveLeft([]const u8, planned.lines, comp.lines) catch
                             return planned;
                         planned.first_line_num = planned.first_line_num -| comp.linesTotal();
                         planned.curr_line_pos = planned.curr_line_pos +| comp.linesTotal();
