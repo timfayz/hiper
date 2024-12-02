@@ -85,27 +85,24 @@ pub fn intersect(T: type, slice1: []const T, slice2: []const T) ?[]T {
 
 test intersect {
     const equal = struct {
-        pub fn check(expect: ?[]const u8, actual: ?[]const u8) !void {
+        pub fn run(expect: ?[]const u8, actual: ?[]const u8) !void {
             if (expect == null) return std.testing.expectEqual(null, actual);
             if (actual == null) return std.testing.expectEqual(expect, null);
             try std.testing.expectEqualStrings(expect.?, actual.?);
         }
-    }.check;
+    }.run;
 
     const input = "0123";
+
     try equal(null, intersect(u8, input[0..0], input[4..4])); // zero slices
     try equal(null, intersect(u8, input[0..2], input[2..4])); // touching boundaries
-
     try equal("2", intersect(u8, input[0..3], input[2..4])); // intersecting slices
-    try equal("2", intersect(u8, input[2..4], input[0..3])); // (!) order
-
+    try equal("2", intersect(u8, input[2..4], input[0..3])); // reversed order
     try equal("12", intersect(u8, input[0..3], input[1..4])); // intersecting slices
-    try equal("12", intersect(u8, input[1..4], input[0..3])); // (!) order
-
+    try equal("12", intersect(u8, input[1..4], input[0..3])); // reversed order
     try equal("0123", intersect(u8, input[0..4], input[0..4])); // same slices
-
     try equal("12", intersect(u8, input[0..4], input[1..3])); // one within other
-    try equal("12", intersect(u8, input[1..3], input[0..4])); // (!) order
+    try equal("12", intersect(u8, input[1..3], input[0..4])); // reversed order
 }
 
 /// Returns the union of two slices. Slices are assumed to share the same
@@ -132,15 +129,14 @@ pub fn merge(T: type, slice1: []const T, slice2: []const T) []T {
 
 test merge {
     const equal = std.testing.expectEqualStrings;
+
     const input = "0123";
+
     try equal("0123", merge(u8, input[0..0], input[4..4])); // zero slices
-    try equal("0123", merge(u8, input[4..4], input[0..0])); // (!) order
-
+    try equal("0123", merge(u8, input[4..4], input[0..0])); // reversed order
     try equal("0123", merge(u8, input[0..2], input[2..4])); // normal slices
-    try equal("0123", merge(u8, input[2..4], input[0..2])); // (!) order
-
+    try equal("0123", merge(u8, input[2..4], input[0..2])); // reversed order
     try equal("0123", merge(u8, input[0..3], input[1..4])); // intersected slices
-
     try equal("0123", merge(u8, input[0..4], input[0..4])); // same slices
 }
 
@@ -291,13 +287,14 @@ pub fn indicesStart(slice: anytype, len: usize) Indices {
 }
 
 test indicesStart {
-    const equal = std.testing.expectEqual;
-    try equal(Indices{ .start = 0, .end = 0 }, indicesStart("", 0));
-    try equal(Indices{ .start = 0, .end = 0 }, indicesStart("012", 0));
-    try equal(Indices{ .start = 0, .end = 1 }, indicesStart("012", 1));
-    try equal(Indices{ .start = 0, .end = 2 }, indicesStart("012", 2));
-    try equal(Indices{ .start = 0, .end = 3 }, indicesStart("012", 3));
-    try equal(Indices{ .start = 0, .end = 3 }, indicesStart("012", 4));
+    const equal = std.testing.expectEqualDeep;
+
+    try equal(Indices{ .start = 0, .end = 0 }, indicesStart("", 0)); // ""
+    try equal(Indices{ .start = 0, .end = 0 }, indicesStart("012", 0)); // ""
+    try equal(Indices{ .start = 0, .end = 1 }, indicesStart("012", 1)); // "0"
+    try equal(Indices{ .start = 0, .end = 2 }, indicesStart("012", 2)); // "01"
+    try equal(Indices{ .start = 0, .end = 3 }, indicesStart("012", 3)); // "012"
+    try equal(Indices{ .start = 0, .end = 3 }, indicesStart("012", 4)); // "012"
 }
 
 /// Returns end slice indices of length `len`. Indices are bounded by slice
@@ -307,13 +304,14 @@ pub fn indicesEnd(slice: anytype, len: usize) Indices {
 }
 
 test indicesEnd {
-    const equal = std.testing.expectEqual;
-    try equal(Indices{ .start = 0, .end = 0 }, indicesEnd("", 0));
-    try equal(Indices{ .start = 3, .end = 3 }, indicesEnd("012", 0));
-    try equal(Indices{ .start = 2, .end = 3 }, indicesEnd("012", 1));
-    try equal(Indices{ .start = 1, .end = 3 }, indicesEnd("012", 2));
-    try equal(Indices{ .start = 0, .end = 3 }, indicesEnd("012", 3));
-    try equal(Indices{ .start = 0, .end = 3 }, indicesEnd("012", 4));
+    const equal = std.testing.expectEqualDeep;
+
+    try equal(Indices{ .start = 0, .end = 0 }, indicesEnd("", 0)); // ""
+    try equal(Indices{ .start = 3, .end = 3 }, indicesEnd("012", 0)); // ""
+    try equal(Indices{ .start = 2, .end = 3 }, indicesEnd("012", 1)); // "2"
+    try equal(Indices{ .start = 1, .end = 3 }, indicesEnd("012", 2)); // "12"
+    try equal(Indices{ .start = 0, .end = 3 }, indicesEnd("012", 3)); // "012"
+    try equal(Indices{ .start = 0, .end = 3 }, indicesEnd("012", 4)); // "012"
 }
 
 /// Returns the start and end indices of a slice segment of length `len`
@@ -340,8 +338,8 @@ pub fn indicesAround(
         if (len & 1 == 0) { // even
             break :blk if (opt.even_rshift) .{ dist -| 1, dist +| 1 } else .{ dist, dist };
         } else { // odd
-            // adjust for the single item lost during integer division (ie. 3 / 2 = 1)
-            break :blk .{ dist, dist + 1 };
+            // +1 to compensate lost item during integer division (ie. 3 / 2 = 1)
+            break :blk .{ dist, dist +| 1 };
         }
     };
 
@@ -368,131 +366,111 @@ pub fn indicesAround(
 }
 
 test indicesAround {
-    const equal = struct {
-        fn run(
-            expect_slice: []const u8,
-            expect_index_pos: usize,
-            // fn args
-            slice: []const u8,
-            index: usize,
-            len: usize,
-            comptime opt: Indices.Around.Options,
-        ) !void {
-            const res = indicesAround(slice, index, len, opt);
-            try std.testing.expectEqualStrings(expect_slice, res.slice([]const u8, slice));
-            try std.testing.expectEqual(expect_index_pos, res.index_pos);
-        }
-    }.run;
+    const equal = std.testing.expectEqualDeep;
+    const Around = Indices.Around;
 
-    // format:
-    // try equal(|expected_seg|, |expected_index_pos|, |fn args|)
+    // any trunc mode
+    // --------------
+    // zero length
+    try equal(Around{ .start = 0, .end = 0, .index_pos = 10 }, indicesAround("", 10, 100, .{})); // ""
+    try equal(Around{ .start = 0, .end = 0, .index_pos = 10 }, indicesAround("", 10, 0, .{})); // ""
+    try equal(Around{ .start = 0, .end = 0, .index_pos = 0 }, indicesAround("012", 0, 0, .{})); // ""
+    try equal(Around{ .start = 3, .end = 3, .index_pos = 0 }, indicesAround("012", 3, 0, .{})); // ""
+    try equal(Around{ .start = 3, .end = 3, .index_pos = 2 }, indicesAround("012", 5, 0, .{})); // ""
 
-    // any truncation mode
-    {
-        // zero segment or slice length
-        try equal("", 10, "", 10, 100, .{ .trunc_mode = .hard });
-        try equal("", 10, "", 10, 0, .{ .trunc_mode = .hard });
-        try equal("", 0, "012", 0, 0, .{ .trunc_mode = .hard });
-        try equal("", 0, "012", 3, 0, .{ .trunc_mode = .hard });
-        try equal("", 2, "012", 5, 0, .{ .trunc_mode = .hard });
-    }
+    // .soft mode
+    // --------------
+    // max length
+    try equal(Around{ .start = 0, .end = 4, .index_pos = 3 }, indicesAround("0123", 3, 100, .{ .trunc_mode = .soft })); // "0123"
 
-    // .soft truncation mode
-    {
-        // bypass truncation
-        try equal("0123", 3, "0123", 3, 100, .{ .trunc_mode = .soft });
+    // odd length
+    try equal(Around{ .start = 0, .end = 4, .index_pos = 0 }, indicesAround("0123", 0, 100, .{ .trunc_mode = .soft })); // "0123"
+    try equal(Around{ .start = 0, .end = 3, .index_pos = 0 }, indicesAround("0123", 0, 3, .{ .trunc_mode = .soft })); // "012"
+    try equal(Around{ .start = 0, .end = 3, .index_pos = 1 }, indicesAround("0123", 1, 3, .{ .trunc_mode = .soft })); // "012"
+    try equal(Around{ .start = 1, .end = 4, .index_pos = 1 }, indicesAround("0123", 2, 3, .{ .trunc_mode = .soft })); // "123"
+    try equal(Around{ .start = 1, .end = 4, .index_pos = 2 }, indicesAround("0123", 3, 3, .{ .trunc_mode = .soft })); // "123"
+    try equal(Around{ .start = 1, .end = 4, .index_pos = 3 }, indicesAround("0123", 4, 3, .{ .trunc_mode = .soft })); // "123"
+    try equal(Around{ .start = 1, .end = 4, .index_pos = 4 }, indicesAround("0123", 5, 3, .{ .trunc_mode = .soft })); // "123"
 
-        // odd segment length
-        try equal("0123", 0, "0123", 0, 100, .{ .trunc_mode = .soft });
-        try equal("012", 0, "0123", 0, 3, .{ .trunc_mode = .soft });
-        try equal("012", 1, "0123", 1, 3, .{ .trunc_mode = .soft });
-        try equal("123", 1, "0123", 2, 3, .{ .trunc_mode = .soft });
-        try equal("123", 2, "0123", 3, 3, .{ .trunc_mode = .soft });
-        try equal("123", 3, "0123", 4, 3, .{ .trunc_mode = .soft });
-        try equal("123", 4, "0123", 5, 3, .{ .trunc_mode = .soft });
+    // even length (right shifted)
+    try equal(Around{ .start = 0, .end = 2, .index_pos = 0 }, indicesAround("0123", 0, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "01"
+    try equal(Around{ .start = 1, .end = 3, .index_pos = 0 }, indicesAround("0123", 1, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "12"
+    try equal(Around{ .start = 2, .end = 4, .index_pos = 0 }, indicesAround("0123", 2, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
+    try equal(Around{ .start = 2, .end = 4, .index_pos = 1 }, indicesAround("0123", 3, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
+    try equal(Around{ .start = 2, .end = 4, .index_pos = 2 }, indicesAround("0123", 4, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
+    try equal(Around{ .start = 2, .end = 4, .index_pos = 3 }, indicesAround("0123", 5, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
 
-        // even segment length (right shifted)
-        try equal("01", 0, "0123", 0, 2, .{ .trunc_mode = .soft, .even_rshift = true });
-        try equal("12", 0, "0123", 1, 2, .{ .trunc_mode = .soft, .even_rshift = true });
-        try equal("23", 0, "0123", 2, 2, .{ .trunc_mode = .soft, .even_rshift = true });
-        try equal("23", 1, "0123", 3, 2, .{ .trunc_mode = .soft, .even_rshift = true });
-        try equal("23", 2, "0123", 4, 2, .{ .trunc_mode = .soft, .even_rshift = true });
-        try equal("23", 3, "0123", 5, 2, .{ .trunc_mode = .soft, .even_rshift = true });
+    // even length (left shifted)
+    try equal(Around{ .start = 0, .end = 2, .index_pos = 0 }, indicesAround("0123", 0, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "01"
+    try equal(Around{ .start = 0, .end = 2, .index_pos = 1 }, indicesAround("0123", 1, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "01"
+    try equal(Around{ .start = 1, .end = 3, .index_pos = 1 }, indicesAround("0123", 2, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "12"
+    try equal(Around{ .start = 2, .end = 4, .index_pos = 1 }, indicesAround("0123", 3, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "23"
+    try equal(Around{ .start = 2, .end = 4, .index_pos = 2 }, indicesAround("0123", 4, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "23"
+    try equal(Around{ .start = 2, .end = 4, .index_pos = 3 }, indicesAround("0123", 5, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "23"
 
-        // even segment length (left shifted)
-        try equal("01", 0, "0123", 0, 2, .{ .trunc_mode = .soft, .even_rshift = false });
-        try equal("01", 1, "0123", 1, 2, .{ .trunc_mode = .soft, .even_rshift = false });
-        try equal("12", 1, "0123", 2, 2, .{ .trunc_mode = .soft, .even_rshift = false });
-        try equal("23", 1, "0123", 3, 2, .{ .trunc_mode = .soft, .even_rshift = false });
-        try equal("23", 2, "0123", 4, 2, .{ .trunc_mode = .soft, .even_rshift = false });
-        try equal("23", 3, "0123", 5, 2, .{ .trunc_mode = .soft, .even_rshift = false });
-    }
+    // .hard mode
+    // --------------
+    // max length
+    try equal(Around{ .start = 0, .end = 4, .index_pos = 3 }, indicesAround("0123", 3, 100, .{ .trunc_mode = .hard })); // "0123"
 
-    // .hard truncation mode
-    {
-        // bypass truncation
-        try equal("0123", 3, "0123", 3, 100, .{ .trunc_mode = .hard });
+    // odd length
+    try equal(Around{ .start = 0, .end = 2, .index_pos = 0 }, indicesAround("0123", 0, 3, .{ .trunc_mode = .hard })); // "01"
+    try equal(Around{ .start = 0, .end = 3, .index_pos = 1 }, indicesAround("0123", 1, 3, .{ .trunc_mode = .hard })); // "012"
+    try equal(Around{ .start = 1, .end = 4, .index_pos = 1 }, indicesAround("0123", 2, 3, .{ .trunc_mode = .hard })); // "123"
+    try equal(Around{ .start = 2, .end = 4, .index_pos = 1 }, indicesAround("0123", 3, 3, .{ .trunc_mode = .hard })); // "23"
+    try equal(Around{ .start = 3, .end = 4, .index_pos = 1 }, indicesAround("0123", 4, 3, .{ .trunc_mode = .hard })); // "3"
+    try equal(Around{ .start = 4, .end = 4, .index_pos = 1 }, indicesAround("0123", 5, 3, .{ .trunc_mode = .hard })); // ""
+    try equal(Around{ .start = 4, .end = 4, .index_pos = 2 }, indicesAround("0123", 6, 3, .{ .trunc_mode = .hard })); // ""
 
-        // odd segment length
-        try equal("01", 0, "0123", 0, 3, .{ .trunc_mode = .hard });
-        try equal("012", 1, "0123", 1, 3, .{ .trunc_mode = .hard });
-        try equal("123", 1, "0123", 2, 3, .{ .trunc_mode = .hard });
-        try equal("23", 1, "0123", 3, 3, .{ .trunc_mode = .hard });
-        try equal("3", 1, "0123", 4, 3, .{ .trunc_mode = .hard });
-        try equal("", 1, "0123", 5, 3, .{ .trunc_mode = .hard });
-        try equal("", 2, "0123", 6, 3, .{ .trunc_mode = .hard });
+    // even length (right shifted)
+    try equal(Around{ .start = 0, .end = 2, .index_pos = 0 }, indicesAround("0123", 0, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "01"
+    try equal(Around{ .start = 1, .end = 3, .index_pos = 0 }, indicesAround("0123", 1, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "12"
+    try equal(Around{ .start = 2, .end = 4, .index_pos = 0 }, indicesAround("0123", 2, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "23"
+    try equal(Around{ .start = 3, .end = 4, .index_pos = 0 }, indicesAround("0123", 3, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "3"
+    try equal(Around{ .start = 4, .end = 4, .index_pos = 0 }, indicesAround("0123", 4, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // ""
+    try equal(Around{ .start = 4, .end = 4, .index_pos = 1 }, indicesAround("0123", 5, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // ""
+    try equal(Around{ .start = 4, .end = 4, .index_pos = 2 }, indicesAround("0123", 6, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // ""
 
-        // even segment length (right shifted)
-        try equal("01", 0, "0123", 0, 2, .{ .trunc_mode = .hard, .even_rshift = true });
-        try equal("12", 0, "0123", 1, 2, .{ .trunc_mode = .hard, .even_rshift = true });
-        try equal("23", 0, "0123", 2, 2, .{ .trunc_mode = .hard, .even_rshift = true });
-        try equal("3", 0, "0123", 3, 2, .{ .trunc_mode = .hard, .even_rshift = true });
-        try equal("", 0, "0123", 4, 2, .{ .trunc_mode = .hard, .even_rshift = true });
-        try equal("", 1, "0123", 5, 2, .{ .trunc_mode = .hard, .even_rshift = true });
-        try equal("", 2, "0123", 6, 2, .{ .trunc_mode = .hard, .even_rshift = true });
+    // even length (left shifted)
+    try equal(Around{ .start = 0, .end = 1, .index_pos = 0 }, indicesAround("0123", 0, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "0"
+    try equal(Around{ .start = 0, .end = 2, .index_pos = 1 }, indicesAround("0123", 1, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "01"
+    try equal(Around{ .start = 1, .end = 3, .index_pos = 1 }, indicesAround("0123", 2, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "12"
+    try equal(Around{ .start = 2, .end = 4, .index_pos = 1 }, indicesAround("0123", 3, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "23"
+    try equal(Around{ .start = 3, .end = 4, .index_pos = 1 }, indicesAround("0123", 4, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "3"
+    try equal(Around{ .start = 4, .end = 4, .index_pos = 1 }, indicesAround("0123", 5, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // ""
+    try equal(Around{ .start = 4, .end = 4, .index_pos = 2 }, indicesAround("0123", 6, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // ""
 
-        // even segment length (left shifted)
-        try equal("0", 0, "0123", 0, 2, .{ .trunc_mode = .hard, .even_rshift = false });
-        try equal("01", 1, "0123", 1, 2, .{ .trunc_mode = .hard, .even_rshift = false });
-        try equal("12", 1, "0123", 2, 2, .{ .trunc_mode = .hard, .even_rshift = false });
-        try equal("23", 1, "0123", 3, 2, .{ .trunc_mode = .hard, .even_rshift = false });
-        try equal("3", 1, "0123", 4, 2, .{ .trunc_mode = .hard, .even_rshift = false });
-        try equal("", 1, "0123", 5, 2, .{ .trunc_mode = .hard, .even_rshift = false });
-        try equal("", 2, "0123", 6, 2, .{ .trunc_mode = .hard, .even_rshift = false });
-    }
+    // .hard_flex mode
+    // --------------
+    // max length
+    try equal(Around{ .start = 0, .end = 4, .index_pos = 3 }, indicesAround("0123", 3, 100, .{ .trunc_mode = .hard_flex })); // "0123"
 
-    // .hard_flex truncation mode
-    {
-        // bypass truncation
-        try equal("0123", 3, "0123", 3, 100, .{ .trunc_mode = .hard_flex });
+    // odd length
+    try equal(Around{ .start = 0, .end = 3, .index_pos = 0 }, indicesAround("0123", 0, 3, .{ .trunc_mode = .hard_flex })); // "012"
+    try equal(Around{ .start = 0, .end = 3, .index_pos = 1 }, indicesAround("0123", 1, 3, .{ .trunc_mode = .hard_flex })); // "012"
+    try equal(Around{ .start = 1, .end = 4, .index_pos = 1 }, indicesAround("0123", 2, 3, .{ .trunc_mode = .hard_flex })); // "123"
+    try equal(Around{ .start = 1, .end = 4, .index_pos = 2 }, indicesAround("0123", 3, 3, .{ .trunc_mode = .hard_flex })); // "123"
+    try equal(Around{ .start = 2, .end = 4, .index_pos = 2 }, indicesAround("0123", 4, 3, .{ .trunc_mode = .hard_flex })); // "23"
+    try equal(Around{ .start = 3, .end = 4, .index_pos = 2 }, indicesAround("0123", 5, 3, .{ .trunc_mode = .hard_flex })); // "3"
+    try equal(Around{ .start = 4, .end = 4, .index_pos = 2 }, indicesAround("0123", 6, 3, .{ .trunc_mode = .hard_flex })); // ""
 
-        // odd segment length
-        try equal("012", 0, "0123", 0, 3, .{ .trunc_mode = .hard_flex });
-        try equal("012", 1, "0123", 1, 3, .{ .trunc_mode = .hard_flex });
-        try equal("123", 1, "0123", 2, 3, .{ .trunc_mode = .hard_flex });
-        try equal("123", 2, "0123", 3, 3, .{ .trunc_mode = .hard_flex });
-        try equal("23", 2, "0123", 4, 3, .{ .trunc_mode = .hard_flex });
-        try equal("3", 2, "0123", 5, 3, .{ .trunc_mode = .hard_flex });
-        try equal("", 2, "0123", 6, 3, .{ .trunc_mode = .hard_flex });
+    // even length (right shifted)
+    try equal(Around{ .start = 0, .end = 2, .index_pos = 0 }, indicesAround("0123", 0, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "01"
+    try equal(Around{ .start = 1, .end = 3, .index_pos = 0 }, indicesAround("0123", 1, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "12"
+    try equal(Around{ .start = 2, .end = 4, .index_pos = 0 }, indicesAround("0123", 2, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "23"
+    try equal(Around{ .start = 2, .end = 4, .index_pos = 1 }, indicesAround("0123", 3, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "23"
+    try equal(Around{ .start = 3, .end = 4, .index_pos = 1 }, indicesAround("0123", 4, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "3"
+    try equal(Around{ .start = 4, .end = 4, .index_pos = 1 }, indicesAround("0123", 5, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // ""
+    try equal(Around{ .start = 4, .end = 4, .index_pos = 2 }, indicesAround("0123", 6, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // ""
 
-        // even segment length (right shifted)
-        try equal("01", 0, "0123", 0, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true });
-        try equal("12", 0, "0123", 1, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true });
-        try equal("23", 0, "0123", 2, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true });
-        try equal("23", 1, "0123", 3, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true });
-        try equal("3", 1, "0123", 4, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true });
-        try equal("", 1, "0123", 5, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true });
-        try equal("", 2, "0123", 6, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true });
-
-        // even segment length (left shifted)
-        try equal("01", 0, "0123", 0, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false });
-        try equal("01", 1, "0123", 1, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false });
-        try equal("12", 1, "0123", 2, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false });
-        try equal("23", 1, "0123", 3, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false });
-        try equal("3", 1, "0123", 4, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false });
-        try equal("", 1, "0123", 5, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false });
-        try equal("", 2, "0123", 6, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false });
-    }
+    // even length (left shifted)
+    try equal(Around{ .start = 0, .end = 2, .index_pos = 0 }, indicesAround("0123", 0, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "01"
+    try equal(Around{ .start = 0, .end = 2, .index_pos = 1 }, indicesAround("0123", 1, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "01"
+    try equal(Around{ .start = 1, .end = 3, .index_pos = 1 }, indicesAround("0123", 2, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "12"
+    try equal(Around{ .start = 2, .end = 4, .index_pos = 1 }, indicesAround("0123", 3, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "23"
+    try equal(Around{ .start = 3, .end = 4, .index_pos = 1 }, indicesAround("0123", 4, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "3"
+    try equal(Around{ .start = 4, .end = 4, .index_pos = 1 }, indicesAround("0123", 5, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // ""
+    try equal(Around{ .start = 4, .end = 4, .index_pos = 2 }, indicesAround("0123", 6, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // ""
 }
 
 /// Returns indices of a slice segment within the `start`:`end` range, extended
@@ -507,7 +485,7 @@ pub fn indicesAroundRange(
     pad: usize,
 ) Indices.Range {
     if (start == end) {
-        const range = if (pad == 0) 1 else (pad *| 2 +| 1); // 1 to include the cursor itself
+        const range = if (pad == 0) 1 else (pad *| 2 +| 1); // +1 to include the cursor itself
         const s = indicesAround(slice, start, range, .{ .trunc_mode = .hard_flex });
         return .{ .start = s.start, .end = s.end, .start_pos = s.index_pos, .end_pos = s.index_pos };
     }
@@ -524,83 +502,86 @@ pub fn indicesAroundRange(
 }
 
 test indicesAroundRange {
-    const case = struct {
+    const Range = Indices.Range;
+    const equal = struct {
         pub fn run(
-            comptime input: []const u8,
-            start: usize,
-            end: usize,
-            len: usize,
-            comptime expect: struct {
-                seg: []const u8,
-                s_pos: usize,
-                e_pos: usize,
-                rng_len: usize,
-                s_out: bool,
-                e_out: bool,
-            },
+            comptime expect: Range,
+            comptime extra: struct { range: usize, s_out: bool, e_out: bool },
+            actual: Range,
         ) !void {
-            const res = indicesAroundRange(input, start, end, len);
-            try std.testing.expectEqualStrings(expect.seg, input[res.start..res.end]);
-            try std.testing.expectEqual(expect.s_pos, res.start_pos);
-            try std.testing.expectEqual(expect.e_pos, res.end_pos);
-            try std.testing.expectEqual(expect.rng_len, res.rangeLen());
-            try std.testing.expectEqual(expect.s_out, res.startPosExceeds());
-            try std.testing.expectEqual(expect.e_out, res.endPosExceeds());
+            try std.testing.expectEqualDeep(expect, actual);
+            try std.testing.expectEqual(extra.range, actual.rangeLen());
+            try std.testing.expectEqual(extra.s_out, actual.startPosExceeds());
+            try std.testing.expectEqual(extra.e_out, actual.endPosExceeds());
         }
     }.run;
 
-    // format:
-    // try case(|input|, |start|, |end|, |len|, |expected seg, start_pos, end_pos, range_len, start_exceeds, end_exceeds|)
+    // empty input ranges
+    try equal(Range{ .start = 0, .end = 0, .start_pos = 0, .end_pos = 0 }, .{ .range = 1, .s_out = false, .e_out = false }, //
+        indicesAroundRange("", 0, 0, 0));
+    try equal(Range{ .start = 0, .end = 0, .start_pos = 5, .end_pos = 20 }, .{ .range = 16, .s_out = true, .e_out = true }, //
+        indicesAroundRange("", 5, 20, 4));
 
-    // test empty input ranges
-    try case("", 0, 0, 0, .{ .seg = "", .s_pos = 0, .e_pos = 0, .rng_len = 1, .s_out = false, .e_out = false });
-    //        ^
-    try case("", 5, 20, 4, .{ .seg = "", .s_pos = 5, .e_pos = 20, .rng_len = 16, .s_out = true, .e_out = true });
-    //        ----^^^...
+    // out-of-bounds ranges
+    try equal(Range{ .start = 5, .end = 10, .start_pos = 0, .end_pos = 15 }, .{ .range = 16, .s_out = false, .e_out = true }, // "56789"
+        indicesAroundRange("0123456789", 5, 20, 0));
+    //                           ^^^^^^^..
+    try equal(Range{ .start = 1, .end = 10, .start_pos = 4, .end_pos = 19 }, .{ .range = 16, .s_out = false, .e_out = true }, // "123456789"
+        indicesAroundRange("0123456789", 5, 20, 4));
+    //                       ----^^^^^^^..
+    try equal(Range{ .start = 10, .end = 10, .start_pos = 0, .end_pos = 1 }, .{ .range = 2, .s_out = false, .e_out = true }, // ""
+        indicesAroundRange("0123456789", 10, 11, 0));
+    //                                ^^
+    try equal(Range{ .start = 10, .end = 10, .start_pos = 1, .end_pos = 2 }, .{ .range = 2, .s_out = true, .e_out = true }, // ""
+        indicesAroundRange("0123456789", 11, 12, 0));
+    //                                 ^^
+    try equal(Range{ .start = 10, .end = 10, .start_pos = 2, .end_pos = 10 }, .{ .range = 9, .s_out = true, .e_out = true }, // ""
+        indicesAroundRange("0123456789", 12, 20, 0));
+    //                                  ^^^..
+    try equal(Range{ .start = 8, .end = 10, .start_pos = 4, .end_pos = 12 }, .{ .range = 9, .s_out = true, .e_out = true }, // "89"
+        indicesAroundRange("0123456789", 12, 20, 4));
+    //                              ----^^^..
 
-    // test out-of-bounds ranges
-    try case("0123456789", 5, 20, 0, .{ .seg = "56789", .s_pos = 0, .e_pos = 15, .rng_len = 16, .s_out = false, .e_out = true });
-    //             ^^^^^^^..
-    try case("0123456789", 5, 20, 4, .{ .seg = "123456789", .s_pos = 4, .e_pos = 19, .rng_len = 16, .s_out = false, .e_out = true });
-    //         ----^^^^^^^..
-    try case("0123456789", 10, 11, 0, .{ .seg = "", .s_pos = 0, .e_pos = 1, .rng_len = 2, .s_out = false, .e_out = true });
-    //                  ^^
-    try case("0123456789", 11, 12, 0, .{ .seg = "", .s_pos = 1, .e_pos = 2, .rng_len = 2, .s_out = true, .e_out = true });
-    //                   ^^
-    try case("0123456789", 12, 20, 0, .{ .seg = "", .s_pos = 2, .e_pos = 10, .rng_len = 9, .s_out = true, .e_out = true });
-    //                    ^^^..
-    try case("0123456789", 12, 20, 4, .{ .seg = "89", .s_pos = 4, .e_pos = 12, .rng_len = 9, .s_out = true, .e_out = true });
-    //                ----^^^..
+    // single-item ranges (start == end)
+    try equal(Range{ .start = 4, .end = 5, .start_pos = 0, .end_pos = 0 }, .{ .range = 1, .s_out = false, .e_out = false }, // "4"
+        indicesAroundRange("0123456789", 4, 4, 0));
+    //                          ^
+    try equal(Range{ .start = 3, .end = 6, .start_pos = 1, .end_pos = 1 }, .{ .range = 1, .s_out = false, .e_out = false }, // "345"
+        indicesAroundRange("0123456789", 4, 4, 1));
+    //                         -^-
+    try equal(Range{ .start = 2, .end = 7, .start_pos = 2, .end_pos = 2 }, .{ .range = 1, .s_out = false, .e_out = false }, // "23456"
+        indicesAroundRange("0123456789", 4, 4, 2));
+    //                        --^--
 
-    // test single-item ranges (start == end)
-    try case("0123456789", 4, 4, 0, .{ .seg = "4", .s_pos = 0, .e_pos = 0, .rng_len = 1, .s_out = false, .e_out = false });
-    //            ^
-    try case("0123456789", 4, 4, 1, .{ .seg = "345", .s_pos = 1, .e_pos = 1, .rng_len = 1, .s_out = false, .e_out = false });
-    //           -^-
-    try case("0123456789", 4, 4, 2, .{ .seg = "23456", .s_pos = 2, .e_pos = 2, .rng_len = 1, .s_out = false, .e_out = false });
-    //          --^--
+    // self ranges
+    try equal(Range{ .start = 4, .end = 6, .start_pos = 0, .end_pos = 1 }, .{ .range = 2, .s_out = false, .e_out = false }, // "45"
+        indicesAroundRange("0123456789", 4, 5, 0));
+    //                          ^^
+    try equal(Range{ .start = 3, .end = 7, .start_pos = 1, .end_pos = 2 }, .{ .range = 2, .s_out = false, .e_out = false }, // "3456"
+        indicesAroundRange("0123456789", 4, 5, 1));
+    //                         -^^-
+    try equal(Range{ .start = 2, .end = 8, .start_pos = 2, .end_pos = 3 }, .{ .range = 2, .s_out = false, .e_out = false }, // "234567"
+        indicesAroundRange("0123456789", 4, 5, 2));
+    //                        --^^--
+    try equal(Range{ .start = 3, .end = 6, .start_pos = 0, .end_pos = 2 }, .{ .range = 3, .s_out = false, .e_out = false }, // "345"
+        indicesAroundRange("0123456789", 3, 5, 0));
+    //                         ^^^
+    try equal(Range{ .start = 2, .end = 7, .start_pos = 1, .end_pos = 3 }, .{ .range = 3, .s_out = false, .e_out = false }, // "23456"
+        indicesAroundRange("0123456789", 3, 5, 1));
+    //                        -^^^-
+    try equal(Range{ .start = 1, .end = 8, .start_pos = 2, .end_pos = 4 }, .{ .range = 3, .s_out = false, .e_out = false }, // "1234567"
+        indicesAroundRange("0123456789", 3, 5, 2));
+    //                       --^^^--
 
-    // test self ranges
-    try case("0123456789", 4, 5, 0, .{ .seg = "45", .s_pos = 0, .e_pos = 1, .rng_len = 2, .s_out = false, .e_out = false });
-    //            ^^
-    try case("0123456789", 4, 5, 1, .{ .seg = "3456", .s_pos = 1, .e_pos = 2, .rng_len = 2, .s_out = false, .e_out = false });
-    //           -^^-
-    try case("0123456789", 4, 5, 2, .{ .seg = "234567", .s_pos = 2, .e_pos = 3, .rng_len = 2, .s_out = false, .e_out = false });
-    //          --^^--
-    try case("0123456789", 3, 5, 0, .{ .seg = "345", .s_pos = 0, .e_pos = 2, .rng_len = 3, .s_out = false, .e_out = false });
-    //           ^^^
-    try case("0123456789", 3, 5, 1, .{ .seg = "23456", .s_pos = 1, .e_pos = 3, .rng_len = 3, .s_out = false, .e_out = false });
-    //          -^^^-
-    try case("0123456789", 3, 5, 2, .{ .seg = "1234567", .s_pos = 2, .e_pos = 4, .rng_len = 3, .s_out = false, .e_out = false });
-    //         --^^^--
+    // left out-of-bounds pad
+    try equal(Range{ .start = 0, .end = 6, .start_pos = 0, .end_pos = 3 }, .{ .range = 4, .s_out = false, .e_out = false }, // "012345"
+        indicesAroundRange("0123456789", 0, 3, 2));
+    //                    --^^^^--
 
-    // test left out-of-bounds pad
-    try case("0123456789", 0, 3, 2, .{ .seg = "012345", .s_pos = 0, .e_pos = 3, .rng_len = 4, .s_out = false, .e_out = false });
-    //      --^^^^--
-
-    // test right out-of-bounds pad
-    try case("0123456789", 6, 9, 2, .{ .seg = "456789", .s_pos = 2, .e_pos = 5, .rng_len = 4, .s_out = false, .e_out = false });
-    //            --^^^^--
+    // right out-of-bounds pad
+    try equal(Range{ .start = 4, .end = 10, .start_pos = 2, .end_pos = 5 }, .{ .range = 4, .s_out = false, .e_out = false }, // "456789"
+        indicesAroundRange("0123456789", 6, 9, 2));
+    //                          --^^^^--
 }
 
 /// Returns a `[start..end]` slice segment with indices normalized to not
@@ -611,6 +592,7 @@ pub fn segment(T: type, slice: T, start: usize, end: usize) T {
 
 test segment {
     const equal = std.testing.expectEqualStrings;
+
     try equal("", segment([]const u8, "0123", 0, 0));
     try equal("", segment([]const u8, "0123", 100, 100));
     try equal("", segment([]const u8, "0123", 3, 3));
@@ -631,41 +613,42 @@ pub fn isSegment(T: type, slice: []const T, seg: []const T) bool {
 
 test isSegment {
     const equal = std.testing.expectEqual;
-    const slice: [11]u8 = "hello_world".*;
+    const input: [11]u8 = "hello_world".*;
 
-    try equal(true, isSegment(u8, slice[0..], slice[0..0]));
-    try equal(true, isSegment(u8, slice[0..], slice[11..11]));
-    try equal(true, isSegment(u8, slice[0..], slice[0..1]));
-    try equal(true, isSegment(u8, slice[0..], slice[3..6]));
-    try equal(true, isSegment(u8, slice[0..], slice[10..11]));
-    try equal(false, isSegment(u8, slice[0..], "hello_world"));
+    try equal(true, isSegment(u8, input[0..], input[0..0]));
+    try equal(true, isSegment(u8, input[0..], input[11..11]));
+    try equal(true, isSegment(u8, input[0..], input[0..1]));
+    try equal(true, isSegment(u8, input[0..], input[3..6]));
+    try equal(true, isSegment(u8, input[0..], input[10..11]));
+    try equal(false, isSegment(u8, input[0..], "hello_world"));
+
     // intersecting
-    try equal(true, isSegment(u8, slice[0..5], slice[0..5])); // same
-    try equal(true, isSegment(u8, slice[0..0], slice[0..0]));
-    try equal(true, isSegment(u8, slice[11..11], slice[11..11])); // last zero
-    try equal(false, isSegment(u8, slice[0..5], slice[0..6]));
-    try equal(false, isSegment(u8, slice[0..5], slice[5..10]));
-    try equal(false, isSegment(u8, slice[5..10], slice[0..5]));
-    try equal(false, isSegment(u8, slice[0..0], slice[11..11]));
-    try equal(false, isSegment(u8, slice[0..6], slice[5..11]));
+    try equal(true, isSegment(u8, input[0..5], input[0..5]));
+    try equal(true, isSegment(u8, input[0..0], input[0..0]));
+    try equal(true, isSegment(u8, input[11..11], input[11..11]));
+    try equal(false, isSegment(u8, input[0..5], input[0..6]));
+    try equal(false, isSegment(u8, input[0..5], input[5..10]));
+    try equal(false, isSegment(u8, input[5..10], input[0..5]));
+    try equal(false, isSegment(u8, input[0..0], input[11..11]));
+    try equal(false, isSegment(u8, input[0..6], input[5..11]));
 }
 
 pub const MoveDir = enum { left, right };
 pub const MoveError = error{ IsNotSeg, SegIsTooBig };
 
-/// Moves a valid segment to the start or end of the given slice.
-/// `max_seg_size` is a stack-allocated buffer to temporarily store
-/// the segment during the move.
+/// Moves a valid segment to the start or end of the given slice. If a move is
+/// required, the segment length must be less than the stack-allocated buffer
+/// size, `buf_size`.
 pub fn move(
     comptime dir: MoveDir,
-    comptime max_seg_size: usize,
+    comptime buf_size: usize,
     T: type,
     slice: []T,
     seg: []const T,
 ) MoveError!void {
     // skip move if
     if (!isSegment(T, slice, seg)) return MoveError.IsNotSeg;
-    if (seg.len > max_seg_size) return MoveError.SegIsTooBig;
+    if (seg.len > buf_size) return MoveError.SegIsTooBig;
 
     // no need to move if
     if (seg.len == 0 or seg.len == slice.len) return;
@@ -675,7 +658,7 @@ pub fn move(
     }
 
     // make segment copy
-    var buf: [max_seg_size]T = undefined;
+    var buf: [buf_size]T = undefined;
     const seg_copy = buf[0..seg.len];
     mem.copyForwards(T, seg_copy, seg);
 
@@ -707,107 +690,84 @@ pub fn move(
 }
 
 test move {
-    const case = struct {
-        pub fn run(
-            comptime dir: MoveDir,
-            expected_slice: []const u8,
-            expected_err: ?MoveError,
-            slice: []u8,
-            seg: []u8,
-        ) !void {
-            move(dir, 7, u8, slice, seg) catch |err| {
-                if (expected_err == null) return err;
-                try std.testing.expectEqual(expected_err.?, err);
-                return;
-            };
-            if (expected_err != null) return error.ExpectedError;
-            try std.testing.expectEqualStrings(expected_slice, slice);
-        }
-    }.run;
-
-    // format:
-    // try case(|move_dir|, |expected_slice|, |?expected_err|, |orig_slice|, |seg_to_move|)
+    const equal = std.testing.expectEqualStrings;
+    const equalErr = std.testing.expectError;
 
     const origin = "0123456";
     var buf: [7]u8 = origin.*;
     const slice = buf[0..];
 
-    // right
-    //
-    try case(.right, "3456012", null, slice, slice[0..3]);
-    //                    ---
+    // .right
+    // -----------
+    try move(.right, 512, u8, slice, slice[0..3]);
+    try equal("3456012", slice);
+    //             ---
     buf = origin.*;
 
-    try case(.right, "0126345", null, slice, slice[3..6]);
-    //                    ---
+    try move(.right, 512, u8, slice, slice[3..6]);
+    try equal("0126345", slice);
+    //             ---
     buf = origin.*;
 
-    try case(.right, origin, null, slice, slice);
-    //               same input
+    try move(.right, 512, u8, slice, slice); // move is not required
+    try equal("0123456", slice);
     buf = origin.*;
 
-    try case(.right, origin, null, slice, slice[4..]);
-    //               no need to move
+    try move(.right, 512, u8, slice, slice[4..]); // move is not required
+    try equal("0123456", slice);
     buf = origin.*;
 
-    try case(.right, origin, null, slice, slice[7..]);
-    //               zero length slice segment
+    try move(.right, 512, u8, slice, slice[7..]); // zero length segment
+    try equal("0123456", slice);
     buf = origin.*;
 
-    try case(.right, origin, null, slice, slice[3..3]);
-    //               zero length slice segment
+    try move(.right, 512, u8, slice, slice[3..3]); // zero length segment
+    try equal("0123456", slice);
     buf = origin.*;
 
-    try case(.right, "", MoveError.IsNotSeg, slice[0..4], slice[3..6]);
-    //               not a valid slice segment
+    // segment is non-valid sub-slice
+    try equalErr(MoveError.IsNotSeg, move(.right, 512, u8, slice[0..4], slice[3..6]));
+
+    // move a too-big-to-copy segment
+    try equalErr(MoveError.SegIsTooBig, move(.right, 1, u8, slice, slice[1..]));
+
+    // .left
+    // -----------
+    try move(.left, 512, u8, slice, slice[1..]);
+    try equal("1234560", slice);
+    //         ------
     buf = origin.*;
 
-    var big_buf: [10]u8 = undefined;
-    try case(.right, "", MoveError.SegIsTooBig, &big_buf, big_buf[0..]);
-    //               slice segment is to big to copy
+    try move(.left, 512, u8, slice, slice[4..]);
+    try equal("4560123", slice);
+    //         ---
     buf = origin.*;
 
-    // left
-    //
-    try case(.left, "1234560", null, slice, slice[1..]);
-    //               ------
+    try move(.left, 512, u8, slice, slice[6..]);
+    try equal("6012345", slice);
+    //         -
     buf = origin.*;
 
-    try case(.left, "4560123", null, slice, slice[4..]);
-    //               ---
-    buf = origin.*;
+    try move(.left, 512, u8, slice, slice); // move is not required
+    try equal("0123456", slice);
 
-    try case(.left, "6012345", null, slice, slice[6..]);
-    //               -
-    buf = origin.*;
+    try move(.left, 512, u8, slice, slice[0..3]); // move is not required
+    try equal("0123456", slice);
 
-    try case(.left, origin, null, slice, slice);
-    //              same input
-    buf = origin.*;
+    try move(.left, 512, u8, slice, slice[7..]); // zero length segment
+    try equal("0123456", slice);
 
-    try case(.left, origin, null, slice, slice[0..3]);
-    //              no need to move
-    buf = origin.*;
+    try move(.left, 512, u8, slice, slice[3..3]); // zero length segment
+    try equal("0123456", slice);
 
-    try case(.left, origin, null, slice, slice[7..]);
-    //              zero length slice segment
-    buf = origin.*;
+    // move a non-valid segment
+    try equalErr(MoveError.IsNotSeg, move(.left, 512, u8, slice[0..4], slice[3..6]));
 
-    try case(.left, origin, null, slice, slice[3..3]);
-    //              zero length slice segment
-    buf = origin.*;
-
-    try case(.left, "", MoveError.IsNotSeg, slice[0..4], slice[3..6]);
-    //              not a valid slice segment
-    buf = origin.*;
-
-    var big_buf2: [10]u8 = undefined;
-    try case(.left, "", MoveError.SegIsTooBig, &big_buf2, big_buf2[0..]);
-    //               slice segment is to big to copy
-    buf = origin.*;
+    // move a too-big-to-copy segment
+    try equalErr(MoveError.SegIsTooBig, move(.left, 1, u8, slice, slice[1..]));
 }
 
-/// Moves a valid slice segment to the beginning of the given slice. Returns an
+/// Moves a valid segment to the beginning of the given slice. Returns an
 /// error if the segment is of different origin or its length exceeds
 /// 1024. Use `moveSeg` directly to increase the length.
 pub fn moveLeft(T: type, slice: []T, seg: []const T) MoveError!void {
