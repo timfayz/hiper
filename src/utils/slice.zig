@@ -4,7 +4,7 @@
 //! Public API:
 //! - reverse()
 //! - intersect()
-//! - merge()
+//! - span()
 //! - indexOfStart()
 //! - indexOfEnd()
 //! - Indices
@@ -12,7 +12,8 @@
 //! - indicesStart()
 //! - indicesEnd()
 //! - indicesAround()
-//! - indicesAroundRange()
+//! - indicesRange()
+//! - indicesSplitRange()
 //! - segment()
 //! - isSegment()
 //! - MoveDir
@@ -105,18 +106,18 @@ test intersect {
     try equal("12", intersect(u8, input[1..3], input[0..4])); // reversed order
 }
 
-/// Returns the union of two slices. Slices are assumed to share the same
-/// source; use `isSegment` to verify this before calling.
+/// Returns the inclusive span between two slices. Slices are assumed to share
+/// the same source; use `isSegment` to verify this before calling.
 ///
 /// ```txt
 /// [slice1 ] [ slice2]    (slices disjoint)
-/// [                 ]    (merged)
+/// [                 ]    (span)
 ///
 /// [slice1   ]            (slices intersect)
 ///         [   slice2]
-/// [                 ]    (merged)
+/// [                 ]    (span)
 /// ```
-pub fn merge(T: type, slice1: []const T, slice2: []const T) []T {
+pub fn span(T: type, slice1: []const T, slice2: []const T) []T {
     var slice: []T = undefined;
     const ptr1 = @intFromPtr(slice1.ptr);
     const ptr2 = @intFromPtr(slice2.ptr);
@@ -127,17 +128,17 @@ pub fn merge(T: type, slice1: []const T, slice2: []const T) []T {
     return slice;
 }
 
-test merge {
+test span {
     const equal = std.testing.expectEqualStrings;
 
     const input = "0123";
 
-    try equal("0123", merge(u8, input[0..0], input[4..4])); // zero slices
-    try equal("0123", merge(u8, input[4..4], input[0..0])); // reversed order
-    try equal("0123", merge(u8, input[0..2], input[2..4])); // normal slices
-    try equal("0123", merge(u8, input[2..4], input[0..2])); // reversed order
-    try equal("0123", merge(u8, input[0..3], input[1..4])); // intersected slices
-    try equal("0123", merge(u8, input[0..4], input[0..4])); // same slices
+    try equal("0123", span(u8, input[0..0], input[4..4])); // zero slices
+    try equal("0123", span(u8, input[4..4], input[0..0])); // reversed order
+    try equal("0123", span(u8, input[0..2], input[2..4])); // normal slices
+    try equal("0123", span(u8, input[2..4], input[0..2])); // reversed order
+    try equal("0123", span(u8, input[0..3], input[1..4])); // intersected slices
+    try equal("0123", span(u8, input[0..4], input[0..4])); // same slices
 }
 
 /// Retrieves the starting position of a segment in slice. Slices are assumed to
@@ -178,7 +179,7 @@ test indexOfEnd {
     try equal(10, indexOfEnd(input, input[3..10]));
 }
 
-/// Retrieved indices of a segment.
+/// Indices of a retrieved segment.
 pub const Indices = struct {
     /// The start index of the segment.
     start: usize,
@@ -187,6 +188,7 @@ pub const Indices = struct {
 
     pub usingnamespace Shared(Indices);
 
+    /// Indices of a retrieved segment around an index.
     pub const Around = struct {
         /// The start index of the segment.
         start: usize,
@@ -224,6 +226,7 @@ pub const Indices = struct {
         };
     };
 
+    /// Indices of a retrieved segment within a range.
     pub const Range = struct {
         /// The start index of the segment.
         start: usize,
@@ -243,25 +246,41 @@ pub const Indices = struct {
         /// Checks if the relative range start position exceeds the actual segment
         /// boundaries.
         pub fn startPosExceeds(self: *const Range) bool {
-            return self.start_pos > self.segLen();
+            return self.start_pos > self.len();
         }
 
         /// Checks if the relative range end position exceeds the actual segment
         /// boundaries.
         pub fn endPosExceeds(self: *const Range) bool {
-            return self.end_pos > self.segLen();
+            return self.end_pos > self.len();
         }
     };
 
-    pub const Split = union(enum) {
-        solid: Indices.Range,
+    /// Indices of a retrieved segment, either fully contained within a single
+    /// range or split into two.
+    pub const SplitRange = union(enum) {
+        /// Retrieved indices of a segment contained within the range.
+        range: Indices.Range,
+        /// Retrieved indices of a range split into two segments.
         split: [2]Indices.Around,
+
+        /// Options for `indicesSplitRange`.
+        pub const Options = struct {
+            /// If splitting is necessary, each segment's length will be `len / 2`.
+            split_len_half: bool = true,
+            /// If splitting is necessary, each segment's pad will be `pad / 2`.
+            split_pad_half: bool = true,
+            /// If the range end is out of slice bounds, splitting is required.
+            split_end_overflow: bool = false,
+            /// Shifts resulting even-length ranges by one index to the right.
+            even_rshift: bool = true,
+        };
     };
 
     fn Shared(Self: type) type {
         return struct {
             /// Returns the retrieved segment length.
-            pub fn segLen(self: *const Self) usize {
+            pub fn len(self: *const Self) usize {
                 return self.end - self.start;
             }
 
@@ -478,7 +497,7 @@ test indicesAround {
 /// original `start` and `end` indices within the segment. The `end` index is
 /// inclusive. The returned positions (`*_pos`) may fall outside the segment
 /// if the original `start` or `end` indices were out of slice bounds.
-pub fn indicesAroundRange(
+pub fn indicesRange(
     slice: anytype,
     start: usize,
     end: usize,
@@ -501,7 +520,7 @@ pub fn indicesAroundRange(
     };
 }
 
-test indicesAroundRange {
+test indicesRange {
     const Range = Indices.Range;
     const equal = struct {
         pub fn run(
@@ -517,71 +536,285 @@ test indicesAroundRange {
     }.run;
 
     // empty input ranges
-    try equal(Range{ .start = 0, .end = 0, .start_pos = 0, .end_pos = 0 }, .{ .range = 1, .s_out = false, .e_out = false }, //
-        indicesAroundRange("", 0, 0, 0));
-    try equal(Range{ .start = 0, .end = 0, .start_pos = 5, .end_pos = 20 }, .{ .range = 16, .s_out = true, .e_out = true }, //
-        indicesAroundRange("", 5, 20, 4));
+    try equal(Range{ .start = 0, .end = 0, .start_pos = 0, .end_pos = 0 }, .{ .range = 1, .s_out = false, .e_out = false }, indicesRange("", 0, 0, 0));
+    try equal(Range{ .start = 0, .end = 0, .start_pos = 5, .end_pos = 20 }, .{ .range = 16, .s_out = true, .e_out = true }, indicesRange("", 5, 20, 4));
 
     // out-of-bounds ranges
-    try equal(Range{ .start = 5, .end = 10, .start_pos = 0, .end_pos = 15 }, .{ .range = 16, .s_out = false, .e_out = true }, // "56789"
-        indicesAroundRange("0123456789", 5, 20, 0));
-    //                           ^^^^^^^..
-    try equal(Range{ .start = 1, .end = 10, .start_pos = 4, .end_pos = 19 }, .{ .range = 16, .s_out = false, .e_out = true }, // "123456789"
-        indicesAroundRange("0123456789", 5, 20, 4));
-    //                       ----^^^^^^^..
-    try equal(Range{ .start = 10, .end = 10, .start_pos = 0, .end_pos = 1 }, .{ .range = 2, .s_out = false, .e_out = true }, // ""
-        indicesAroundRange("0123456789", 10, 11, 0));
-    //                                ^^
-    try equal(Range{ .start = 10, .end = 10, .start_pos = 1, .end_pos = 2 }, .{ .range = 2, .s_out = true, .e_out = true }, // ""
-        indicesAroundRange("0123456789", 11, 12, 0));
-    //                                 ^^
-    try equal(Range{ .start = 10, .end = 10, .start_pos = 2, .end_pos = 10 }, .{ .range = 9, .s_out = true, .e_out = true }, // ""
-        indicesAroundRange("0123456789", 12, 20, 0));
-    //                                  ^^^..
-    try equal(Range{ .start = 8, .end = 10, .start_pos = 4, .end_pos = 12 }, .{ .range = 9, .s_out = true, .e_out = true }, // "89"
-        indicesAroundRange("0123456789", 12, 20, 4));
-    //                              ----^^^..
+    try equal(Range{ .start = 5, .end = 10, .start_pos = 0, .end_pos = 15 }, .{ .range = 16, .s_out = false, .e_out = true }, //
+        indicesRange("0123456789", 5, 20, 0)); // "56789"
+    //                     ^~~~~~~..
+    try equal(Range{ .start = 1, .end = 10, .start_pos = 4, .end_pos = 19 }, .{ .range = 16, .s_out = false, .e_out = true }, //
+        indicesRange("0123456789", 5, 20, 4)); // "123456789"
+    //                 ----^~~~~~~..
+    try equal(Range{ .start = 10, .end = 10, .start_pos = 0, .end_pos = 1 }, .{ .range = 2, .s_out = false, .e_out = true }, //
+        indicesRange("0123456789", 10, 11, 0)); // ""
+    //                          ^^
+    try equal(Range{ .start = 10, .end = 10, .start_pos = 1, .end_pos = 2 }, .{ .range = 2, .s_out = true, .e_out = true }, //
+        indicesRange("0123456789", 11, 12, 0)); // ""
+    //                           ^^
+    try equal(Range{ .start = 10, .end = 10, .start_pos = 2, .end_pos = 10 }, .{ .range = 9, .s_out = true, .e_out = true }, //
+        indicesRange("0123456789", 12, 20, 0)); // ""
+    //                            ^~~~..
+    try equal(Range{ .start = 8, .end = 10, .start_pos = 4, .end_pos = 12 }, .{ .range = 9, .s_out = true, .e_out = true }, //
+        indicesRange("0123456789", 12, 20, 4)); // "89"
+    //                        ----^~~~..
 
     // single-item ranges (start == end)
-    try equal(Range{ .start = 4, .end = 5, .start_pos = 0, .end_pos = 0 }, .{ .range = 1, .s_out = false, .e_out = false }, // "4"
-        indicesAroundRange("0123456789", 4, 4, 0));
-    //                          ^
-    try equal(Range{ .start = 3, .end = 6, .start_pos = 1, .end_pos = 1 }, .{ .range = 1, .s_out = false, .e_out = false }, // "345"
-        indicesAroundRange("0123456789", 4, 4, 1));
-    //                         -^-
-    try equal(Range{ .start = 2, .end = 7, .start_pos = 2, .end_pos = 2 }, .{ .range = 1, .s_out = false, .e_out = false }, // "23456"
-        indicesAroundRange("0123456789", 4, 4, 2));
-    //                        --^--
+    try equal(Range{ .start = 4, .end = 5, .start_pos = 0, .end_pos = 0 }, .{ .range = 1, .s_out = false, .e_out = false }, //
+        indicesRange("0123456789", 4, 4, 0)); // "4"
+    //                    ^
+    try equal(Range{ .start = 3, .end = 6, .start_pos = 1, .end_pos = 1 }, .{ .range = 1, .s_out = false, .e_out = false }, //
+        indicesRange("0123456789", 4, 4, 1)); // "345"
+    //                   -^-
+    try equal(Range{ .start = 2, .end = 7, .start_pos = 2, .end_pos = 2 }, .{ .range = 1, .s_out = false, .e_out = false }, //
+        indicesRange("0123456789", 4, 4, 2)); // "23456"
+    //                  --^--
 
     // self ranges
-    try equal(Range{ .start = 4, .end = 6, .start_pos = 0, .end_pos = 1 }, .{ .range = 2, .s_out = false, .e_out = false }, // "45"
-        indicesAroundRange("0123456789", 4, 5, 0));
-    //                          ^^
-    try equal(Range{ .start = 3, .end = 7, .start_pos = 1, .end_pos = 2 }, .{ .range = 2, .s_out = false, .e_out = false }, // "3456"
-        indicesAroundRange("0123456789", 4, 5, 1));
-    //                         -^^-
-    try equal(Range{ .start = 2, .end = 8, .start_pos = 2, .end_pos = 3 }, .{ .range = 2, .s_out = false, .e_out = false }, // "234567"
-        indicesAroundRange("0123456789", 4, 5, 2));
-    //                        --^^--
-    try equal(Range{ .start = 3, .end = 6, .start_pos = 0, .end_pos = 2 }, .{ .range = 3, .s_out = false, .e_out = false }, // "345"
-        indicesAroundRange("0123456789", 3, 5, 0));
-    //                         ^^^
-    try equal(Range{ .start = 2, .end = 7, .start_pos = 1, .end_pos = 3 }, .{ .range = 3, .s_out = false, .e_out = false }, // "23456"
-        indicesAroundRange("0123456789", 3, 5, 1));
-    //                        -^^^-
-    try equal(Range{ .start = 1, .end = 8, .start_pos = 2, .end_pos = 4 }, .{ .range = 3, .s_out = false, .e_out = false }, // "1234567"
-        indicesAroundRange("0123456789", 3, 5, 2));
-    //                       --^^^--
+    try equal(Range{ .start = 4, .end = 6, .start_pos = 0, .end_pos = 1 }, .{ .range = 2, .s_out = false, .e_out = false }, //
+        indicesRange("0123456789", 4, 5, 0)); // "45"
+    //                    ^^
+    try equal(Range{ .start = 3, .end = 7, .start_pos = 1, .end_pos = 2 }, .{ .range = 2, .s_out = false, .e_out = false }, //
+        indicesRange("0123456789", 4, 5, 1)); // "3456"
+    //                   -^^-
+    try equal(Range{ .start = 2, .end = 8, .start_pos = 2, .end_pos = 3 }, .{ .range = 2, .s_out = false, .e_out = false }, //
+        indicesRange("0123456789", 4, 5, 2)); // "234567"
+    //                  --^^--
+    try equal(Range{ .start = 3, .end = 6, .start_pos = 0, .end_pos = 2 }, .{ .range = 3, .s_out = false, .e_out = false }, //
+        indicesRange("0123456789", 3, 5, 0)); // "345"
+    //                   ^~^
+    try equal(Range{ .start = 2, .end = 7, .start_pos = 1, .end_pos = 3 }, .{ .range = 3, .s_out = false, .e_out = false }, //
+        indicesRange("0123456789", 3, 5, 1)); // "23456"
+    //                  -^~^-
+    try equal(Range{ .start = 1, .end = 8, .start_pos = 2, .end_pos = 4 }, .{ .range = 3, .s_out = false, .e_out = false }, //
+        indicesRange("0123456789", 3, 5, 2)); // "1234567"
+    //                 --^~^--
 
     // left out-of-bounds pad
-    try equal(Range{ .start = 0, .end = 6, .start_pos = 0, .end_pos = 3 }, .{ .range = 4, .s_out = false, .e_out = false }, // "012345"
-        indicesAroundRange("0123456789", 0, 3, 2));
-    //                    --^^^^--
+    try equal(Range{ .start = 0, .end = 6, .start_pos = 0, .end_pos = 3 }, .{ .range = 4, .s_out = false, .e_out = false }, //
+        indicesRange("0123456789", 0, 3, 2)); // "012345"
+    //              --^~~^--
 
     // right out-of-bounds pad
-    try equal(Range{ .start = 4, .end = 10, .start_pos = 2, .end_pos = 5 }, .{ .range = 4, .s_out = false, .e_out = false }, // "456789"
-        indicesAroundRange("0123456789", 6, 9, 2));
-    //                          --^^^^--
+    try equal(Range{ .start = 4, .end = 10, .start_pos = 2, .end_pos = 5 }, .{ .range = 4, .s_out = false, .e_out = false }, //
+        indicesRange("0123456789", 6, 9, 2)); // "456789"
+    //                    --^~~^--
+}
+
+pub fn indicesSplitRange(
+    slice: anytype,
+    p: struct {
+        start: usize,
+        end: usize,
+        /// The maximum range length. If exceeded, the range splits with each
+        /// segment being `len / 2`. Use `split_len_half` to adjust this
+        /// behavior.
+        len: usize,
+        /// The character context around the range on each side.
+        pad: usize = 0,
+    },
+    comptime opt: Indices.SplitRange.Options,
+) Indices.SplitRange {
+    // zero range
+    if (p.start == p.end) {
+        const len = p.len + (p.pad *| 2);
+        const s = indicesAround(slice, p.start, len, .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
+        return .{ .range = .{ .start = s.start, .end = s.end, .start_pos = s.index_pos, .end_pos = s.index_pos } };
+    }
+
+    // ensure start <= end
+    const start, const end = if (p.start < p.end) .{ p.start, p.end } else .{ p.end, p.start };
+
+    // zero length view
+    if (p.len == 0) {
+        var arr: [2]Indices.Around = undefined;
+        const pad = if (opt.split_pad_half) p.pad / 2 else p.pad;
+        arr[0] = indicesAround(slice, start, pad +| (pad *| 2), .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
+        arr[1] = indicesAround(slice, end, pad +| (pad *| 2), .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
+        return .{ .split = arr };
+    }
+
+    // non-zero length view
+    const range = end - start +| 1; // +1 to make end inclusive
+    if (range > p.len) { // split is required
+        var arr: [2]Indices.Around = undefined;
+        const calc_len = if (opt.split_len_half) p.len / 2 else p.len;
+        const len = if (calc_len == 0) 1 else calc_len;
+        const pad = if (opt.split_pad_half) p.pad / 2 else p.pad;
+
+        arr[0] = indicesAround(slice, start, len +| (pad *| 2), .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
+        arr[1] = indicesAround(slice, end, len +| (pad *| 2), .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
+        return .{ .split = arr };
+    } else // not required
+    return .{ .range = indicesRange(slice, start, end, p.pad) };
+}
+
+test indicesSplitRange {
+    const equalRaw = std.testing.expectEqualDeep;
+    const SplitRange = Indices.SplitRange;
+    const Around = Indices.Around;
+
+    // input and indicesSplitRange 1st argument must be in sync
+    const input = "0123456789";
+
+    const equal = struct {
+        pub fn run(expect: []const u8, fn_result: SplitRange) !void {
+            var buf = std.BoundedArray(u8, 512){};
+            const w = buf.writer();
+            switch (fn_result) {
+                .range => |r| {
+                    try w.print(" {s}\n", .{r.slice([]const u8, input)});
+                    if (r.start_pos == r.end_pos)
+                        try w.print(" {[0]c: >[1]}", .{ '^', r.start_pos + 1 })
+                    else
+                        try w.print(" {[0]c: >[1]}{[0]c:~>[2]}", .{ '^', r.start_pos + 1, r.end_pos - r.start_pos });
+                },
+                .split => |s| {
+                    try w.print(" {s}\n", .{s[0].slice([]const u8, input)});
+                    try w.print(" {[0]c: >[1]}\n", .{ '^', s[0].index_pos + 1 });
+                    try w.print(" {s}\n", .{s[1].slice([]const u8, input)});
+                    try w.print(" {[0]c: >[1]}", .{ '^', s[1].index_pos + 1 });
+                },
+            }
+            try std.testing.expectEqualStrings(expect, buf.slice());
+        }
+    }.run;
+
+    // .range = 1
+    // --------------
+    try equalRaw( // 1 range, 0 len, 0 pad
+        SplitRange{
+            .range = .{ .start = 4, .end = 4, .start_pos = 0, .end_pos = 0 },
+        },
+        indicesSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 0, .pad = 0 }, .{}),
+        //                     ^
+    );
+
+    try equal( // 1 range, 0 len, 1 pad
+        \\ 45
+        \\ ^
+    ,
+        indicesSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 0, .pad = 1 }, .{}),
+        //                     -
+    );
+
+    try equal( // 1 range, 0 len, 2 pad
+        \\ 3456
+        \\  ^
+    ,
+        indicesSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 0, .pad = 2 }, .{}),
+        //                    ----
+    );
+
+    try equal( // 1 range, 1 len, 1 pad
+        \\ 345
+        \\  ^
+    ,
+        indicesSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 1, .pad = 1 }, .{}),
+        //                    -^-
+    );
+
+    try equal( // 1 range, 1 len, 0 pad
+        \\ 4
+        \\ ^
+    ,
+        indicesSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 1, .pad = 0 }, .{}),
+        //                     ^
+    );
+
+    try equal( // 1 range, 2 len, 0 pad
+        \\ 45
+        \\ ^
+    ,
+        indicesSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 2, .pad = 0 }, .{}),
+        //                     ^-
+    );
+
+    try equal( // 1 range, 3 len, 0 pad
+        \\ 345
+        \\  ^
+    ,
+        indicesSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 3, .pad = 0 }, .{}),
+        //                    ~^~
+    );
+    try equal( // 1 range, 3 len, 1 pad
+        \\ 23456
+        \\   ^
+    ,
+        indicesSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 3, .pad = 1 }, .{}),
+        //                   -~^~-
+    );
+
+    // .range > 1
+    // --------------
+    try equalRaw( // 2 range, 0 len, pad 0
+        SplitRange{
+            .split = .{
+                Around{ .start = 4, .end = 4, .index_pos = 0 },
+                Around{ .start = 5, .end = 5, .index_pos = 0 },
+            },
+        },
+        indicesSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 0, .pad = 0 }, .{}),
+        //                     ^^
+    );
+
+    try equal( // 2 range, 1 len, pad 0
+        \\ 4
+        \\ ^
+        \\ 5
+        \\ ^
+    ,
+        indicesSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 1, .pad = 1 }, .{}),
+        //                     ^^
+    );
+
+    try equal( // 2 range, 0 len, pad 1
+        \\ 
+        \\ ^
+        \\ 
+        \\ ^
+    ,
+        indicesSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 0, .pad = 1 }, .{}),
+        //                     ^^
+    );
+
+    try equal( // 2 range, 1 len, pad 1
+        \\ 4
+        \\ ^
+        \\ 5
+        \\ ^
+    ,
+        indicesSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 1, .pad = 1 }, .{}),
+        //                     ^^
+    );
+
+    try equal( // 2 range, 1 len, pad 2
+        \\ 345
+        \\  ^
+        \\ 456
+        \\  ^
+    ,
+        indicesSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 1, .pad = 2 }, .{}),
+        //                     ^^
+    );
+
+    try equal( // 3 range, 2 len, pad 2
+        \\ 345
+        \\  ^
+        \\ 567
+        \\  ^
+    ,
+        indicesSplitRange("0123456789", .{ .start = 4, .end = 6, .len = 2, .pad = 2 }, .{}),
+        //                   --^~^--
+    );
+
+    try equal( // 3 range, 3 len, pad 2
+        \\ 2345678
+        \\   ^~^
+    ,
+        indicesSplitRange("0123456789", .{ .start = 4, .end = 6, .len = 3, .pad = 2 }, .{}),
+        //                   --^~^--
+    );
 }
 
 /// Returns a `[start..end]` slice segment with indices normalized to not

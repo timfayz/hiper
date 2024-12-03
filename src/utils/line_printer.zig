@@ -132,7 +132,7 @@ fn printLine(
         },
         .range => |m| {
             const range_len = index_end.? - index_start;
-            scope = slice.indicesAroundRange(info.currLine(), info.index_pos, info.index_pos + range_len, m.pad);
+            scope = slice.indicesRange(info.currLine(), info.index_pos, info.index_pos + range_len, m.pad);
         },
     }
 
