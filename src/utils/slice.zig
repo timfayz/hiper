@@ -7,13 +7,13 @@
 //! - span()
 //! - indexOfStart()
 //! - indexOfEnd()
-//! - Indices
 //! - indices()
-//! - indicesStart()
-//! - indicesEnd()
-//! - indicesAround()
-//! - indicesRange()
-//! - indicesSplitRange()
+//! - View
+//! - viewStart()
+//! - viewEnd()
+//! - viewAround()
+//! - viewRange()
+//! - viewSplitRange()
 //! - segment()
 //! - isSegment()
 //! - MoveDir
@@ -179,17 +179,45 @@ test indexOfEnd {
     try equal(10, indexOfEnd(input, input[3..10]));
 }
 
+/// Retrieves the starting and ending positions of a segment in slice. Slices
+/// are assumed to share the same source; use `isSegment` to verify this before
+/// calling.
+pub fn indices(slice: anytype, seg: anytype) struct { usize, usize } {
+    return .{ indexOfStart(slice, seg), indexOfEnd(slice, seg) };
+}
+
 /// Indices of a retrieved segment.
-pub const Indices = struct {
+pub const View = struct {
     /// The start index of the segment.
     start: usize,
     /// The end index of the segment.
     end: usize,
 
-    pub usingnamespace Shared(Indices);
+    /// Options for view primitives.
+    pub const Options = struct {
+        /// Shifts even-length ranges by one index to the right.
+        even_rshift: bool = true,
+        /// See `TruncMode` for details.
+        trunc_mode: TruncMode = .hard_flex,
+        /// Extra shift to the precalculated view span.
+        shift: ?union(enum) { right: usize, left: usize } = null,
+    };
+
+    /// Controls how view primitives truncate a slice segment.
+    /// See the view primitive tests for detailed examples of each mode.
+    pub const TruncMode = enum {
+        /// Truncates segment directly by the slice bounds.
+        hard,
+        /// Truncates segment by the slice bounds but compensates for the truncated
+        /// length by extending the segment left or right as much as possible.
+        hard_flex,
+        /// Truncated segment is of constant length that always fits within slice
+        /// bounds, even with out-of-bounds indices.
+        soft,
+    };
 
     /// Indices of a retrieved segment around an index.
-    pub const Around = struct {
+    pub const Index = struct {
         /// The start index of the segment.
         start: usize,
         /// The end index of the segment.
@@ -197,33 +225,13 @@ pub const Indices = struct {
         /// Position of the original `index` relative to the segment.
         index_pos: usize,
 
-        pub usingnamespace Shared(Around);
+        pub usingnamespace Shared(@This());
+
         /// Checks if the relative index position exceeds the actual segment
         /// boundaries.
-        pub fn indexPosExceeds(self: *const Around) bool {
+        pub fn indexPosExceeds(self: *const @This()) bool {
             return self.index_pos > self.end;
         }
-
-        /// Options for `indicesAround`.
-        pub const Options = struct {
-            /// Shifts even-length ranges by one index to the right.
-            even_rshift: bool = true,
-            /// See `Segment.Around.Mode` for details.
-            trunc_mode: Mode = .hard_flex,
-        };
-
-        /// Controls how `indicesAround` truncates a slice segment.
-        /// See `indicesAround` tests for detailed examples of each mode.
-        pub const Mode = enum {
-            /// Truncates segment directly by the slice bounds.
-            hard,
-            /// Truncates segment by the slice bounds but compensates for the truncated
-            /// length by extending the segment left or right as much as possible.
-            hard_flex,
-            /// Truncated segment is of constant length that always fits within slice
-            /// bounds, even with out-of-bounds indices.
-            soft,
-        };
     };
 
     /// Indices of a retrieved segment within a range.
@@ -237,21 +245,22 @@ pub const Indices = struct {
         /// Position of the original `end` index relative to the segment.
         end_pos: usize,
 
-        pub usingnamespace Shared(Range);
+        pub usingnamespace Shared(@This());
+
         /// Returns the length of the requested segment range.
-        pub fn rangeLen(self: *const Range) usize {
+        pub fn rangeLen(self: *const @This()) usize {
             return self.end_pos - self.start_pos +| 1;
         }
 
         /// Checks if the relative range start position exceeds the actual segment
         /// boundaries.
-        pub fn startPosExceeds(self: *const Range) bool {
+        pub fn startPosExceeds(self: *const @This()) bool {
             return self.start_pos > self.len();
         }
 
         /// Checks if the relative range end position exceeds the actual segment
         /// boundaries.
-        pub fn endPosExceeds(self: *const Range) bool {
+        pub fn endPosExceeds(self: *const @This()) bool {
             return self.end_pos > self.len();
         }
     };
@@ -260,11 +269,11 @@ pub const Indices = struct {
     /// range or split into two.
     pub const SplitRange = union(enum) {
         /// Retrieved indices of a segment contained within the range.
-        range: Indices.Range,
+        range: View.Range,
         /// Retrieved indices of a range split into two segments.
-        split: [2]Indices.Around,
+        split: [2]View.Index,
 
-        /// Options for `indicesSplitRange`.
+        /// Options for `viewSplitRange`.
         pub const Options = struct {
             /// If splitting is necessary, each segment's length will be `len / 2`.
             split_len_half: bool = true,
@@ -276,6 +285,8 @@ pub const Indices = struct {
             even_rshift: bool = true,
         };
     };
+
+    pub usingnamespace Shared(@This());
 
     fn Shared(Self: type) type {
         return struct {
@@ -290,60 +301,100 @@ pub const Indices = struct {
             }
         };
     }
+
+    /// Helper to calculate correct start and end indices for a view mode.
+    const Dist = struct {
+        left: usize,
+        right: usize,
+
+        pub fn shiftLeft(self: *@This(), amt: usize) void {
+            self.left +|= amt;
+            self.right -|= amt;
+        }
+
+        pub fn shiftRight(self: *@This(), amt: usize) void {
+            self.left -|= amt;
+            self.right +|= amt;
+        }
+
+        pub fn len(self: *const @This()) usize {
+            return self.left + self.right;
+        }
+
+        pub fn retrieve(
+            self: *const @This(),
+            slice: anytype,
+            index: usize,
+            trunc_mode: View.TruncMode,
+        ) struct { usize, usize } {
+            const dist = self.len();
+            const start = @min(
+                index -| self.left,
+                switch (trunc_mode) {
+                    .hard => slice.len,
+                    .hard_flex => b: {
+                        const last_idx = slice.len -| 1;
+                        const overrun = index -| last_idx;
+                        break :b slice.len -| (dist -| overrun);
+                    },
+                    .soft => slice.len -| dist,
+                },
+            );
+            const end = @min(
+                slice.len,
+                switch (trunc_mode) {
+                    .hard => index +| self.right,
+                    .hard_flex, .soft => start +| dist,
+                },
+            );
+            return .{ start, end };
+        }
+    };
 };
 
-/// Retrieves the starting and ending positions of a segment in slice. Slices
-/// are assumed to share the same source; use `isSegment` to verify this before
-/// calling.
-pub fn indices(slice: anytype, seg: anytype) Indices {
-    return .{ .start = indexOfStart(slice, seg), .end = indexOfEnd(slice, seg) };
-}
-
-/// Returns start slice indices of length `len`. Indices are bounded by slice
-/// length.
-pub fn indicesStart(slice: anytype, len: usize) Indices {
+/// Returns a slice beginning of the length `len`.
+/// Indices are bounded by slice length.
+pub fn viewStart(slice: anytype, len: usize) View {
     return .{ .start = 0, .end = @min(slice.len, len) };
 }
 
-test indicesStart {
+test viewStart {
     const equal = std.testing.expectEqualDeep;
 
-    try equal(Indices{ .start = 0, .end = 0 }, indicesStart("", 0)); // ""
-    try equal(Indices{ .start = 0, .end = 0 }, indicesStart("012", 0)); // ""
-    try equal(Indices{ .start = 0, .end = 1 }, indicesStart("012", 1)); // "0"
-    try equal(Indices{ .start = 0, .end = 2 }, indicesStart("012", 2)); // "01"
-    try equal(Indices{ .start = 0, .end = 3 }, indicesStart("012", 3)); // "012"
-    try equal(Indices{ .start = 0, .end = 3 }, indicesStart("012", 4)); // "012"
+    try equal(View{ .start = 0, .end = 0 }, viewStart("", 0)); // ""
+    try equal(View{ .start = 0, .end = 0 }, viewStart("012", 0)); // ""
+    try equal(View{ .start = 0, .end = 1 }, viewStart("012", 1)); // "0"
+    try equal(View{ .start = 0, .end = 2 }, viewStart("012", 2)); // "01"
+    try equal(View{ .start = 0, .end = 3 }, viewStart("012", 3)); // "012"
+    try equal(View{ .start = 0, .end = 3 }, viewStart("012", 4)); // "012"
 }
 
-/// Returns end slice indices of length `len`. Indices are bounded by slice
-/// length.
-pub fn indicesEnd(slice: anytype, len: usize) Indices {
+/// Returns a slice ending of the length `len`.
+/// Indices are bounded by slice length.
+pub fn viewEnd(slice: anytype, len: usize) View {
     return .{ .start = slice.len -| len, .end = slice.len };
 }
 
-test indicesEnd {
+test viewEnd {
     const equal = std.testing.expectEqualDeep;
 
-    try equal(Indices{ .start = 0, .end = 0 }, indicesEnd("", 0)); // ""
-    try equal(Indices{ .start = 3, .end = 3 }, indicesEnd("012", 0)); // ""
-    try equal(Indices{ .start = 2, .end = 3 }, indicesEnd("012", 1)); // "2"
-    try equal(Indices{ .start = 1, .end = 3 }, indicesEnd("012", 2)); // "12"
-    try equal(Indices{ .start = 0, .end = 3 }, indicesEnd("012", 3)); // "012"
-    try equal(Indices{ .start = 0, .end = 3 }, indicesEnd("012", 4)); // "012"
+    try equal(View{ .start = 0, .end = 0 }, viewEnd("", 0)); // ""
+    try equal(View{ .start = 3, .end = 3 }, viewEnd("012", 0)); // ""
+    try equal(View{ .start = 2, .end = 3 }, viewEnd("012", 1)); // "2"
+    try equal(View{ .start = 1, .end = 3 }, viewEnd("012", 2)); // "12"
+    try equal(View{ .start = 0, .end = 3 }, viewEnd("012", 3)); // "012"
+    try equal(View{ .start = 0, .end = 3 }, viewEnd("012", 4)); // "012"
 }
 
-/// Returns the start and end indices of a slice segment of length `len`
-/// centered around the index, along with the relative position of the original
-/// index within the segment. The returned index position can be out of segment
-/// bounds if the original index was out of slice. See `SegAroundOptions` for
-/// additional options.
-pub fn indicesAround(
+/// Returns a slice segment of the length `len` centered around the index.
+/// Returned index position can be out of segment bounds if the original index
+/// was out of slice.
+pub fn viewAround(
     slice: anytype,
     index: usize,
     len: usize,
-    comptime opt: Indices.Around.Options,
-) Indices.Around {
+    comptime opt: View.Options,
+) View.Index {
     if (slice.len == 0)
         return .{ .start = 0, .end = 0, .index_pos = index };
 
@@ -352,160 +403,138 @@ pub fn indicesAround(
         return .{ .start = i, .end = i, .index_pos = index -| i };
     }
 
-    const dist = len / 2;
-    const dist_to_start, const dist_to_end = blk: {
-        if (len & 1 == 0) { // even
-            break :blk if (opt.even_rshift) .{ dist -| 1, dist +| 1 } else .{ dist, dist };
-        } else { // odd
-            // +1 to compensate lost item during integer division (ie. 3 / 2 = 1)
-            break :blk .{ dist, dist +| 1 };
-        }
-    };
+    var dist = View.Dist{ .left = len / 2, .right = len / 2 };
+    if (len & 1 == 0) {
+        if (opt.even_rshift) dist.shiftRight(1);
+    } else {
+        // compensate lost item during integer division (ie. 3 / 2 = 1)
+        dist.right +|= 1;
+    }
+    const start, const end = dist.retrieve(slice, index, opt.trunc_mode);
 
-    const start = @min(
-        index -| dist_to_start,
-        switch (opt.trunc_mode) {
-            .hard => slice.len,
-            .hard_flex => b: {
-                const last_idx = slice.len -| 1;
-                const overrun = index -| last_idx;
-                break :b slice.len -| (len -| overrun);
-            },
-            .soft => slice.len -| len,
-        },
-    );
-    const end = @min(
-        slice.len,
-        switch (opt.trunc_mode) {
-            .hard => index +| dist_to_end,
-            .hard_flex, .soft => start +| len,
-        },
-    );
     return .{ .start = start, .end = end, .index_pos = index - start };
 }
 
-test indicesAround {
+test viewAround {
     const equal = std.testing.expectEqualDeep;
-    const Around = Indices.Around;
 
     // any trunc mode
     // --------------
     // zero length
-    try equal(Around{ .start = 0, .end = 0, .index_pos = 10 }, indicesAround("", 10, 100, .{})); // ""
-    try equal(Around{ .start = 0, .end = 0, .index_pos = 10 }, indicesAround("", 10, 0, .{})); // ""
-    try equal(Around{ .start = 0, .end = 0, .index_pos = 0 }, indicesAround("012", 0, 0, .{})); // ""
-    try equal(Around{ .start = 3, .end = 3, .index_pos = 0 }, indicesAround("012", 3, 0, .{})); // ""
-    try equal(Around{ .start = 3, .end = 3, .index_pos = 2 }, indicesAround("012", 5, 0, .{})); // ""
+    try equal(View.Index{ .start = 0, .end = 0, .index_pos = 10 }, viewAround("", 10, 100, .{})); // ""
+    try equal(View.Index{ .start = 0, .end = 0, .index_pos = 10 }, viewAround("", 10, 0, .{})); // ""
+    try equal(View.Index{ .start = 0, .end = 0, .index_pos = 0 }, viewAround("012", 0, 0, .{})); // ""
+    try equal(View.Index{ .start = 3, .end = 3, .index_pos = 0 }, viewAround("012", 3, 0, .{})); // ""
+    try equal(View.Index{ .start = 3, .end = 3, .index_pos = 2 }, viewAround("012", 5, 0, .{})); // ""
 
     // .soft mode
     // --------------
     // max length
-    try equal(Around{ .start = 0, .end = 4, .index_pos = 3 }, indicesAround("0123", 3, 100, .{ .trunc_mode = .soft })); // "0123"
+    try equal(View.Index{ .start = 0, .end = 4, .index_pos = 3 }, viewAround("0123", 3, 100, .{ .trunc_mode = .soft })); // "0123"
 
     // odd length
-    try equal(Around{ .start = 0, .end = 4, .index_pos = 0 }, indicesAround("0123", 0, 100, .{ .trunc_mode = .soft })); // "0123"
-    try equal(Around{ .start = 0, .end = 3, .index_pos = 0 }, indicesAround("0123", 0, 3, .{ .trunc_mode = .soft })); // "012"
-    try equal(Around{ .start = 0, .end = 3, .index_pos = 1 }, indicesAround("0123", 1, 3, .{ .trunc_mode = .soft })); // "012"
-    try equal(Around{ .start = 1, .end = 4, .index_pos = 1 }, indicesAround("0123", 2, 3, .{ .trunc_mode = .soft })); // "123"
-    try equal(Around{ .start = 1, .end = 4, .index_pos = 2 }, indicesAround("0123", 3, 3, .{ .trunc_mode = .soft })); // "123"
-    try equal(Around{ .start = 1, .end = 4, .index_pos = 3 }, indicesAround("0123", 4, 3, .{ .trunc_mode = .soft })); // "123"
-    try equal(Around{ .start = 1, .end = 4, .index_pos = 4 }, indicesAround("0123", 5, 3, .{ .trunc_mode = .soft })); // "123"
+    try equal(View.Index{ .start = 0, .end = 4, .index_pos = 0 }, viewAround("0123", 0, 100, .{ .trunc_mode = .soft })); // "0123"
+    try equal(View.Index{ .start = 0, .end = 3, .index_pos = 0 }, viewAround("0123", 0, 3, .{ .trunc_mode = .soft })); // "012"
+    try equal(View.Index{ .start = 0, .end = 3, .index_pos = 1 }, viewAround("0123", 1, 3, .{ .trunc_mode = .soft })); // "012"
+    try equal(View.Index{ .start = 1, .end = 4, .index_pos = 1 }, viewAround("0123", 2, 3, .{ .trunc_mode = .soft })); // "123"
+    try equal(View.Index{ .start = 1, .end = 4, .index_pos = 2 }, viewAround("0123", 3, 3, .{ .trunc_mode = .soft })); // "123"
+    try equal(View.Index{ .start = 1, .end = 4, .index_pos = 3 }, viewAround("0123", 4, 3, .{ .trunc_mode = .soft })); // "123"
+    try equal(View.Index{ .start = 1, .end = 4, .index_pos = 4 }, viewAround("0123", 5, 3, .{ .trunc_mode = .soft })); // "123"
 
     // even length (right shifted)
-    try equal(Around{ .start = 0, .end = 2, .index_pos = 0 }, indicesAround("0123", 0, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "01"
-    try equal(Around{ .start = 1, .end = 3, .index_pos = 0 }, indicesAround("0123", 1, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "12"
-    try equal(Around{ .start = 2, .end = 4, .index_pos = 0 }, indicesAround("0123", 2, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
-    try equal(Around{ .start = 2, .end = 4, .index_pos = 1 }, indicesAround("0123", 3, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
-    try equal(Around{ .start = 2, .end = 4, .index_pos = 2 }, indicesAround("0123", 4, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
-    try equal(Around{ .start = 2, .end = 4, .index_pos = 3 }, indicesAround("0123", 5, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
+    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 0 }, viewAround("0123", 0, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "01"
+    try equal(View.Index{ .start = 1, .end = 3, .index_pos = 0 }, viewAround("0123", 1, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "12"
+    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 0 }, viewAround("0123", 2, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
+    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 1 }, viewAround("0123", 3, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
+    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 2 }, viewAround("0123", 4, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
+    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 3 }, viewAround("0123", 5, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
 
     // even length (left shifted)
-    try equal(Around{ .start = 0, .end = 2, .index_pos = 0 }, indicesAround("0123", 0, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "01"
-    try equal(Around{ .start = 0, .end = 2, .index_pos = 1 }, indicesAround("0123", 1, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "01"
-    try equal(Around{ .start = 1, .end = 3, .index_pos = 1 }, indicesAround("0123", 2, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "12"
-    try equal(Around{ .start = 2, .end = 4, .index_pos = 1 }, indicesAround("0123", 3, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "23"
-    try equal(Around{ .start = 2, .end = 4, .index_pos = 2 }, indicesAround("0123", 4, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "23"
-    try equal(Around{ .start = 2, .end = 4, .index_pos = 3 }, indicesAround("0123", 5, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "23"
+    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 0 }, viewAround("0123", 0, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "01"
+    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 1 }, viewAround("0123", 1, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "01"
+    try equal(View.Index{ .start = 1, .end = 3, .index_pos = 1 }, viewAround("0123", 2, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "12"
+    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 1 }, viewAround("0123", 3, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "23"
+    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 2 }, viewAround("0123", 4, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "23"
+    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 3 }, viewAround("0123", 5, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "23"
 
     // .hard mode
     // --------------
     // max length
-    try equal(Around{ .start = 0, .end = 4, .index_pos = 3 }, indicesAround("0123", 3, 100, .{ .trunc_mode = .hard })); // "0123"
+    try equal(View.Index{ .start = 0, .end = 4, .index_pos = 3 }, viewAround("0123", 3, 100, .{ .trunc_mode = .hard })); // "0123"
 
     // odd length
-    try equal(Around{ .start = 0, .end = 2, .index_pos = 0 }, indicesAround("0123", 0, 3, .{ .trunc_mode = .hard })); // "01"
-    try equal(Around{ .start = 0, .end = 3, .index_pos = 1 }, indicesAround("0123", 1, 3, .{ .trunc_mode = .hard })); // "012"
-    try equal(Around{ .start = 1, .end = 4, .index_pos = 1 }, indicesAround("0123", 2, 3, .{ .trunc_mode = .hard })); // "123"
-    try equal(Around{ .start = 2, .end = 4, .index_pos = 1 }, indicesAround("0123", 3, 3, .{ .trunc_mode = .hard })); // "23"
-    try equal(Around{ .start = 3, .end = 4, .index_pos = 1 }, indicesAround("0123", 4, 3, .{ .trunc_mode = .hard })); // "3"
-    try equal(Around{ .start = 4, .end = 4, .index_pos = 1 }, indicesAround("0123", 5, 3, .{ .trunc_mode = .hard })); // ""
-    try equal(Around{ .start = 4, .end = 4, .index_pos = 2 }, indicesAround("0123", 6, 3, .{ .trunc_mode = .hard })); // ""
+    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 0 }, viewAround("0123", 0, 3, .{ .trunc_mode = .hard })); // "01"
+    try equal(View.Index{ .start = 0, .end = 3, .index_pos = 1 }, viewAround("0123", 1, 3, .{ .trunc_mode = .hard })); // "012"
+    try equal(View.Index{ .start = 1, .end = 4, .index_pos = 1 }, viewAround("0123", 2, 3, .{ .trunc_mode = .hard })); // "123"
+    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 1 }, viewAround("0123", 3, 3, .{ .trunc_mode = .hard })); // "23"
+    try equal(View.Index{ .start = 3, .end = 4, .index_pos = 1 }, viewAround("0123", 4, 3, .{ .trunc_mode = .hard })); // "3"
+    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 1 }, viewAround("0123", 5, 3, .{ .trunc_mode = .hard })); // ""
+    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 2 }, viewAround("0123", 6, 3, .{ .trunc_mode = .hard })); // ""
 
     // even length (right shifted)
-    try equal(Around{ .start = 0, .end = 2, .index_pos = 0 }, indicesAround("0123", 0, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "01"
-    try equal(Around{ .start = 1, .end = 3, .index_pos = 0 }, indicesAround("0123", 1, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "12"
-    try equal(Around{ .start = 2, .end = 4, .index_pos = 0 }, indicesAround("0123", 2, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "23"
-    try equal(Around{ .start = 3, .end = 4, .index_pos = 0 }, indicesAround("0123", 3, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "3"
-    try equal(Around{ .start = 4, .end = 4, .index_pos = 0 }, indicesAround("0123", 4, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // ""
-    try equal(Around{ .start = 4, .end = 4, .index_pos = 1 }, indicesAround("0123", 5, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // ""
-    try equal(Around{ .start = 4, .end = 4, .index_pos = 2 }, indicesAround("0123", 6, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // ""
+    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 0 }, viewAround("0123", 0, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "01"
+    try equal(View.Index{ .start = 1, .end = 3, .index_pos = 0 }, viewAround("0123", 1, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "12"
+    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 0 }, viewAround("0123", 2, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "23"
+    try equal(View.Index{ .start = 3, .end = 4, .index_pos = 0 }, viewAround("0123", 3, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "3"
+    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 0 }, viewAround("0123", 4, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // ""
+    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 1 }, viewAround("0123", 5, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // ""
+    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 2 }, viewAround("0123", 6, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // ""
 
     // even length (left shifted)
-    try equal(Around{ .start = 0, .end = 1, .index_pos = 0 }, indicesAround("0123", 0, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "0"
-    try equal(Around{ .start = 0, .end = 2, .index_pos = 1 }, indicesAround("0123", 1, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "01"
-    try equal(Around{ .start = 1, .end = 3, .index_pos = 1 }, indicesAround("0123", 2, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "12"
-    try equal(Around{ .start = 2, .end = 4, .index_pos = 1 }, indicesAround("0123", 3, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "23"
-    try equal(Around{ .start = 3, .end = 4, .index_pos = 1 }, indicesAround("0123", 4, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "3"
-    try equal(Around{ .start = 4, .end = 4, .index_pos = 1 }, indicesAround("0123", 5, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // ""
-    try equal(Around{ .start = 4, .end = 4, .index_pos = 2 }, indicesAround("0123", 6, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // ""
+    try equal(View.Index{ .start = 0, .end = 1, .index_pos = 0 }, viewAround("0123", 0, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "0"
+    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 1 }, viewAround("0123", 1, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "01"
+    try equal(View.Index{ .start = 1, .end = 3, .index_pos = 1 }, viewAround("0123", 2, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "12"
+    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 1 }, viewAround("0123", 3, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "23"
+    try equal(View.Index{ .start = 3, .end = 4, .index_pos = 1 }, viewAround("0123", 4, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "3"
+    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 1 }, viewAround("0123", 5, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // ""
+    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 2 }, viewAround("0123", 6, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // ""
 
     // .hard_flex mode
     // --------------
     // max length
-    try equal(Around{ .start = 0, .end = 4, .index_pos = 3 }, indicesAround("0123", 3, 100, .{ .trunc_mode = .hard_flex })); // "0123"
+    try equal(View.Index{ .start = 0, .end = 4, .index_pos = 3 }, viewAround("0123", 3, 100, .{ .trunc_mode = .hard_flex })); // "0123"
 
     // odd length
-    try equal(Around{ .start = 0, .end = 3, .index_pos = 0 }, indicesAround("0123", 0, 3, .{ .trunc_mode = .hard_flex })); // "012"
-    try equal(Around{ .start = 0, .end = 3, .index_pos = 1 }, indicesAround("0123", 1, 3, .{ .trunc_mode = .hard_flex })); // "012"
-    try equal(Around{ .start = 1, .end = 4, .index_pos = 1 }, indicesAround("0123", 2, 3, .{ .trunc_mode = .hard_flex })); // "123"
-    try equal(Around{ .start = 1, .end = 4, .index_pos = 2 }, indicesAround("0123", 3, 3, .{ .trunc_mode = .hard_flex })); // "123"
-    try equal(Around{ .start = 2, .end = 4, .index_pos = 2 }, indicesAround("0123", 4, 3, .{ .trunc_mode = .hard_flex })); // "23"
-    try equal(Around{ .start = 3, .end = 4, .index_pos = 2 }, indicesAround("0123", 5, 3, .{ .trunc_mode = .hard_flex })); // "3"
-    try equal(Around{ .start = 4, .end = 4, .index_pos = 2 }, indicesAround("0123", 6, 3, .{ .trunc_mode = .hard_flex })); // ""
+    try equal(View.Index{ .start = 0, .end = 3, .index_pos = 0 }, viewAround("0123", 0, 3, .{ .trunc_mode = .hard_flex })); // "012"
+    try equal(View.Index{ .start = 0, .end = 3, .index_pos = 1 }, viewAround("0123", 1, 3, .{ .trunc_mode = .hard_flex })); // "012"
+    try equal(View.Index{ .start = 1, .end = 4, .index_pos = 1 }, viewAround("0123", 2, 3, .{ .trunc_mode = .hard_flex })); // "123"
+    try equal(View.Index{ .start = 1, .end = 4, .index_pos = 2 }, viewAround("0123", 3, 3, .{ .trunc_mode = .hard_flex })); // "123"
+    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 2 }, viewAround("0123", 4, 3, .{ .trunc_mode = .hard_flex })); // "23"
+    try equal(View.Index{ .start = 3, .end = 4, .index_pos = 2 }, viewAround("0123", 5, 3, .{ .trunc_mode = .hard_flex })); // "3"
+    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 2 }, viewAround("0123", 6, 3, .{ .trunc_mode = .hard_flex })); // ""
 
     // even length (right shifted)
-    try equal(Around{ .start = 0, .end = 2, .index_pos = 0 }, indicesAround("0123", 0, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "01"
-    try equal(Around{ .start = 1, .end = 3, .index_pos = 0 }, indicesAround("0123", 1, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "12"
-    try equal(Around{ .start = 2, .end = 4, .index_pos = 0 }, indicesAround("0123", 2, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "23"
-    try equal(Around{ .start = 2, .end = 4, .index_pos = 1 }, indicesAround("0123", 3, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "23"
-    try equal(Around{ .start = 3, .end = 4, .index_pos = 1 }, indicesAround("0123", 4, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "3"
-    try equal(Around{ .start = 4, .end = 4, .index_pos = 1 }, indicesAround("0123", 5, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // ""
-    try equal(Around{ .start = 4, .end = 4, .index_pos = 2 }, indicesAround("0123", 6, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // ""
+    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 0 }, viewAround("0123", 0, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "01"
+    try equal(View.Index{ .start = 1, .end = 3, .index_pos = 0 }, viewAround("0123", 1, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "12"
+    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 0 }, viewAround("0123", 2, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "23"
+    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 1 }, viewAround("0123", 3, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "23"
+    try equal(View.Index{ .start = 3, .end = 4, .index_pos = 1 }, viewAround("0123", 4, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "3"
+    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 1 }, viewAround("0123", 5, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // ""
+    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 2 }, viewAround("0123", 6, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // ""
 
     // even length (left shifted)
-    try equal(Around{ .start = 0, .end = 2, .index_pos = 0 }, indicesAround("0123", 0, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "01"
-    try equal(Around{ .start = 0, .end = 2, .index_pos = 1 }, indicesAround("0123", 1, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "01"
-    try equal(Around{ .start = 1, .end = 3, .index_pos = 1 }, indicesAround("0123", 2, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "12"
-    try equal(Around{ .start = 2, .end = 4, .index_pos = 1 }, indicesAround("0123", 3, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "23"
-    try equal(Around{ .start = 3, .end = 4, .index_pos = 1 }, indicesAround("0123", 4, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "3"
-    try equal(Around{ .start = 4, .end = 4, .index_pos = 1 }, indicesAround("0123", 5, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // ""
-    try equal(Around{ .start = 4, .end = 4, .index_pos = 2 }, indicesAround("0123", 6, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // ""
+    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 0 }, viewAround("0123", 0, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "01"
+    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 1 }, viewAround("0123", 1, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "01"
+    try equal(View.Index{ .start = 1, .end = 3, .index_pos = 1 }, viewAround("0123", 2, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "12"
+    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 1 }, viewAround("0123", 3, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "23"
+    try equal(View.Index{ .start = 3, .end = 4, .index_pos = 1 }, viewAround("0123", 4, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "3"
+    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 1 }, viewAround("0123", 5, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // ""
+    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 2 }, viewAround("0123", 6, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // ""
 }
 
-/// Returns indices of a slice segment within the `start`:`end` range, extended
-/// by `pad` elements around each side, along with the relative positions of the
-/// original `start` and `end` indices within the segment. The `end` index is
-/// inclusive. The returned positions (`*_pos`) may fall outside the segment
-/// if the original `start` or `end` indices were out of slice bounds.
-pub fn indicesRange(
+/// Returns a slice segment within the `start`-`end` range, extended by `pad`
+/// around each side. The `end` index is inclusive. The returned positions
+/// (`*_pos`) may fall outside the segment bounds if the original `start`
+/// and `end` indices were out of slice.
+pub fn viewRange(
     slice: anytype,
     start: usize,
     end: usize,
     pad: usize,
-) Indices.Range {
+) View.Range {
     if (start == end) {
         const range = if (pad == 0) 1 else (pad *| 2 +| 1); // +1 to include the cursor itself
-        const s = indicesAround(slice, start, range, .{ .trunc_mode = .hard_flex });
+        const s = viewAround(slice, start, range, .{ .trunc_mode = .hard_flex });
         return .{ .start = s.start, .end = s.end, .start_pos = s.index_pos, .end_pos = s.index_pos };
     }
     // ensure start <= end
@@ -520,8 +549,8 @@ pub fn indicesRange(
     };
 }
 
-test indicesRange {
-    const Range = Indices.Range;
+test viewRange {
+    const Range = View.Range;
     const equal = struct {
         pub fn run(
             comptime expect: Range,
@@ -536,72 +565,74 @@ test indicesRange {
     }.run;
 
     // empty input ranges
-    try equal(Range{ .start = 0, .end = 0, .start_pos = 0, .end_pos = 0 }, .{ .range = 1, .s_out = false, .e_out = false }, indicesRange("", 0, 0, 0));
-    try equal(Range{ .start = 0, .end = 0, .start_pos = 5, .end_pos = 20 }, .{ .range = 16, .s_out = true, .e_out = true }, indicesRange("", 5, 20, 4));
+    try equal(Range{ .start = 0, .end = 0, .start_pos = 0, .end_pos = 0 }, .{ .range = 1, .s_out = false, .e_out = false }, //
+        viewRange("", 0, 0, 0));
+    try equal(Range{ .start = 0, .end = 0, .start_pos = 5, .end_pos = 20 }, .{ .range = 16, .s_out = true, .e_out = true }, //
+        viewRange("", 5, 20, 4));
 
     // out-of-bounds ranges
     try equal(Range{ .start = 5, .end = 10, .start_pos = 0, .end_pos = 15 }, .{ .range = 16, .s_out = false, .e_out = true }, //
-        indicesRange("0123456789", 5, 20, 0)); // "56789"
-    //                     ^~~~~~~..
+        viewRange("0123456789", 5, 20, 0)); // "56789"
+    //                  ^~~~~~~..
     try equal(Range{ .start = 1, .end = 10, .start_pos = 4, .end_pos = 19 }, .{ .range = 16, .s_out = false, .e_out = true }, //
-        indicesRange("0123456789", 5, 20, 4)); // "123456789"
-    //                 ----^~~~~~~..
+        viewRange("0123456789", 5, 20, 4)); // "123456789"
+    //              ----^~~~~~~..
     try equal(Range{ .start = 10, .end = 10, .start_pos = 0, .end_pos = 1 }, .{ .range = 2, .s_out = false, .e_out = true }, //
-        indicesRange("0123456789", 10, 11, 0)); // ""
-    //                          ^^
+        viewRange("0123456789", 10, 11, 0)); // ""
+    //                       ^^
     try equal(Range{ .start = 10, .end = 10, .start_pos = 1, .end_pos = 2 }, .{ .range = 2, .s_out = true, .e_out = true }, //
-        indicesRange("0123456789", 11, 12, 0)); // ""
-    //                           ^^
+        viewRange("0123456789", 11, 12, 0)); // ""
+    //                        ^^
     try equal(Range{ .start = 10, .end = 10, .start_pos = 2, .end_pos = 10 }, .{ .range = 9, .s_out = true, .e_out = true }, //
-        indicesRange("0123456789", 12, 20, 0)); // ""
-    //                            ^~~~..
+        viewRange("0123456789", 12, 20, 0)); // ""
+    //                         ^~~~..
     try equal(Range{ .start = 8, .end = 10, .start_pos = 4, .end_pos = 12 }, .{ .range = 9, .s_out = true, .e_out = true }, //
-        indicesRange("0123456789", 12, 20, 4)); // "89"
-    //                        ----^~~~..
+        viewRange("0123456789", 12, 20, 4)); // "89"
+    //                     ----^~~~..
 
     // single-item ranges (start == end)
     try equal(Range{ .start = 4, .end = 5, .start_pos = 0, .end_pos = 0 }, .{ .range = 1, .s_out = false, .e_out = false }, //
-        indicesRange("0123456789", 4, 4, 0)); // "4"
-    //                    ^
+        viewRange("0123456789", 4, 4, 0)); // "4"
+    //                 ^
     try equal(Range{ .start = 3, .end = 6, .start_pos = 1, .end_pos = 1 }, .{ .range = 1, .s_out = false, .e_out = false }, //
-        indicesRange("0123456789", 4, 4, 1)); // "345"
-    //                   -^-
+        viewRange("0123456789", 4, 4, 1)); // "345"
+    //                -^-
     try equal(Range{ .start = 2, .end = 7, .start_pos = 2, .end_pos = 2 }, .{ .range = 1, .s_out = false, .e_out = false }, //
-        indicesRange("0123456789", 4, 4, 2)); // "23456"
-    //                  --^--
+        viewRange("0123456789", 4, 4, 2)); // "23456"
+    //               --^--
 
     // self ranges
     try equal(Range{ .start = 4, .end = 6, .start_pos = 0, .end_pos = 1 }, .{ .range = 2, .s_out = false, .e_out = false }, //
-        indicesRange("0123456789", 4, 5, 0)); // "45"
-    //                    ^^
+        viewRange("0123456789", 4, 5, 0)); // "45"
+    //                 ^^
     try equal(Range{ .start = 3, .end = 7, .start_pos = 1, .end_pos = 2 }, .{ .range = 2, .s_out = false, .e_out = false }, //
-        indicesRange("0123456789", 4, 5, 1)); // "3456"
-    //                   -^^-
+        viewRange("0123456789", 4, 5, 1)); // "3456"
+    //                -^^-
     try equal(Range{ .start = 2, .end = 8, .start_pos = 2, .end_pos = 3 }, .{ .range = 2, .s_out = false, .e_out = false }, //
-        indicesRange("0123456789", 4, 5, 2)); // "234567"
-    //                  --^^--
+        viewRange("0123456789", 4, 5, 2)); // "234567"
+    //               --^^--
     try equal(Range{ .start = 3, .end = 6, .start_pos = 0, .end_pos = 2 }, .{ .range = 3, .s_out = false, .e_out = false }, //
-        indicesRange("0123456789", 3, 5, 0)); // "345"
-    //                   ^~^
+        viewRange("0123456789", 3, 5, 0)); // "345"
+    //                ^~^
     try equal(Range{ .start = 2, .end = 7, .start_pos = 1, .end_pos = 3 }, .{ .range = 3, .s_out = false, .e_out = false }, //
-        indicesRange("0123456789", 3, 5, 1)); // "23456"
-    //                  -^~^-
+        viewRange("0123456789", 3, 5, 1)); // "23456"
+    //               -^~^-
     try equal(Range{ .start = 1, .end = 8, .start_pos = 2, .end_pos = 4 }, .{ .range = 3, .s_out = false, .e_out = false }, //
-        indicesRange("0123456789", 3, 5, 2)); // "1234567"
-    //                 --^~^--
+        viewRange("0123456789", 3, 5, 2)); // "1234567"
+    //              --^~^--
 
     // left out-of-bounds pad
     try equal(Range{ .start = 0, .end = 6, .start_pos = 0, .end_pos = 3 }, .{ .range = 4, .s_out = false, .e_out = false }, //
-        indicesRange("0123456789", 0, 3, 2)); // "012345"
-    //              --^~~^--
+        viewRange("0123456789", 0, 3, 2)); // "012345"
+    //           --^~~^--
 
     // right out-of-bounds pad
     try equal(Range{ .start = 4, .end = 10, .start_pos = 2, .end_pos = 5 }, .{ .range = 4, .s_out = false, .e_out = false }, //
-        indicesRange("0123456789", 6, 9, 2)); // "456789"
-    //                    --^~~^--
+        viewRange("0123456789", 6, 9, 2)); // "456789"
+    //                 --^~~^--
 }
 
-pub fn indicesSplitRange(
+pub fn viewSplitRange(
     slice: anytype,
     p: struct {
         start: usize,
@@ -613,12 +644,12 @@ pub fn indicesSplitRange(
         /// The character context around the range on each side.
         pad: usize = 0,
     },
-    comptime opt: Indices.SplitRange.Options,
-) Indices.SplitRange {
+    comptime opt: View.SplitRange.Options,
+) View.SplitRange {
     // zero range
     if (p.start == p.end) {
         const len = p.len + (p.pad *| 2);
-        const s = indicesAround(slice, p.start, len, .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
+        const s = viewAround(slice, p.start, len, .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
         return .{ .range = .{ .start = s.start, .end = s.end, .start_pos = s.index_pos, .end_pos = s.index_pos } };
     }
 
@@ -627,34 +658,34 @@ pub fn indicesSplitRange(
 
     // zero length view
     if (p.len == 0) {
-        var arr: [2]Indices.Around = undefined;
+        var arr: [2]View.Index = undefined;
         const pad = if (opt.split_pad_half) p.pad / 2 else p.pad;
-        arr[0] = indicesAround(slice, start, pad +| (pad *| 2), .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
-        arr[1] = indicesAround(slice, end, pad +| (pad *| 2), .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
+        arr[0] = viewAround(slice, start, pad +| (pad *| 2), .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
+        arr[1] = viewAround(slice, end, pad +| (pad *| 2), .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
         return .{ .split = arr };
     }
 
     // non-zero length view
     const range = end - start +| 1; // +1 to make end inclusive
     if (range > p.len) { // split is required
-        var arr: [2]Indices.Around = undefined;
+        var arr: [2]View.Index = undefined;
         const calc_len = if (opt.split_len_half) p.len / 2 else p.len;
         const len = if (calc_len == 0) 1 else calc_len;
         const pad = if (opt.split_pad_half) p.pad / 2 else p.pad;
 
-        arr[0] = indicesAround(slice, start, len +| (pad *| 2), .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
-        arr[1] = indicesAround(slice, end, len +| (pad *| 2), .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
+        arr[0] = viewAround(slice, start, len +| (pad *| 2), .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
+        arr[1] = viewAround(slice, end, len +| (pad *| 2), .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
         return .{ .split = arr };
     } else // not required
-    return .{ .range = indicesRange(slice, start, end, p.pad) };
+    return .{ .range = viewRange(slice, start, end, p.pad) };
 }
 
-test indicesSplitRange {
+test viewSplitRange {
     const equalRaw = std.testing.expectEqualDeep;
-    const SplitRange = Indices.SplitRange;
-    const Around = Indices.Around;
+    const SplitRange = View.SplitRange;
+    const Around = View.Index;
 
-    // input and indicesSplitRange 1st argument must be in sync
+    // input and viewSplitRange 1st argument must be in sync
     const input = "0123456789";
 
     const equal = struct {
@@ -686,7 +717,7 @@ test indicesSplitRange {
         SplitRange{
             .range = .{ .start = 4, .end = 4, .start_pos = 0, .end_pos = 0 },
         },
-        indicesSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 0, .pad = 0 }, .{}),
+        viewSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 0, .pad = 0 }, .{}),
         //                     ^
     );
 
@@ -694,7 +725,7 @@ test indicesSplitRange {
         \\ 45
         \\ ^
     ,
-        indicesSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 0, .pad = 1 }, .{}),
+        viewSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 0, .pad = 1 }, .{}),
         //                     -
     );
 
@@ -702,7 +733,7 @@ test indicesSplitRange {
         \\ 3456
         \\  ^
     ,
-        indicesSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 0, .pad = 2 }, .{}),
+        viewSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 0, .pad = 2 }, .{}),
         //                    ----
     );
 
@@ -710,7 +741,7 @@ test indicesSplitRange {
         \\ 345
         \\  ^
     ,
-        indicesSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 1, .pad = 1 }, .{}),
+        viewSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 1, .pad = 1 }, .{}),
         //                    -^-
     );
 
@@ -718,7 +749,7 @@ test indicesSplitRange {
         \\ 4
         \\ ^
     ,
-        indicesSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 1, .pad = 0 }, .{}),
+        viewSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 1, .pad = 0 }, .{}),
         //                     ^
     );
 
@@ -726,7 +757,7 @@ test indicesSplitRange {
         \\ 45
         \\ ^
     ,
-        indicesSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 2, .pad = 0 }, .{}),
+        viewSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 2, .pad = 0 }, .{}),
         //                     ^-
     );
 
@@ -734,14 +765,14 @@ test indicesSplitRange {
         \\ 345
         \\  ^
     ,
-        indicesSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 3, .pad = 0 }, .{}),
+        viewSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 3, .pad = 0 }, .{}),
         //                    ~^~
     );
     try equal( // 1 range, 3 len, 1 pad
         \\ 23456
         \\   ^
     ,
-        indicesSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 3, .pad = 1 }, .{}),
+        viewSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 3, .pad = 1 }, .{}),
         //                   -~^~-
     );
 
@@ -754,7 +785,7 @@ test indicesSplitRange {
                 Around{ .start = 5, .end = 5, .index_pos = 0 },
             },
         },
-        indicesSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 0, .pad = 0 }, .{}),
+        viewSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 0, .pad = 0 }, .{}),
         //                     ^^
     );
 
@@ -764,7 +795,7 @@ test indicesSplitRange {
         \\ 5
         \\ ^
     ,
-        indicesSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 1, .pad = 1 }, .{}),
+        viewSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 1, .pad = 1 }, .{}),
         //                     ^^
     );
 
@@ -774,7 +805,7 @@ test indicesSplitRange {
         \\ 
         \\ ^
     ,
-        indicesSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 0, .pad = 1 }, .{}),
+        viewSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 0, .pad = 1 }, .{}),
         //                     ^^
     );
 
@@ -784,7 +815,7 @@ test indicesSplitRange {
         \\ 5
         \\ ^
     ,
-        indicesSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 1, .pad = 1 }, .{}),
+        viewSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 1, .pad = 1 }, .{}),
         //                     ^^
     );
 
@@ -794,7 +825,7 @@ test indicesSplitRange {
         \\ 456
         \\  ^
     ,
-        indicesSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 1, .pad = 2 }, .{}),
+        viewSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 1, .pad = 2 }, .{}),
         //                     ^^
     );
 
@@ -804,7 +835,7 @@ test indicesSplitRange {
         \\ 567
         \\  ^
     ,
-        indicesSplitRange("0123456789", .{ .start = 4, .end = 6, .len = 2, .pad = 2 }, .{}),
+        viewSplitRange("0123456789", .{ .start = 4, .end = 6, .len = 2, .pad = 2 }, .{}),
         //                   --^~^--
     );
 
@@ -812,7 +843,7 @@ test indicesSplitRange {
         \\ 2345678
         \\   ^~^
     ,
-        indicesSplitRange("0123456789", .{ .start = 4, .end = 6, .len = 3, .pad = 2 }, .{}),
+        viewSplitRange("0123456789", .{ .start = 4, .end = 6, .len = 3, .pad = 2 }, .{}),
         //                   --^~^--
     );
 }

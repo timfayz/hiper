@@ -10,12 +10,12 @@ const std = @import("std");
 const lr = @import("line_reader.zig");
 const slice = @import("slice.zig");
 const num = @import("num.zig");
-const CurrLineScope = slice.Indices.Range;
+const CurrLineScope = slice.View.Range;
 
 /// Line printing options.
 pub const PrintLineOptions = struct {
     /// This option applies only in `.around` mode.
-    trunc_mode: slice.Indices.Around.Mode = .hard_flex,
+    trunc_mode: slice.View.TruncMode = .hard_flex,
     trunc_sym: []const u8 = "..",
     show_line_num: bool = true,
     line_num_sep: []const u8 = "| ",
@@ -114,25 +114,25 @@ fn printLine(
     switch (mode) {
         .full => {},
         .start => |m| if (m.view_len) |len| {
-            const indices = slice.indicesStart(info.currLine(), len);
+            const indices = slice.viewStart(info.currLine(), len);
             scope.start = indices.start;
             scope.end = indices.end;
         },
         .end => |m| if (m.view_len) |len| {
-            const indices = slice.indicesEnd(info.currLine(), len);
+            const indices = slice.viewEnd(info.currLine(), len);
             scope.start = indices.start;
             scope.end = indices.end;
             scope.start_pos = info.index_pos -| indices.start;
         },
         .around => |m| if (m.view_len) |len| {
-            const indices = slice.indicesAround(info.currLine(), info.index_pos, len, .{ .trunc_mode = opt.trunc_mode });
+            const indices = slice.viewAround(info.currLine(), info.index_pos, len, .{ .trunc_mode = opt.trunc_mode });
             scope.start = indices.start;
             scope.end = indices.end;
             scope.start_pos = indices.index_pos;
         },
         .range => |m| {
             const range_len = index_end.? - index_start;
-            scope = slice.indicesRange(info.currLine(), info.index_pos, info.index_pos + range_len, m.pad);
+            scope = slice.viewRange(info.currLine(), info.index_pos, info.index_pos + range_len, m.pad);
         },
     }
 
