@@ -11,9 +11,8 @@
 //! - View
 //! - viewStart()
 //! - viewEnd()
-//! - viewAround()
-//! - viewRange()
-//! - viewSplitRange()
+//! - viewRelIndex()
+//! - viewRelRange()
 //! - segment()
 //! - isSegment()
 //! - MoveDir
@@ -193,31 +192,51 @@ pub const View = struct {
     /// The end index of the segment.
     end: usize,
 
+    pub usingnamespace Shared(@This());
+
+    fn Shared(Self: type) type {
+        return struct {
+            /// Returns the retrieved segment length.
+            pub fn len(self: *const Self) usize {
+                return self.end - self.start;
+            }
+
+            /// Returns `input[self.start..self.end]`.
+            pub fn slice(self: *const Self, T: type, input: T) T {
+                return input[self.start..self.end];
+            }
+        };
+    }
+
     /// Options for view primitives.
     pub const Options = struct {
-        /// Shifts even-length ranges by one index to the right.
+        /// Shifts an even-length view span by one index to the right.
         even_rshift: bool = true,
-        /// See `TruncMode` for details.
+        /// Defines how view primitives truncate view span on overrun.
         trunc_mode: TruncMode = .hard_flex,
         /// Extra shift to the precalculated view span.
-        shift: ?union(enum) { right: usize, left: usize } = null,
-    };
+        shift: ?ExtraShift = null,
 
-    /// Controls how view primitives truncate a slice segment.
-    /// See the view primitive tests for detailed examples of each mode.
-    pub const TruncMode = enum {
-        /// Truncates segment directly by the slice bounds.
-        hard,
-        /// Truncates segment by the slice bounds but compensates for the truncated
-        /// length by extending the segment left or right as much as possible.
-        hard_flex,
-        /// Truncated segment is of constant length that always fits within slice
-        /// bounds, even with out-of-bounds indices.
-        soft,
+        pub const ExtraShift = union(enum) {
+            right: usize,
+            left: usize,
+        };
+
+        /// Controls how view primitives truncate a slice segment.
+        pub const TruncMode = enum {
+            /// Truncates segment directly by the slice bounds.
+            hard,
+            /// Truncates segment by the slice bounds but compensates for the truncated
+            /// length by extending the segment left or right as much as possible.
+            hard_flex,
+            /// Truncated segment is of constant length that always fits within slice
+            /// bounds, even with out-of-bounds indices.
+            soft,
+        };
     };
 
     /// Indices of a retrieved segment around an index.
-    pub const Index = struct {
+    pub const RelIndex = struct {
         /// The start index of the segment.
         start: usize,
         /// The end index of the segment.
@@ -235,7 +254,7 @@ pub const View = struct {
     };
 
     /// Indices of a retrieved segment within a range.
-    pub const Range = struct {
+    pub const RelRange = struct {
         /// The start index of the segment.
         start: usize,
         /// The end index of the segment.
@@ -244,6 +263,16 @@ pub const View = struct {
         start_pos: usize,
         /// Position of the original `end` index relative to the segment.
         end_pos: usize,
+
+        pub const Mode = union(enum) {
+            within: union(enum) {},
+            extend: union(View.Size.Mode) {
+                around: usize,
+                side: usize,
+                left: usize,
+                right: usize,
+            },
+        };
 
         pub usingnamespace Shared(@This());
 
@@ -265,67 +294,70 @@ pub const View = struct {
         }
     };
 
-    /// Indices of a retrieved segment, either fully contained within a single
-    /// range or split into two.
-    pub const SplitRange = union(enum) {
-        /// Retrieved indices of a segment contained within the range.
-        range: View.Range,
-        /// Retrieved indices of a range split into two segments.
-        split: [2]View.Index,
-
-        /// Options for `viewSplitRange`.
-        pub const Options = struct {
-            /// If splitting is necessary, each segment's length will be `len / 2`.
-            split_len_half: bool = true,
-            /// If splitting is necessary, each segment's pad will be `pad / 2`.
-            split_pad_half: bool = true,
-            /// If the range end is out of slice bounds, splitting is required.
-            split_end_overflow: bool = false,
-            /// Shifts resulting even-length ranges by one index to the right.
-            even_rshift: bool = true,
-        };
-    };
-
-    pub usingnamespace Shared(@This());
-
-    fn Shared(Self: type) type {
-        return struct {
-            /// Returns the retrieved segment length.
-            pub fn len(self: *const Self) usize {
-                return self.end - self.start;
-            }
-
-            /// Returns `input[self.start..self.end]`.
-            pub fn slice(self: *const Self, T: type, input: T) T {
-                return input[self.start..self.end];
-            }
-        };
-    }
-
     /// Helper to calculate correct start and end indices for a view mode.
-    const Dist = struct {
+    const Size = struct {
         left: usize,
         right: usize,
 
-        pub fn shiftLeft(self: *@This(), amt: usize) void {
+        pub const Mode = enum { around, side, left, right };
+
+        pub fn initRelIndex(comptime mode: Mode, size: usize, comptime opt: View.Options) Size {
+            var dist: Size = undefined;
+            switch (mode) {
+                .around => {
+                    dist = Size{ .left = size / 2, .right = size / 2 };
+                    if (size & 1 != 0) dist.right +|= 1 // +1 compensates cursor during odd division
+                    else if (opt.even_rshift) dist.shiftRight(1);
+                },
+                .side => dist = Size{ .left = size, .right = size +| 1 }, // +1 includes cursor itself
+                .left => dist = Size{ .left = size, .right = 1 }, // +1 includes cursor itself
+                .right => dist = Size{ .left = 0, .right = size +| 1 }, // +1 includes cursor itself
+            }
+            if (opt.shift) |shift| {
+                switch (shift) {
+                    .right => |amt| dist.shiftRight(amt),
+                    .left => |amt| dist.shiftLeft(amt),
+                }
+            }
+            return dist;
+        }
+
+        pub fn initRelRange(comptime mode: Mode, size: usize, comptime opt: View.Options) Size {
+            var dist: Size = undefined;
+            switch (mode) {
+                .around => dist = Size{ .left = size / 2, .right = size / 2 },
+                .side => dist = Size{ .left = size, .right = size },
+                .left => dist = Size{ .left = size, .right = 0 },
+                .right => dist = Size{ .left = 0, .right = size },
+            }
+            if (opt.shift) |shift| {
+                switch (shift) {
+                    .right => |amt| dist.shiftRight(amt),
+                    .left => |amt| dist.shiftLeft(amt),
+                }
+            }
+            return dist;
+        }
+
+        pub fn shiftLeft(self: *Size, amt: usize) void {
             self.left +|= amt;
             self.right -|= amt;
         }
 
-        pub fn shiftRight(self: *@This(), amt: usize) void {
+        pub fn shiftRight(self: *Size, amt: usize) void {
             self.left -|= amt;
             self.right +|= amt;
         }
 
-        pub fn len(self: *const @This()) usize {
+        pub fn len(self: *const Size) usize {
             return self.left + self.right;
         }
 
-        pub fn retrieve(
-            self: *const @This(),
+        pub fn indicesRelIndex(
+            self: *const Size,
             slice: anytype,
             index: usize,
-            trunc_mode: View.TruncMode,
+            comptime trunc_mode: View.Options.TruncMode,
         ) struct { usize, usize } {
             const dist = self.len();
             const start = @min(
@@ -333,8 +365,7 @@ pub const View = struct {
                 switch (trunc_mode) {
                     .hard => slice.len,
                     .hard_flex => b: {
-                        const last_idx = slice.len -| 1;
-                        const overrun = index -| last_idx;
+                        const overrun = index -| (slice.len -| 1);
                         break :b slice.len -| (dist -| overrun);
                     },
                     .soft => slice.len -| dist,
@@ -348,6 +379,35 @@ pub const View = struct {
                 },
             );
             return .{ start, end };
+        }
+
+        pub fn indicesRelRange(
+            self: *const Size,
+            slice: anytype,
+            index_start: usize,
+            index_end: usize,
+            comptime trunc_mode: View.Options.TruncMode,
+        ) struct { usize, usize } {
+            const dist = self.len();
+            const start = @min(
+                index_start -| self.left,
+                switch (trunc_mode) {
+                    .hard => slice.len,
+                    .hard_flex => b: {
+                        const overrun = index_start -| (slice.len -| 1);
+                        break :b slice.len -| (dist -| overrun);
+                    },
+                    .soft => slice.len -| dist,
+                },
+            );
+            const end = @min(
+                slice.len,
+                switch (trunc_mode) {
+                    .hard => index_end +| self.right,
+                    .hard_flex, .soft => index_end +| (index_start -| start),
+                },
+            );
+            return .{ start, end +| 1 };
         }
     };
 };
@@ -386,15 +446,17 @@ test viewEnd {
     try equal(View{ .start = 0, .end = 3 }, viewEnd("012", 4)); // "012"
 }
 
-/// Returns a slice segment of the length `len` centered around the index.
-/// Returned index position can be out of segment bounds if the original index
-/// was out of slice.
-pub fn viewAround(
+/// Returns a slice segment of length `len` relative to the index and according
+/// to the view `mode`. The returned index position may be out of bounds if the
+/// original index is outside the slice. See tests for examples of how
+/// `View.Size.Mode` and `View.Options.TruncMode` work.
+pub fn viewRelIndex(
     slice: anytype,
     index: usize,
+    comptime mode: View.Size.Mode,
     len: usize,
     comptime opt: View.Options,
-) View.Index {
+) View.RelIndex {
     if (slice.len == 0)
         return .{ .start = 0, .end = 0, .index_pos = index };
 
@@ -403,449 +465,289 @@ pub fn viewAround(
         return .{ .start = i, .end = i, .index_pos = index -| i };
     }
 
-    var dist = View.Dist{ .left = len / 2, .right = len / 2 };
-    if (len & 1 == 0) {
-        if (opt.even_rshift) dist.shiftRight(1);
-    } else {
-        // compensate lost item during integer division (ie. 3 / 2 = 1)
-        dist.right +|= 1;
-    }
-    const start, const end = dist.retrieve(slice, index, opt.trunc_mode);
+    var view = View.Size.initRelIndex(mode, len, opt);
+    const start, const end = view.indicesRelIndex(slice, index, opt.trunc_mode);
 
     return .{ .start = start, .end = end, .index_pos = index - start };
 }
 
-test viewAround {
+test viewRelIndex {
+    const RelIndex = View.RelIndex;
     const equal = std.testing.expectEqualDeep;
 
-    // any trunc mode
-    // --------------
+    // any
+    // ----------------
     // zero length
-    try equal(View.Index{ .start = 0, .end = 0, .index_pos = 10 }, viewAround("", 10, 100, .{})); // ""
-    try equal(View.Index{ .start = 0, .end = 0, .index_pos = 10 }, viewAround("", 10, 0, .{})); // ""
-    try equal(View.Index{ .start = 0, .end = 0, .index_pos = 0 }, viewAround("012", 0, 0, .{})); // ""
-    try equal(View.Index{ .start = 3, .end = 3, .index_pos = 0 }, viewAround("012", 3, 0, .{})); // ""
-    try equal(View.Index{ .start = 3, .end = 3, .index_pos = 2 }, viewAround("012", 5, 0, .{})); // ""
+    try equal(RelIndex{ .start = 0, .end = 0, .index_pos = 10 }, viewRelIndex("", 10, .around, 100, .{})); // ""
+    //                                                                        ..-^-..
+    try equal(RelIndex{ .start = 0, .end = 0, .index_pos = 10 }, viewRelIndex("", 10, .around, 0, .{})); // ""
+    //                                                                           ^
+    try equal(RelIndex{ .start = 0, .end = 0, .index_pos = 0 }, viewRelIndex("0123", 0, .around, 0, .{})); // ""
+    //                                                                        ^
+    try equal(RelIndex{ .start = 3, .end = 3, .index_pos = 0 }, viewRelIndex("0123", 3, .around, 0, .{})); // ""
+    //                                                                           ^
+    try equal(RelIndex{ .start = 4, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 5, .around, 0, .{})); // ""
+    //                                                                             ^
 
-    // .soft mode
-    // --------------
+    // .around view len
+    // ----------------
+    // .trunc_mode = .soft
+    //
     // max length
-    try equal(View.Index{ .start = 0, .end = 4, .index_pos = 3 }, viewAround("0123", 3, 100, .{ .trunc_mode = .soft })); // "0123"
+    try equal(RelIndex{ .start = 0, .end = 4, .index_pos = 3 }, viewRelIndex("0123", 3, .around, 100, .{ .trunc_mode = .soft })); // "0123"
+    //                                                                        ..-^-..
+    //
 
     // odd length
-    try equal(View.Index{ .start = 0, .end = 4, .index_pos = 0 }, viewAround("0123", 0, 100, .{ .trunc_mode = .soft })); // "0123"
-    try equal(View.Index{ .start = 0, .end = 3, .index_pos = 0 }, viewAround("0123", 0, 3, .{ .trunc_mode = .soft })); // "012"
-    try equal(View.Index{ .start = 0, .end = 3, .index_pos = 1 }, viewAround("0123", 1, 3, .{ .trunc_mode = .soft })); // "012"
-    try equal(View.Index{ .start = 1, .end = 4, .index_pos = 1 }, viewAround("0123", 2, 3, .{ .trunc_mode = .soft })); // "123"
-    try equal(View.Index{ .start = 1, .end = 4, .index_pos = 2 }, viewAround("0123", 3, 3, .{ .trunc_mode = .soft })); // "123"
-    try equal(View.Index{ .start = 1, .end = 4, .index_pos = 3 }, viewAround("0123", 4, 3, .{ .trunc_mode = .soft })); // "123"
-    try equal(View.Index{ .start = 1, .end = 4, .index_pos = 4 }, viewAround("0123", 5, 3, .{ .trunc_mode = .soft })); // "123"
+    try equal(RelIndex{ .start = 0, .end = 3, .index_pos = 0 }, viewRelIndex("0123", 0, .around, 3, .{ .trunc_mode = .soft })); // "012"
+    //                                                                       -^-+
+    try equal(RelIndex{ .start = 0, .end = 3, .index_pos = 1 }, viewRelIndex("0123", 1, .around, 3, .{ .trunc_mode = .soft })); // "012"
+    //                                                                        -^-
+    try equal(RelIndex{ .start = 1, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 2, .around, 3, .{ .trunc_mode = .soft })); // "123"
+    //                                                                         -^-
+    try equal(RelIndex{ .start = 1, .end = 4, .index_pos = 2 }, viewRelIndex("0123", 3, .around, 3, .{ .trunc_mode = .soft })); // "123"
+    //                                                                         +-^-
+    try equal(RelIndex{ .start = 1, .end = 4, .index_pos = 3 }, viewRelIndex("0123", 4, .around, 3, .{ .trunc_mode = .soft })); // "123"
+    //                                                                         +++^
+    try equal(RelIndex{ .start = 1, .end = 4, .index_pos = 4 }, viewRelIndex("0123", 5, .around, 3, .{ .trunc_mode = .soft })); // "123"
+    //                                                                         +++ ^
 
-    // even length (right shifted)
-    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 0 }, viewAround("0123", 0, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "01"
-    try equal(View.Index{ .start = 1, .end = 3, .index_pos = 0 }, viewAround("0123", 1, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "12"
-    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 0 }, viewAround("0123", 2, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
-    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 1 }, viewAround("0123", 3, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
-    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 2 }, viewAround("0123", 4, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
-    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 3 }, viewAround("0123", 5, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
+    // even length (.even_rshift = true)
+    try equal(RelIndex{ .start = 0, .end = 2, .index_pos = 0 }, viewRelIndex("0123", 0, .around, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "01"
+    //                                                                        ^-
+    try equal(RelIndex{ .start = 1, .end = 3, .index_pos = 0 }, viewRelIndex("0123", 1, .around, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "12"
+    //                                                                         ^-
+    try equal(RelIndex{ .start = 2, .end = 4, .index_pos = 0 }, viewRelIndex("0123", 2, .around, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
+    //                                                                          ^-
+    try equal(RelIndex{ .start = 2, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 3, .around, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
+    //                                                                          +^
+    try equal(RelIndex{ .start = 2, .end = 4, .index_pos = 2 }, viewRelIndex("0123", 4, .around, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
+    //                                                                          ++^
+    try equal(RelIndex{ .start = 2, .end = 4, .index_pos = 3 }, viewRelIndex("0123", 5, .around, 2, .{ .trunc_mode = .soft, .even_rshift = true })); // "23"
+    //                                                                          ++ ^
 
-    // even length (left shifted)
-    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 0 }, viewAround("0123", 0, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "01"
-    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 1 }, viewAround("0123", 1, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "01"
-    try equal(View.Index{ .start = 1, .end = 3, .index_pos = 1 }, viewAround("0123", 2, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "12"
-    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 1 }, viewAround("0123", 3, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "23"
-    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 2 }, viewAround("0123", 4, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "23"
-    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 3 }, viewAround("0123", 5, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "23"
+    // even length (.even_rshift = false)
+    try equal(RelIndex{ .start = 0, .end = 2, .index_pos = 0 }, viewRelIndex("0123", 0, .around, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "01"
+    //                                                                        ^+
+    try equal(RelIndex{ .start = 0, .end = 2, .index_pos = 1 }, viewRelIndex("0123", 1, .around, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "01"
+    //                                                                        -^
+    try equal(RelIndex{ .start = 1, .end = 3, .index_pos = 1 }, viewRelIndex("0123", 2, .around, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "12"
+    //                                                                         -^
+    try equal(RelIndex{ .start = 2, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 3, .around, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "23"
+    //                                                                          -^
+    try equal(RelIndex{ .start = 2, .end = 4, .index_pos = 2 }, viewRelIndex("0123", 4, .around, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "23"
+    //                                                                          +-^
+    try equal(RelIndex{ .start = 2, .end = 4, .index_pos = 3 }, viewRelIndex("0123", 5, .around, 2, .{ .trunc_mode = .soft, .even_rshift = false })); // "23"
+    //                                                                          ++ ^
 
-    // .hard mode
-    // --------------
+    // .trunc_mode = .hard
+    //
     // max length
-    try equal(View.Index{ .start = 0, .end = 4, .index_pos = 3 }, viewAround("0123", 3, 100, .{ .trunc_mode = .hard })); // "0123"
+    try equal(RelIndex{ .start = 0, .end = 4, .index_pos = 3 }, viewRelIndex("0123", 3, .around, 100, .{ .trunc_mode = .hard })); // "0123"
+    //                                                                        ..-^-..
 
     // odd length
-    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 0 }, viewAround("0123", 0, 3, .{ .trunc_mode = .hard })); // "01"
-    try equal(View.Index{ .start = 0, .end = 3, .index_pos = 1 }, viewAround("0123", 1, 3, .{ .trunc_mode = .hard })); // "012"
-    try equal(View.Index{ .start = 1, .end = 4, .index_pos = 1 }, viewAround("0123", 2, 3, .{ .trunc_mode = .hard })); // "123"
-    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 1 }, viewAround("0123", 3, 3, .{ .trunc_mode = .hard })); // "23"
-    try equal(View.Index{ .start = 3, .end = 4, .index_pos = 1 }, viewAround("0123", 4, 3, .{ .trunc_mode = .hard })); // "3"
-    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 1 }, viewAround("0123", 5, 3, .{ .trunc_mode = .hard })); // ""
-    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 2 }, viewAround("0123", 6, 3, .{ .trunc_mode = .hard })); // ""
+    try equal(RelIndex{ .start = 0, .end = 2, .index_pos = 0 }, viewRelIndex("0123", 0, .around, 3, .{ .trunc_mode = .hard })); // "01"
+    //                                                                       -^-
+    try equal(RelIndex{ .start = 0, .end = 3, .index_pos = 1 }, viewRelIndex("0123", 1, .around, 3, .{ .trunc_mode = .hard })); // "012"
+    //                                                                        -^-
+    try equal(RelIndex{ .start = 1, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 2, .around, 3, .{ .trunc_mode = .hard })); // "123"
+    //                                                                         -^-
+    try equal(RelIndex{ .start = 2, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 3, .around, 3, .{ .trunc_mode = .hard })); // "23"
+    //                                                                          -^-
+    try equal(RelIndex{ .start = 3, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 4, .around, 3, .{ .trunc_mode = .hard })); // "3"
+    //                                                                           -^-
+    try equal(RelIndex{ .start = 4, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 5, .around, 3, .{ .trunc_mode = .hard })); // ""
+    //                                                                            -^-
 
-    // even length (right shifted)
-    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 0 }, viewAround("0123", 0, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "01"
-    try equal(View.Index{ .start = 1, .end = 3, .index_pos = 0 }, viewAround("0123", 1, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "12"
-    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 0 }, viewAround("0123", 2, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "23"
-    try equal(View.Index{ .start = 3, .end = 4, .index_pos = 0 }, viewAround("0123", 3, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "3"
-    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 0 }, viewAround("0123", 4, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // ""
-    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 1 }, viewAround("0123", 5, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // ""
-    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 2 }, viewAround("0123", 6, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // ""
+    // even length (.even_rshift = true)
+    try equal(RelIndex{ .start = 0, .end = 2, .index_pos = 0 }, viewRelIndex("0123", 0, .around, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "01"
+    //                                                                        ^-
+    try equal(RelIndex{ .start = 1, .end = 3, .index_pos = 0 }, viewRelIndex("0123", 1, .around, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "12"
+    //                                                                         ^-
+    try equal(RelIndex{ .start = 2, .end = 4, .index_pos = 0 }, viewRelIndex("0123", 2, .around, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "23"
+    //                                                                          ^-
+    try equal(RelIndex{ .start = 3, .end = 4, .index_pos = 0 }, viewRelIndex("0123", 3, .around, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // "3"
+    //                                                                           ^-
+    try equal(RelIndex{ .start = 4, .end = 4, .index_pos = 0 }, viewRelIndex("0123", 4, .around, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // ""
+    //                                                                            ^-
+    try equal(RelIndex{ .start = 4, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 5, .around, 2, .{ .trunc_mode = .hard, .even_rshift = true })); // ""
+    //                                                                             ^-
 
-    // even length (left shifted)
-    try equal(View.Index{ .start = 0, .end = 1, .index_pos = 0 }, viewAround("0123", 0, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "0"
-    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 1 }, viewAround("0123", 1, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "01"
-    try equal(View.Index{ .start = 1, .end = 3, .index_pos = 1 }, viewAround("0123", 2, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "12"
-    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 1 }, viewAround("0123", 3, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "23"
-    try equal(View.Index{ .start = 3, .end = 4, .index_pos = 1 }, viewAround("0123", 4, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "3"
-    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 1 }, viewAround("0123", 5, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // ""
-    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 2 }, viewAround("0123", 6, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // ""
+    // even length (.even_rshift = false)
+    try equal(RelIndex{ .start = 0, .end = 1, .index_pos = 0 }, viewRelIndex("0123", 0, .around, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "0"
+    //                                                                       -^
+    try equal(RelIndex{ .start = 0, .end = 2, .index_pos = 1 }, viewRelIndex("0123", 1, .around, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "01"
+    //                                                                        -^
+    try equal(RelIndex{ .start = 1, .end = 3, .index_pos = 1 }, viewRelIndex("0123", 2, .around, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "12"
+    //                                                                         -^
+    try equal(RelIndex{ .start = 2, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 3, .around, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "23"
+    //                                                                          -^
+    try equal(RelIndex{ .start = 3, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 4, .around, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // "3"
+    //                                                                           -^
+    try equal(RelIndex{ .start = 4, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 5, .around, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // ""
+    //                                                                            -^
+    try equal(RelIndex{ .start = 4, .end = 4, .index_pos = 2 }, viewRelIndex("0123", 6, .around, 2, .{ .trunc_mode = .hard, .even_rshift = false })); // ""
+    //                                                                             -^
 
-    // .hard_flex mode
-    // --------------
+    // .trunc_mode = .hard_flex
+    //
     // max length
-    try equal(View.Index{ .start = 0, .end = 4, .index_pos = 3 }, viewAround("0123", 3, 100, .{ .trunc_mode = .hard_flex })); // "0123"
+    try equal(RelIndex{ .start = 0, .end = 4, .index_pos = 3 }, viewRelIndex("0123", 3, .around, 100, .{ .trunc_mode = .hard_flex })); // "0123"
+    //                                                                        ..-^-..
 
     // odd length
-    try equal(View.Index{ .start = 0, .end = 3, .index_pos = 0 }, viewAround("0123", 0, 3, .{ .trunc_mode = .hard_flex })); // "012"
-    try equal(View.Index{ .start = 0, .end = 3, .index_pos = 1 }, viewAround("0123", 1, 3, .{ .trunc_mode = .hard_flex })); // "012"
-    try equal(View.Index{ .start = 1, .end = 4, .index_pos = 1 }, viewAround("0123", 2, 3, .{ .trunc_mode = .hard_flex })); // "123"
-    try equal(View.Index{ .start = 1, .end = 4, .index_pos = 2 }, viewAround("0123", 3, 3, .{ .trunc_mode = .hard_flex })); // "123"
-    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 2 }, viewAround("0123", 4, 3, .{ .trunc_mode = .hard_flex })); // "23"
-    try equal(View.Index{ .start = 3, .end = 4, .index_pos = 2 }, viewAround("0123", 5, 3, .{ .trunc_mode = .hard_flex })); // "3"
-    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 2 }, viewAround("0123", 6, 3, .{ .trunc_mode = .hard_flex })); // ""
+    try equal(RelIndex{ .start = 0, .end = 3, .index_pos = 0 }, viewRelIndex("0123", 0, .around, 3, .{ .trunc_mode = .hard_flex })); // "012"
+    //                                                                        ^-+
+    try equal(RelIndex{ .start = 0, .end = 3, .index_pos = 1 }, viewRelIndex("0123", 1, .around, 3, .{ .trunc_mode = .hard_flex })); // "012"
+    //                                                                        -^-
+    try equal(RelIndex{ .start = 1, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 2, .around, 3, .{ .trunc_mode = .hard_flex })); // "123"
+    //                                                                         -^-
+    try equal(RelIndex{ .start = 1, .end = 4, .index_pos = 2 }, viewRelIndex("0123", 3, .around, 3, .{ .trunc_mode = .hard_flex })); // "123"
+    //                                                                         +-^
+    try equal(RelIndex{ .start = 2, .end = 4, .index_pos = 2 }, viewRelIndex("0123", 4, .around, 3, .{ .trunc_mode = .hard_flex })); // "23"
+    //                                                                          +-^
+    try equal(RelIndex{ .start = 3, .end = 4, .index_pos = 2 }, viewRelIndex("0123", 5, .around, 3, .{ .trunc_mode = .hard_flex })); // "3"
+    //                                                                           +-^
+    try equal(RelIndex{ .start = 4, .end = 4, .index_pos = 2 }, viewRelIndex("0123", 6, .around, 3, .{ .trunc_mode = .hard_flex })); // ""
+    //                                                                             -^-
 
-    // even length (right shifted)
-    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 0 }, viewAround("0123", 0, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "01"
-    try equal(View.Index{ .start = 1, .end = 3, .index_pos = 0 }, viewAround("0123", 1, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "12"
-    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 0 }, viewAround("0123", 2, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "23"
-    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 1 }, viewAround("0123", 3, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "23"
-    try equal(View.Index{ .start = 3, .end = 4, .index_pos = 1 }, viewAround("0123", 4, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "3"
-    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 1 }, viewAround("0123", 5, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // ""
-    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 2 }, viewAround("0123", 6, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // ""
+    // even length (.even_rshift = true)
+    try equal(RelIndex{ .start = 0, .end = 2, .index_pos = 0 }, viewRelIndex("0123", 0, .around, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "01"
+    //                                                                        ^-
+    try equal(RelIndex{ .start = 1, .end = 3, .index_pos = 0 }, viewRelIndex("0123", 1, .around, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "12"
+    //                                                                         ^-
+    try equal(RelIndex{ .start = 2, .end = 4, .index_pos = 0 }, viewRelIndex("0123", 2, .around, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "23"
+    //                                                                          ^-
+    try equal(RelIndex{ .start = 2, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 3, .around, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "23"
+    //                                                                          +^
+    try equal(RelIndex{ .start = 3, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 4, .around, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // "3"
+    //                                                                           +^
+    try equal(RelIndex{ .start = 4, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 5, .around, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // ""
+    //                                                                             ^-
+    try equal(RelIndex{ .start = 4, .end = 4, .index_pos = 2 }, viewRelIndex("0123", 6, .around, 2, .{ .trunc_mode = .hard_flex, .even_rshift = true })); // ""
+    //                                                                              ^-
 
-    // even length (left shifted)
-    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 0 }, viewAround("0123", 0, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "01"
-    try equal(View.Index{ .start = 0, .end = 2, .index_pos = 1 }, viewAround("0123", 1, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "01"
-    try equal(View.Index{ .start = 1, .end = 3, .index_pos = 1 }, viewAround("0123", 2, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "12"
-    try equal(View.Index{ .start = 2, .end = 4, .index_pos = 1 }, viewAround("0123", 3, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "23"
-    try equal(View.Index{ .start = 3, .end = 4, .index_pos = 1 }, viewAround("0123", 4, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "3"
-    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 1 }, viewAround("0123", 5, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // ""
-    try equal(View.Index{ .start = 4, .end = 4, .index_pos = 2 }, viewAround("0123", 6, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // ""
+    // even length (.even_rshift = false)
+    try equal(RelIndex{ .start = 0, .end = 2, .index_pos = 0 }, viewRelIndex("0123", 0, .around, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "01"
+    //                                                                        ^+
+    try equal(RelIndex{ .start = 0, .end = 2, .index_pos = 1 }, viewRelIndex("0123", 1, .around, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "01"
+    //                                                                        -^
+    try equal(RelIndex{ .start = 1, .end = 3, .index_pos = 1 }, viewRelIndex("0123", 2, .around, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "12"
+    //                                                                         -^
+    try equal(RelIndex{ .start = 2, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 3, .around, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "23"
+    //                                                                          -^
+    try equal(RelIndex{ .start = 3, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 4, .around, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // "3"
+    //                                                                           -^
+    try equal(RelIndex{ .start = 4, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 5, .around, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // ""
+    //                                                                            -^
+    try equal(RelIndex{ .start = 4, .end = 4, .index_pos = 2 }, viewRelIndex("0123", 6, .around, 2, .{ .trunc_mode = .hard_flex, .even_rshift = false })); // ""
+    //                                                                             -^
+
+    // .left view len
+    // ----------------
+    try equal(RelIndex{ .start = 1, .end = 4, .index_pos = 2 }, viewRelIndex("0123", 3, .left, 2, .{ .trunc_mode = .hard_flex }));
+    //                                                                         --^
+    try equal(RelIndex{ .start = 0, .end = 3, .index_pos = 1 }, viewRelIndex("0123", 1, .left, 2, .{ .trunc_mode = .hard_flex }));
+    //                                                                       --^+
+    try equal(RelIndex{ .start = 0, .end = 3, .index_pos = 0 }, viewRelIndex("0123", 0, .left, 2, .{ .trunc_mode = .hard_flex }));
+    //                                                                      --^++
+
+    // .right view len
+    // ----------------
+    try equal(RelIndex{ .start = 1, .end = 4, .index_pos = 0 }, viewRelIndex("0123", 1, .right, 2, .{ .trunc_mode = .hard_flex }));
+    //                                                                         ^--
+    try equal(RelIndex{ .start = 1, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 2, .right, 2, .{ .trunc_mode = .hard_flex }));
+    //                                                                         +^--
+    try equal(RelIndex{ .start = 1, .end = 4, .index_pos = 2 }, viewRelIndex("0123", 3, .right, 2, .{ .trunc_mode = .hard_flex }));
+    //                                                                         ++^--
+
+    // .side view len
+    // ----------------
+    try equal(RelIndex{ .start = 1, .end = 4, .index_pos = 1 }, viewRelIndex("0123", 2, .side, 1, .{ .trunc_mode = .hard_flex }));
+    //                                                                         -^-
+    try equal(RelIndex{ .start = 0, .end = 4, .index_pos = 2 }, viewRelIndex("0123", 2, .side, 2, .{ .trunc_mode = .hard_flex }));
+    //                                                                        --^--
+    try equal(RelIndex{ .start = 0, .end = 3, .index_pos = 0 }, viewRelIndex("0123", 0, .side, 1, .{ .trunc_mode = .hard_flex }));
+    //                                                                       -^-+
 }
 
-/// Returns a slice segment within the `start`-`end` range, extended by `pad`
-/// around each side. The `end` index is inclusive. The returned positions
-/// (`*_pos`) may fall outside the segment bounds if the original `start`
-/// and `end` indices were out of slice.
-pub fn viewRange(
+/// Returns a slice segment of length `len` relative to `start`-`end` range and
+/// according to the view `mode`. The returned positions (`*_pos`) may be out of
+/// bounds if the original range is outside the slice.
+pub fn viewRelRange(
     slice: anytype,
     start: usize,
     end: usize,
-    pad: usize,
-) View.Range {
+    comptime mode: View.Size.Mode,
+    len: usize,
+    comptime opt: View.Options,
+) ?View.RelRange {
     if (start == end) {
-        const range = if (pad == 0) 1 else (pad *| 2 +| 1); // +1 to include the cursor itself
-        const s = viewAround(slice, start, range, .{ .trunc_mode = .hard_flex });
+        const s = viewRelIndex(slice, start, mode, len, opt);
         return .{ .start = s.start, .end = s.end, .start_pos = s.index_pos, .end_pos = s.index_pos };
     }
+
     // ensure start <= end
     const s, const e = if (start < end) .{ start, end } else .{ end, start };
-    const seg_start = @min(slice.len, s -| pad);
-    const seg_end = @min(slice.len, e +| pad +| 1); // +1 ensures end index is inclusive
+    // if (mode == .around and (e - s +| 1) > len) return null;
+    // .within = .{.len = 30}
+    // .extend = .{.around = 30}
+
+    const view = View.Size.initRelRange(mode, len, opt);
+    const view_start, const view_end = view.indicesRelRange(slice, s, e, opt.trunc_mode);
     return .{
-        .start = seg_start,
-        .end = seg_end,
-        .start_pos = s - seg_start,
-        .end_pos = e - seg_start,
+        .start = view_start,
+        .end = view_end,
+        .start_pos = s - view_start,
+        .end_pos = e - view_start,
     };
 }
 
-test viewRange {
-    const Range = View.Range;
-    const equal = struct {
+test viewRelRange {
+    const input = "0123456789"; // must be in sync with first `viewRelRange` arg
+    const equalVis = struct {
         pub fn run(
-            comptime expect: Range,
-            comptime extra: struct { range: usize, s_out: bool, e_out: bool },
-            actual: Range,
+            expect: ?[]const u8,
+            extra: anytype,
+            view: ?View.RelRange,
         ) !void {
-            try std.testing.expectEqualDeep(expect, actual);
-            try std.testing.expectEqual(extra.range, actual.rangeLen());
-            try std.testing.expectEqual(extra.s_out, actual.startPosExceeds());
-            try std.testing.expectEqual(extra.e_out, actual.endPosExceeds());
-        }
-    }.run;
+            if (view) |v| {
+                try std.testing.expect(expect != null);
 
-    // empty input ranges
-    try equal(Range{ .start = 0, .end = 0, .start_pos = 0, .end_pos = 0 }, .{ .range = 1, .s_out = false, .e_out = false }, //
-        viewRange("", 0, 0, 0));
-    try equal(Range{ .start = 0, .end = 0, .start_pos = 5, .end_pos = 20 }, .{ .range = 16, .s_out = true, .e_out = true }, //
-        viewRange("", 5, 20, 4));
+                var buf = std.BoundedArray(u8, 1024){};
+                const w = buf.writer();
 
-    // out-of-bounds ranges
-    try equal(Range{ .start = 5, .end = 10, .start_pos = 0, .end_pos = 15 }, .{ .range = 16, .s_out = false, .e_out = true }, //
-        viewRange("0123456789", 5, 20, 0)); // "56789"
-    //                  ^~~~~~~..
-    try equal(Range{ .start = 1, .end = 10, .start_pos = 4, .end_pos = 19 }, .{ .range = 16, .s_out = false, .e_out = true }, //
-        viewRange("0123456789", 5, 20, 4)); // "123456789"
-    //              ----^~~~~~~..
-    try equal(Range{ .start = 10, .end = 10, .start_pos = 0, .end_pos = 1 }, .{ .range = 2, .s_out = false, .e_out = true }, //
-        viewRange("0123456789", 10, 11, 0)); // ""
-    //                       ^^
-    try equal(Range{ .start = 10, .end = 10, .start_pos = 1, .end_pos = 2 }, .{ .range = 2, .s_out = true, .e_out = true }, //
-        viewRange("0123456789", 11, 12, 0)); // ""
-    //                        ^^
-    try equal(Range{ .start = 10, .end = 10, .start_pos = 2, .end_pos = 10 }, .{ .range = 9, .s_out = true, .e_out = true }, //
-        viewRange("0123456789", 12, 20, 0)); // ""
-    //                         ^~~~..
-    try equal(Range{ .start = 8, .end = 10, .start_pos = 4, .end_pos = 12 }, .{ .range = 9, .s_out = true, .e_out = true }, //
-        viewRange("0123456789", 12, 20, 4)); // "89"
-    //                     ----^~~~..
-
-    // single-item ranges (start == end)
-    try equal(Range{ .start = 4, .end = 5, .start_pos = 0, .end_pos = 0 }, .{ .range = 1, .s_out = false, .e_out = false }, //
-        viewRange("0123456789", 4, 4, 0)); // "4"
-    //                 ^
-    try equal(Range{ .start = 3, .end = 6, .start_pos = 1, .end_pos = 1 }, .{ .range = 1, .s_out = false, .e_out = false }, //
-        viewRange("0123456789", 4, 4, 1)); // "345"
-    //                -^-
-    try equal(Range{ .start = 2, .end = 7, .start_pos = 2, .end_pos = 2 }, .{ .range = 1, .s_out = false, .e_out = false }, //
-        viewRange("0123456789", 4, 4, 2)); // "23456"
-    //               --^--
-
-    // self ranges
-    try equal(Range{ .start = 4, .end = 6, .start_pos = 0, .end_pos = 1 }, .{ .range = 2, .s_out = false, .e_out = false }, //
-        viewRange("0123456789", 4, 5, 0)); // "45"
-    //                 ^^
-    try equal(Range{ .start = 3, .end = 7, .start_pos = 1, .end_pos = 2 }, .{ .range = 2, .s_out = false, .e_out = false }, //
-        viewRange("0123456789", 4, 5, 1)); // "3456"
-    //                -^^-
-    try equal(Range{ .start = 2, .end = 8, .start_pos = 2, .end_pos = 3 }, .{ .range = 2, .s_out = false, .e_out = false }, //
-        viewRange("0123456789", 4, 5, 2)); // "234567"
-    //               --^^--
-    try equal(Range{ .start = 3, .end = 6, .start_pos = 0, .end_pos = 2 }, .{ .range = 3, .s_out = false, .e_out = false }, //
-        viewRange("0123456789", 3, 5, 0)); // "345"
-    //                ^~^
-    try equal(Range{ .start = 2, .end = 7, .start_pos = 1, .end_pos = 3 }, .{ .range = 3, .s_out = false, .e_out = false }, //
-        viewRange("0123456789", 3, 5, 1)); // "23456"
-    //               -^~^-
-    try equal(Range{ .start = 1, .end = 8, .start_pos = 2, .end_pos = 4 }, .{ .range = 3, .s_out = false, .e_out = false }, //
-        viewRange("0123456789", 3, 5, 2)); // "1234567"
-    //              --^~^--
-
-    // left out-of-bounds pad
-    try equal(Range{ .start = 0, .end = 6, .start_pos = 0, .end_pos = 3 }, .{ .range = 4, .s_out = false, .e_out = false }, //
-        viewRange("0123456789", 0, 3, 2)); // "012345"
-    //           --^~~^--
-
-    // right out-of-bounds pad
-    try equal(Range{ .start = 4, .end = 10, .start_pos = 2, .end_pos = 5 }, .{ .range = 4, .s_out = false, .e_out = false }, //
-        viewRange("0123456789", 6, 9, 2)); // "456789"
-    //                 --^~~^--
-}
-
-pub fn viewSplitRange(
-    slice: anytype,
-    p: struct {
-        start: usize,
-        end: usize,
-        /// The maximum range length. If exceeded, the range splits with each
-        /// segment being `len / 2`. Use `split_len_half` to adjust this
-        /// behavior.
-        len: usize,
-        /// The character context around the range on each side.
-        pad: usize = 0,
-    },
-    comptime opt: View.SplitRange.Options,
-) View.SplitRange {
-    // zero range
-    if (p.start == p.end) {
-        const len = p.len + (p.pad *| 2);
-        const s = viewAround(slice, p.start, len, .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
-        return .{ .range = .{ .start = s.start, .end = s.end, .start_pos = s.index_pos, .end_pos = s.index_pos } };
-    }
-
-    // ensure start <= end
-    const start, const end = if (p.start < p.end) .{ p.start, p.end } else .{ p.end, p.start };
-
-    // zero length view
-    if (p.len == 0) {
-        var arr: [2]View.Index = undefined;
-        const pad = if (opt.split_pad_half) p.pad / 2 else p.pad;
-        arr[0] = viewAround(slice, start, pad +| (pad *| 2), .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
-        arr[1] = viewAround(slice, end, pad +| (pad *| 2), .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
-        return .{ .split = arr };
-    }
-
-    // non-zero length view
-    const range = end - start +| 1; // +1 to make end inclusive
-    if (range > p.len) { // split is required
-        var arr: [2]View.Index = undefined;
-        const calc_len = if (opt.split_len_half) p.len / 2 else p.len;
-        const len = if (calc_len == 0) 1 else calc_len;
-        const pad = if (opt.split_pad_half) p.pad / 2 else p.pad;
-
-        arr[0] = viewAround(slice, start, len +| (pad *| 2), .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
-        arr[1] = viewAround(slice, end, len +| (pad *| 2), .{ .trunc_mode = .hard_flex, .even_rshift = opt.even_rshift });
-        return .{ .split = arr };
-    } else // not required
-    return .{ .range = viewRange(slice, start, end, p.pad) };
-}
-
-test viewSplitRange {
-    const equalRaw = std.testing.expectEqualDeep;
-    const SplitRange = View.SplitRange;
-    const Around = View.Index;
-
-    // input and viewSplitRange 1st argument must be in sync
-    const input = "0123456789";
-
-    const equal = struct {
-        pub fn run(expect: []const u8, fn_result: SplitRange) !void {
-            var buf = std.BoundedArray(u8, 512){};
-            const w = buf.writer();
-            switch (fn_result) {
-                .range => |r| {
-                    try w.print(" {s}\n", .{r.slice([]const u8, input)});
-                    if (r.start_pos == r.end_pos)
-                        try w.print(" {[0]c: >[1]}", .{ '^', r.start_pos + 1 })
-                    else
-                        try w.print(" {[0]c: >[1]}{[0]c:~>[2]}", .{ '^', r.start_pos + 1, r.end_pos - r.start_pos });
-                },
-                .split => |s| {
-                    try w.print(" {s}\n", .{s[0].slice([]const u8, input)});
-                    try w.print(" {[0]c: >[1]}\n", .{ '^', s[0].index_pos + 1 });
-                    try w.print(" {s}\n", .{s[1].slice([]const u8, input)});
-                    try w.print(" {[0]c: >[1]}", .{ '^', s[1].index_pos + 1 });
-                },
+                // render input
+                try w.print(" {s} [{d}:{d}]\n", .{ v.slice([]const u8, input), v.start, v.end });
+                // render cursor
+                if (v.start_pos == v.end_pos)
+                    try w.print(" {[0]c: >[1]} [{[2]d}]", .{ '^', v.start_pos + 1, v.start_pos })
+                else
+                    try w.print(" {[0]c: >[1]}{[0]c:~>[2]} [{[3]d}:{[4]d}] len={[5]d}", .{
+                        '^', // 0
+                        v.start_pos + 1, // 1
+                        v.end_pos - v.start_pos, // 2
+                        v.start_pos, // 3
+                        v.end_pos, // 4
+                        v.rangeLen(), // 5
+                    });
+                try std.testing.expectEqualStrings(expect.?, buf.slice());
+                try std.testing.expectEqual(extra[0], v.startPosExceeds());
+                try std.testing.expectEqual(extra[1], v.endPosExceeds());
+            } else {
+                try std.testing.expect(expect == null);
             }
-            try std.testing.expectEqualStrings(expect, buf.slice());
         }
     }.run;
 
-    // .range = 1
-    // --------------
-    try equalRaw( // 1 range, 0 len, 0 pad
-        SplitRange{
-            .range = .{ .start = 4, .end = 4, .start_pos = 0, .end_pos = 0 },
-        },
-        viewSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 0, .pad = 0 }, .{}),
-        //                     ^
-    );
+    try equalVis(
+        \\ 3456 [3:7]
+        \\ ^~~^ [0:3] len=4
+    , .{ false, false }, viewRelRange("0123456789", 3, 6, .side, 0, .{}));
 
-    try equal( // 1 range, 0 len, 1 pad
-        \\ 45
-        \\ ^
-    ,
-        viewSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 0, .pad = 1 }, .{}),
-        //                     -
-    );
-
-    try equal( // 1 range, 0 len, 2 pad
-        \\ 3456
-        \\  ^
-    ,
-        viewSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 0, .pad = 2 }, .{}),
-        //                    ----
-    );
-
-    try equal( // 1 range, 1 len, 1 pad
-        \\ 345
-        \\  ^
-    ,
-        viewSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 1, .pad = 1 }, .{}),
-        //                    -^-
-    );
-
-    try equal( // 1 range, 1 len, 0 pad
-        \\ 4
-        \\ ^
-    ,
-        viewSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 1, .pad = 0 }, .{}),
-        //                     ^
-    );
-
-    try equal( // 1 range, 2 len, 0 pad
-        \\ 45
-        \\ ^
-    ,
-        viewSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 2, .pad = 0 }, .{}),
-        //                     ^-
-    );
-
-    try equal( // 1 range, 3 len, 0 pad
-        \\ 345
-        \\  ^
-    ,
-        viewSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 3, .pad = 0 }, .{}),
-        //                    ~^~
-    );
-    try equal( // 1 range, 3 len, 1 pad
-        \\ 23456
-        \\   ^
-    ,
-        viewSplitRange("0123456789", .{ .start = 4, .end = 4, .len = 3, .pad = 1 }, .{}),
-        //                   -~^~-
-    );
-
-    // .range > 1
-    // --------------
-    try equalRaw( // 2 range, 0 len, pad 0
-        SplitRange{
-            .split = .{
-                Around{ .start = 4, .end = 4, .index_pos = 0 },
-                Around{ .start = 5, .end = 5, .index_pos = 0 },
-            },
-        },
-        viewSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 0, .pad = 0 }, .{}),
-        //                     ^^
-    );
-
-    try equal( // 2 range, 1 len, pad 0
-        \\ 4
-        \\ ^
-        \\ 5
-        \\ ^
-    ,
-        viewSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 1, .pad = 1 }, .{}),
-        //                     ^^
-    );
-
-    try equal( // 2 range, 0 len, pad 1
-        \\ 
-        \\ ^
-        \\ 
-        \\ ^
-    ,
-        viewSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 0, .pad = 1 }, .{}),
-        //                     ^^
-    );
-
-    try equal( // 2 range, 1 len, pad 1
-        \\ 4
-        \\ ^
-        \\ 5
-        \\ ^
-    ,
-        viewSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 1, .pad = 1 }, .{}),
-        //                     ^^
-    );
-
-    try equal( // 2 range, 1 len, pad 2
-        \\ 345
-        \\  ^
-        \\ 456
-        \\  ^
-    ,
-        viewSplitRange("0123456789", .{ .start = 4, .end = 5, .len = 1, .pad = 2 }, .{}),
-        //                     ^^
-    );
-
-    try equal( // 3 range, 2 len, pad 2
-        \\ 345
-        \\  ^
-        \\ 567
-        \\  ^
-    ,
-        viewSplitRange("0123456789", .{ .start = 4, .end = 6, .len = 2, .pad = 2 }, .{}),
-        //                   --^~^--
-    );
-
-    try equal( // 3 range, 3 len, pad 2
-        \\ 2345678
-        \\   ^~^
-    ,
-        viewSplitRange("0123456789", .{ .start = 4, .end = 6, .len = 3, .pad = 2 }, .{}),
-        //                   --^~^--
-    );
+    // try equalVis(null, .{ false, false }, viewRelRange("0123456789", 3, 6, .around, 0, .{}));
+    //                                                     ^~~^ len=0
 }
 
 /// Returns a `[start..end]` slice segment with indices normalized to not
