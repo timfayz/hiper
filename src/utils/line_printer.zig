@@ -55,8 +55,8 @@ pub const PrintLineMode = union(enum) {
         index_start: usize,
         index_end: usize,
         view_len: ?usize = 80,
-        /// Number of characters to extend the range by on both sides.
-        pad: usize = 5,
+        /// Number of characters to pad on both sides of the range before splitting.
+        min_pad: usize = 0,
         curr_ln: lr.CurrLineNum = .detect,
     },
 
@@ -125,14 +125,22 @@ fn printLine(
             scope.start_pos = info.index_pos -| indices.start;
         },
         .around => |m| if (m.view_len) |len| {
-            const indices = slice.viewRelIndex(info.currLine(), info.index_pos, .around, len, .{ .trunc_mode = opt.trunc_mode });
-            scope.start = indices.start;
-            scope.end = indices.end;
-            scope.start_pos = indices.index_pos;
+            scope = slice.viewRelIndex(
+                info.currLine(),
+                info.index_pos,
+                .{ .around = len },
+                .{ .trunc_mode = opt.trunc_mode },
+            ).toRelRange();
         },
         .range => |m| { // TODO
             const range_len = index_end.? - index_start;
-            scope = slice.viewRelRange(info.currLine(), info.index_pos, info.index_pos + range_len, .around, m.pad, .{ .trunc_mode = opt.trunc_mode }).?;
+            scope = slice.viewRelRange(
+                info.currLine(),
+                info.index_pos,
+                info.index_pos + range_len,
+                .{ .around = m.view_len orelse std.math.maxInt(usize) },
+                .{ .trunc_mode = opt.trunc_mode },
+            ).?;
         },
     }
 
@@ -640,5 +648,9 @@ test ":printLine, printLineWithCursor" {
     ,
         \\1| ..234..
         \\     ^~^
-    , "012345678", .{ .range = .{ .index_start = 2, .index_end = 4, .pad = 0 } }, .{ .forward = 1 }, .{});
+    , "012345678", .{ .range = .{
+        .index_start = 2,
+        .index_end = 4,
+        .view_len = 3,
+    } }, .{ .forward = 1 }, .{});
 }
