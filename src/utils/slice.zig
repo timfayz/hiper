@@ -208,6 +208,25 @@ pub const View = struct {
         };
     }
 
+    /// Wraps `View` into `View.RelIndex`.
+    pub fn toRelIndex(self: *const @This(), index: usize) RelIndex {
+        return .{
+            .start = self.start,
+            .end = self.end,
+            .index_pos = index - self.start,
+        };
+    }
+
+    /// Wraps `View` into `View.RelRange`.
+    pub fn toRelRange(self: *const @This(), start: usize, end: usize) RelRange {
+        return .{
+            .start = self.start,
+            .end = self.end,
+            .start_pos = start - self.start,
+            .end_pos = end - self.start,
+        };
+    }
+
     /// Options for view primitives.
     pub const Options = struct {
         /// Defines how view primitives truncate view span on overrun.
@@ -254,6 +273,7 @@ pub const View = struct {
             return self.index_pos > self.len();
         }
 
+        /// Wraps `View.RelIndex` into `View.RelRange`.
         pub fn toRelRange(self: *const @This()) RelRange {
             return .{
                 .start = self.start,
@@ -345,9 +365,9 @@ pub const View = struct {
             index: usize,
             extra: usize,
             comptime trunc_mode: View.Options.TruncMode,
-        ) struct { usize, usize } {
+        ) View {
             const size_len = self.len();
-            const dist_to_start = @min(
+            const slice_start = @min(
                 index -| self.left,
                 switch (trunc_mode) {
                     .hard => slice.len,
@@ -358,14 +378,18 @@ pub const View = struct {
                     .soft => slice.len -| size_len,
                 },
             );
-            const dist_to_end = @min(
+            const slice_end = @min(
                 slice.len,
                 switch (trunc_mode) {
                     .hard => index +| self.right +| extra,
-                    .hard_flex, .soft => dist_to_start +| size_len +| extra,
+                    .hard_flex, .soft => slice_start +| size_len +| extra,
                 },
             );
-            return .{ dist_to_start, dist_to_end };
+            return .{ .start = slice_start, .end = slice_end };
+        }
+
+        test Span {
+            //
         }
     };
 };
@@ -414,23 +438,24 @@ pub fn viewRelIndex(
     mode: View.Mode,
     comptime opt: View.Options,
 ) View.RelIndex {
-    if (slice.len == 0)
-        return .{ .start = 0, .end = 0, .index_pos = index };
-
-    if (mode.len() == 0) {
-        const i = @min(index, slice.len);
-        return .{ .start = i, .end = i, .index_pos = index -| i };
-    }
-
     var view: View.Span = undefined;
     switch (mode) {
-        .around => |view_len| {
-            view = View.Span{ .left = view_len / 2, .right = view_len / 2 };
-            if (view_len & 1 != 0) view.right +|= 1 // compensate odd division
-            else if (opt.rshift_even_len) view.shiftRight(1);
+        inline .around, .left, .right => |view_len, tag| {
+            if (view_len == 0) {
+                const i = @min(index, slice.len);
+                return .{ .start = i, .end = i, .index_pos = index -| i };
+            }
+            switch (tag) {
+                .around => {
+                    view = View.Span{ .left = view_len / 2, .right = view_len / 2 };
+                    if (view_len & 1 != 0) view.right +|= 1 // compensate odd division
+                    else if (opt.rshift_even_len) view.shiftRight(1);
+                },
+                .left => view = View.Span{ .left = view_len -| 1, .right = 1 },
+                .right => view = View.Span{ .left = 0, .right = view_len },
+                else => unreachable,
+            }
         },
-        .left => |len| view = View.Span{ .left = len -| 1, .right = 1 },
-        .right => |len| view = View.Span{ .left = 0, .right = len },
         .exp_sides => |len| view = View.Span{ .left = len, .right = len +| 1 },
         .exp_left => |len| view = View.Span{ .left = len, .right = 1 },
         .exp_right => |len| view = View.Span{ .left = 0, .right = len +| 1 },
@@ -445,8 +470,7 @@ pub fn viewRelIndex(
         }
     }
 
-    const start, const end = view.retrieve(slice, index, 0, opt.trunc_mode);
-    return .{ .start = start, .end = end, .index_pos = index - start };
+    return view.retrieve(slice, index, 0, opt.trunc_mode).toRelIndex(index);
 }
 
 test viewRelIndex {
@@ -465,34 +489,14 @@ test viewRelIndex {
         }
     }.run;
 
-    // any view mode
+    // exceeding view len
     // -------------------
-    // zero len
-    {
-        try equal(
-            \\  [4:4]
-            \\ ^ [0]
-        , .{false}, viewRelIndex("012345678", 4, .{ .around = 0 }, .{}));
-        //                            ^
-        try equal(
-            \\  [9:9]
-            \\ ^ [0]
-        , .{false}, viewRelIndex("012345678", 9, .{ .around = 0 }, .{}));
-        //                                 ^
-        try equal(
-            \\  [9:9]
-            \\   ^ [2]
-        , .{true}, viewRelIndex("012345678", 11, .{ .around = 0 }, .{}));
-        //                                  ^
-    }
-
-    // full len
     {
         try equal(
             \\ 012345678 [0:9]
             \\ ^ [0]
         , .{false}, viewRelIndex("012345678", 0, .{ .around = 100 }, .{}));
-        //                       ^
+        //                        ^
         try equal(
             \\ 012345678 [0:9]
             \\            ^ [11]
@@ -500,219 +504,237 @@ test viewRelIndex {
         //                                  ^
     }
 
-    // [.around] view mode
+    // [.around]
     // -------------------
-    // [.trunc_mode = .hard]
+    // [.trunc_mode = *]
     {
-        // odd len (1)
+        // zero len
+        //
         try equal(
-            \\ 0 [0:1]
+            \\  [4:4]
             \\ ^ [0]
-        , .{false}, viewRelIndex("012345678", 0, .{ .around = 1 }, .{ .trunc_mode = .hard }));
-        //                        ^
+        , .{false}, viewRelIndex("012345678", 4, .{ .around = 0 }, .{ .trunc_mode = .hard }));
+        //                            ^
+        try equal(
+            \\  [4:4]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 4, .{ .around = 0 }, .{ .trunc_mode = .hard_flex }));
+        //                            ^
+        try equal(
+            \\  [4:4]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 4, .{ .around = 0 }, .{ .trunc_mode = .soft }));
+        //                            ^
+
+        try equal(
+            \\  [9:9]
+            \\  ^ [1]
+        , .{true}, viewRelIndex("012345678", 10, .{ .around = 0 }, .{ .trunc_mode = .hard }));
+        //                                  ^
+        try equal(
+            \\  [9:9]
+            \\  ^ [1]
+        , .{true}, viewRelIndex("012345678", 10, .{ .around = 0 }, .{ .trunc_mode = .hard_flex }));
+        //                                  ^
+        try equal(
+            \\  [9:9]
+            \\  ^ [1]
+        , .{true}, viewRelIndex("012345678", 10, .{ .around = 0 }, .{ .trunc_mode = .soft }));
+        //                                  ^
+
+        // odd len (1)
+        //
         try equal(
             \\ 4 [4:5]
             \\ ^ [0]
         , .{false}, viewRelIndex("012345678", 4, .{ .around = 1 }, .{ .trunc_mode = .hard }));
         //                            ^
         try equal(
+            \\ 4 [4:5]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 4, .{ .around = 1 }, .{ .trunc_mode = .hard_flex }));
+        //                            ^
+        try equal(
+            \\ 4 [4:5]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 4, .{ .around = 1 }, .{ .trunc_mode = .soft }));
+        //                            ^
+
+        // [.rshift_even_len]
+        try equal(
+            \\ 4 [4:5]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 4, .{ .around = 1 }, .{ .rshift_even_len = false }));
+        //                            ^
+
+        try equal(
             \\  [9:9]
             \\  ^ [1]
         , .{true}, viewRelIndex("012345678", 10, .{ .around = 1 }, .{ .trunc_mode = .hard }));
         //                                 ^
+        try equal(
+            \\  [9:9]
+            \\  ^ [1]
+        , .{true}, viewRelIndex("012345678", 10, .{ .around = 1 }, .{ .trunc_mode = .hard_flex }));
+        //                                 ^
+        try equal(
+            \\ 8 [8:9]
+            \\   ^ [2]
+        , .{true}, viewRelIndex("012345678", 10, .{ .around = 1 }, .{ .trunc_mode = .soft }));
+        //                                 ^
 
-        // odd len (5)
-        try equal(
-            \\ 23456 [2:7]
-            \\   ^ [2]
-        , .{false}, viewRelIndex("012345678", 4, .{ .around = 5 }, .{ .trunc_mode = .hard }));
-        //                          --^--
-        try equal(
-            \\ 012 [0:3]
-            \\ ^ [0]
-        , .{false}, viewRelIndex("012345678", 0, .{ .around = 5 }, .{ .trunc_mode = .hard }));
-        //                      --^--
-        try equal(
-            \\ 678 [6:9]
-            \\   ^ [2]
-        , .{false}, viewRelIndex("012345678", 8, .{ .around = 5 }, .{ .trunc_mode = .hard }));
-        //                              --^--
-        try equal(
-            \\ 78 [7:9]
-            \\   ^ [2]
-        , .{false}, viewRelIndex("012345678", 9, .{ .around = 5 }, .{ .trunc_mode = .hard }));
-        //                               --^--
-    }
-    {
         // even len (2)
         //
-        // [.rshift_even_len = true/false]
         try equal(
             \\ 45 [4:6]
             \\ ^ [0]
-        , .{false}, viewRelIndex("012345678", 4, .{ .around = 2 }, .{ .trunc_mode = .hard, .rshift_even_len = true }));
+        , .{false}, viewRelIndex("012345678", 4, .{ .around = 2 }, .{}));
         //                            ^-
+
+        // [.rshift_even_len]
         try equal(
             \\ 34 [3:5]
             \\  ^ [1]
-        , .{false}, viewRelIndex("012345678", 4, .{ .around = 2 }, .{ .trunc_mode = .hard, .rshift_even_len = false }));
+        , .{false}, viewRelIndex("012345678", 4, .{ .around = 2 }, .{ .rshift_even_len = false }));
         //                           -^
 
         // even len (4)
         //
-        // [.rshift_even_len = true]
         try equal(
             \\ 3456 [3:7]
             \\  ^ [1]
-        , .{false}, viewRelIndex("012345678", 4, .{ .around = 4 }, .{ .trunc_mode = .hard, .rshift_even_len = true }));
+        , .{false}, viewRelIndex("012345678", 4, .{ .around = 4 }, .{ .rshift_even_len = true }));
         //                           -^--
+
+        // [.rshift_even_len = false]
+        try equal(
+            \\ 2345 [2:6]
+            \\   ^ [2]
+        , .{false}, viewRelIndex("012345678", 4, .{ .around = 4 }, .{ .rshift_even_len = false }));
+        //                          --^-
+
         try equal(
             \\ 012 [0:3]
             \\ ^ [0]
         , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .hard, .rshift_even_len = true }));
         //                       -^--
         try equal(
-            \\ 8 [8:9]
-            \\  ^ [1]
-        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .hard, .rshift_even_len = true }));
-        //                                -^--
+            \\ 0123 [0:4]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_even_len = true }));
+        //                       -^--+
+        try equal(
+            \\ 0123 [0:4]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_even_len = true }));
+        //                       -^--+
 
         // [.rshift_even_len = false]
-        try equal(
-            \\ 2345 [2:6]
-            \\   ^ [2]
-        , .{false}, viewRelIndex("012345678", 4, .{ .around = 4 }, .{ .trunc_mode = .hard, .rshift_even_len = false }));
-        //                          --^-
         try equal(
             \\ 01 [0:2]
             \\ ^ [0]
         , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .hard, .rshift_even_len = false }));
         //                      --^-
         try equal(
+            \\ 0123 [0:4]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_even_len = false }));
+        //                      --^-++
+        try equal(
+            \\ 0123 [0:4]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_even_len = false }));
+        //                      --^-++
+
+        try equal(
+            \\ 8 [8:9]
+            \\  ^ [1]
+        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .hard, .rshift_even_len = true }));
+        //                                -^--
+        try equal(
+            \\ 678 [6:9]
+            \\    ^ [3]
+        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_even_len = true }));
+        //                              ++-^--
+        try equal(
+            \\ 5678 [5:9]
+            \\     ^ [4]
+        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_even_len = true }));
+        //                             +++-^--
+
+        // [.rshift_even_len = false]
+        try equal(
             \\ 78 [7:9]
             \\   ^ [2]
         , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .hard, .rshift_even_len = false }));
         //                               --^-
-    }
+        try equal(
+            \\ 678 [6:9]
+            \\    ^ [3]
+        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_even_len = false }));
+        //                              +--^-
+        try equal(
+            \\ 5678 [5:9]
+            \\     ^ [4]
+        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_even_len = false }));
+        //                             ++--^-
 
-    // [.trunc_mode = .hard_flex]
-    {
         // odd len (5)
+        //
+        try equal(
+            \\ 23456 [2:7]
+            \\   ^ [2]
+        , .{false}, viewRelIndex("012345678", 4, .{ .around = 5 }, .{ .trunc_mode = .hard }));
+        //                          --^--
+
+        try equal(
+            \\ 012 [0:3]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 0, .{ .around = 5 }, .{ .trunc_mode = .hard }));
+        //                      --^--
         try equal(
             \\ 01234 [0:5]
             \\ ^ [0]
         , .{false}, viewRelIndex("012345678", 0, .{ .around = 5 }, .{ .trunc_mode = .hard_flex }));
         //                      --^--++
         try equal(
-            \\ 45678 [4:9]
-            \\     ^ [4]
-        , .{false}, viewRelIndex("012345678", 8, .{ .around = 5 }, .{ .trunc_mode = .hard_flex }));
-        //                            ++--^--
+            \\ 01234 [0:5]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 0, .{ .around = 5 }, .{ .trunc_mode = .soft }));
+        //                      --^--++
+
+        try equal(
+            \\ 78 [7:9]
+            \\   ^ [2]
+        , .{false}, viewRelIndex("012345678", 9, .{ .around = 5 }, .{ .trunc_mode = .hard }));
+        //                               --^--
         try equal(
             \\ 5678 [5:9]
             \\     ^ [4]
         , .{false}, viewRelIndex("012345678", 9, .{ .around = 5 }, .{ .trunc_mode = .hard_flex }));
         //                             ++--^--
-    }
-    {
-        // even len (4)
-        //
-        // [.rshift_even_len = true]
-        try equal(
-            \\ 0123 [0:4]
-            \\ ^ [0]
-        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_even_len = true }));
-        //                       -^--+
-        try equal(
-            \\ 5678 [5:9]
-            \\    ^ [3]
-        , .{false}, viewRelIndex("012345678", 8, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_even_len = true }));
-        //                             ++-^--
-        try equal(
-            \\ 678 [6:9]
-            \\    ^ [3]
-        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_even_len = true }));
-        //                              ++-^--
-
-        // [.rshift_even_len = false]
-        try equal(
-            \\ 0123 [0:4]
-            \\ ^ [0]
-        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_even_len = false }));
-        //                      --^-++
-        try equal(
-            \\ 5678 [5:9]
-            \\    ^ [3]
-        , .{false}, viewRelIndex("012345678", 8, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_even_len = false }));
-        //                             +--^-
-        try equal(
-            \\ 678 [6:9]
-            \\    ^ [3]
-        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_even_len = false }));
-        //                              +--^-
-    }
-
-    // [.trunc_mode = .soft]
-    {
-        // odd len (5)
-        try equal(
-            \\ 01234 [0:5]
-            \\ ^ [0]
-        , .{false}, viewRelIndex("012345678", 0, .{ .around = 5 }, .{ .trunc_mode = .soft }));
-        //                      --^--++
-        try equal(
-            \\ 45678 [4:9]
-            \\     ^ [4]
-        , .{false}, viewRelIndex("012345678", 8, .{ .around = 5 }, .{ .trunc_mode = .soft }));
-        //                            ++--^--
         try equal(
             \\ 45678 [4:9]
             \\      ^ [5]
         , .{false}, viewRelIndex("012345678", 9, .{ .around = 5 }, .{ .trunc_mode = .soft }));
         //                            +++--^--
     }
-    {
-        // even len (4)
-        //
-        // [.rshift_even_len = true]
-        try equal(
-            \\ 0123 [0:4]
-            \\ ^ [0]
-        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_even_len = true }));
-        //                       -^--+
-        try equal(
-            \\ 5678 [5:9]
-            \\    ^ [3]
-        , .{false}, viewRelIndex("012345678", 8, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_even_len = true }));
-        //                             ++-^--
-        try equal(
-            \\ 5678 [5:9]
-            \\     ^ [4]
-        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_even_len = true }));
-        //                             ++--^-
 
-        // [.rshift_even_len = false]
-        try equal(
-            \\ 0123 [0:4]
-            \\ ^ [0]
-        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_even_len = false }));
-        //                      --^-++
-        try equal(
-            \\ 5678 [5:9]
-            \\    ^ [3]
-        , .{false}, viewRelIndex("012345678", 8, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_even_len = false }));
-        //                             +--^-
-        try equal(
-            \\ 5678 [5:9]
-            \\     ^ [4]
-        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_even_len = false }));
-        //                             ++--^-
-    }
-
-    // [.right] view mode
-    // ----------------
+    // [.right]
+    // -------------------
     // [.trunc_mode = *]
     {
+        try equal(
+            \\  [4:4]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 4, .{ .right = 0 }, .{}));
+        //                            ^
+        try equal(
+            \\  [9:9]
+            \\  ^ [1]
+        , .{true}, viewRelIndex("012345678", 10, .{ .right = 0 }, .{}));
+        //                                 ^
+
         try equal(
             \\ 4567 [4:8]
             \\ ^ [0]
@@ -735,10 +757,21 @@ test viewRelIndex {
         //                            ++++ ^---
     }
 
-    // [.left] view mode
-    // ----------------
+    // [.left]
+    // -------------------
     // [.trunc_mode = *]
     {
+        try equal(
+            \\  [4:4]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 4, .{ .left = 0 }, .{}));
+        //                            ^
+        try equal(
+            \\  [9:9]
+            \\  ^ [1]
+        , .{true}, viewRelIndex("012345678", 10, .{ .left = 0 }, .{}));
+        //                                 ^
+
         try equal(
             \\ 1234 [1:5]
             \\    ^ [3]
@@ -763,10 +796,21 @@ test viewRelIndex {
         //                              ---^
     }
 
-    // [.exp_right] view mode
-    // ----------------
+    // [.exp_right]
+    // -------------------
     // [.trunc_mode = *]
     {
+        try equal(
+            \\ 3 [3:4]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 3, .{ .exp_right = 0 }, .{}));
+        //                           ^
+        try equal(
+            \\  [9:9]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 9, .{ .exp_right = 0 }, .{}));
+        //                                 ^
+
         try equal(
             \\ 34567 [3:8]
             \\ ^ [0]
@@ -781,7 +825,7 @@ test viewRelIndex {
             \\ 678 [6:9]
             \\     ^ [4]
         , .{true}, viewRelIndex("012345678", 10, .{ .exp_right = 4 }, .{ .trunc_mode = .hard_flex }));
-        //                             +++~~
+        //                             +++
         //                                 ^----
         try equal(
             \\ 45678 [4:9]
@@ -790,10 +834,21 @@ test viewRelIndex {
         //                           +++++ ^----
     }
 
-    // [.exp_left] view mode
-    // ----------------
+    // [.exp_left]
+    // -------------------
     // [.trunc_mode = *]
     {
+        try equal(
+            \\ 3 [3:4]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 3, .{ .exp_left = 0 }, .{}));
+        //                           ^
+        try equal(
+            \\  [9:9]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 9, .{ .exp_left = 0 }, .{}));
+        //                                 ^
+
         try equal(
             \\ 12345 [1:6]
             \\     ^ [4]
@@ -808,7 +863,7 @@ test viewRelIndex {
             \\ 678 [6:9]
             \\     ^ [4]
         , .{true}, viewRelIndex("012345678", 10, .{ .exp_left = 4 }, .{ .trunc_mode = .hard_flex }));
-        //                             +++~~
+        //                             +++
         //                             ----^
         try equal(
             \\ 45678 [4:9]
@@ -818,10 +873,21 @@ test viewRelIndex {
         //                             ----^
     }
 
-    // [.exp_sides] view mode
-    // ----------------
+    // [.exp_sides]
+    // -------------------
     // [.trunc_mode = *]
     {
+        try equal(
+            \\ 3 [3:4]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 3, .{ .exp_sides = 0 }, .{}));
+        //                           ^
+        try equal(
+            \\  [9:9]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 9, .{ .exp_sides = 0 }, .{}));
+        //                                 ^
+
         try equal(
             \\ 1234567 [1:8]
             \\    ^ [3]
@@ -836,7 +902,7 @@ test viewRelIndex {
             \\ 45678 [4:9]
             \\       ^ [6]
         , .{true}, viewRelIndex("012345678", 10, .{ .exp_sides = 3 }, .{ .trunc_mode = .hard_flex }));
-        //                           +++++~~
+        //                           +++++
         //                              ---^---
         try equal(
             \\ 2345678 [2:9]
@@ -846,8 +912,8 @@ test viewRelIndex {
         //                              ---^---
     }
 
-    // [.exp_custom] view mode
-    // ----------------
+    // [.exp_custom]
+    // -------------------
     // [.trunc_mode = *]
     {
         try equal(
@@ -857,8 +923,8 @@ test viewRelIndex {
         //                         --^----
     }
 
-    // [.extra_shift = .right/left = *]
-    // ----------------
+    // [.extra_shift = *]
+    // -------------------
     {
         try equal(
             \\ 3456 [3:7]
@@ -883,10 +949,8 @@ pub fn viewRelRange(
     mode: View.Mode,
     comptime opt: View.Options,
 ) ?View.RelRange {
-    if (start == end) {
-        const v = viewRelIndex(slice, start, mode, opt);
-        return .{ .start = v.start, .end = v.end, .start_pos = v.index_pos, .end_pos = v.index_pos };
-    }
+    if (start == end)
+        return viewRelIndex(slice, start, mode, opt).toRelRange();
 
     // ensure start <= end
     const s, const e = if (start < end) .{ start, end } else .{ end, start };
@@ -926,13 +990,7 @@ pub fn viewRelRange(
         }
     }
 
-    const view_start, const view_end = view.retrieve(slice, s, range, opt.trunc_mode);
-    return .{
-        .start = view_start,
-        .end = view_end,
-        .start_pos = s - view_start,
-        .end_pos = e - view_start,
-    };
+    return view.retrieve(slice, s, range, opt.trunc_mode).toRelRange(s, e);
 }
 
 test viewRelRange {
