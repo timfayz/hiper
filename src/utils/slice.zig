@@ -192,7 +192,7 @@ pub const View = struct {
     /// The end index of the segment.
     end: usize,
 
-    pub usingnamespace Shared(@This());
+    pub usingnamespace Shared(View);
 
     fn Shared(Self: type) type {
         return struct {
@@ -209,7 +209,7 @@ pub const View = struct {
     }
 
     /// Wraps `View` into `View.RelIndex`.
-    pub fn toRelIndex(self: *const @This(), index: usize) RelIndex {
+    pub fn toRelIndex(self: *const View, index: usize) RelIndex {
         return .{
             .start = self.start,
             .end = self.end,
@@ -218,7 +218,7 @@ pub const View = struct {
     }
 
     /// Wraps `View` into `View.RelRange`.
-    pub fn toRelRange(self: *const @This(), start: usize, end: usize) RelRange {
+    pub fn toRelRange(self: *const View, start: usize, end: usize) RelRange {
         return .{
             .start = self.start,
             .end = self.end,
@@ -233,12 +233,8 @@ pub const View = struct {
         trunc_mode: TruncMode = .hard_flex,
         /// Extra shift to the precalculated view span.
         extra_shift: ?union(enum) { right: usize, left: usize } = null,
-        /// Shifts even-length view span one index to the right.
-        /// Applies only to the `.around` index-relative view mode.
-        rshift_even_len: bool = true,
-        /// Shifts uneven padding around the range by one to the right.
-        /// Applies only to the `.around` range-relative view mode.
-        rshift_odd_pad: bool = true,
+        /// Shifts uneven padding around the index/range by one to the right.
+        rshift_uneven: bool = true,
         /// Minimum padding around the view size before returning null.
         /// Applies only to the `.around` range-relative view mode.
         min_pad: usize = 0,
@@ -265,22 +261,37 @@ pub const View = struct {
         /// Position of the original `index` relative to the segment.
         index_pos: usize,
 
-        pub usingnamespace Shared(@This());
+        pub usingnamespace Shared(RelIndex);
 
         /// Checks if the relative index position exceeds the actual segment
         /// boundaries.
-        pub fn indexPosExceeds(self: *const @This()) bool {
+        pub fn indexPosExceeds(self: *const RelIndex) bool {
             return self.index_pos > self.len();
         }
 
         /// Wraps `View.RelIndex` into `View.RelRange`.
-        pub fn toRelRange(self: *const @This()) RelRange {
+        pub fn toRelRange(self: *const RelIndex) RelRange {
             return .{
                 .start = self.start,
                 .end = self.end,
                 .start_pos = self.index_pos,
                 .end_pos = self.index_pos,
             };
+        }
+
+        pub fn debugRender(self: *const RelIndex, writer: anytype, input: []const u8) !void {
+            // render input
+            try writer.print(" {s} [{d}:{d}]\n", .{
+                self.slice([]const u8, input),
+                self.start,
+                self.end,
+            });
+            // render cursor ^
+            try writer.print(" {[0]c: >[1]} [{[2]d}]", .{
+                '^', // [0]
+                self.index_pos + 1, // [1] pad before ^
+                self.index_pos, // [2]
+            });
         }
     };
 
@@ -295,23 +306,48 @@ pub const View = struct {
         /// Position of the original `end` index relative to the segment.
         end_pos: usize,
 
-        pub usingnamespace Shared(@This());
+        pub usingnamespace Shared(RelRange);
 
         /// Returns the length of the requested segment range.
-        pub fn rangeLen(self: *const @This()) usize {
+        pub fn rangeLen(self: *const RelRange) usize {
             return self.end_pos - self.start_pos +| 1;
         }
 
         /// Checks if the relative range start position exceeds the actual segment
         /// boundaries.
-        pub fn startPosExceeds(self: *const @This()) bool {
+        pub fn startPosExceeds(self: *const RelRange) bool {
             return self.start_pos > self.len();
         }
 
         /// Checks if the relative range end position exceeds the actual segment
         /// boundaries.
-        pub fn endPosExceeds(self: *const @This()) bool {
+        pub fn endPosExceeds(self: *const RelRange) bool {
             return self.end_pos > self.len();
+        }
+
+        pub fn debugRender(self: *const RelRange, writer: anytype, input: []const u8) !void {
+            // render input
+            try writer.print(" {s} [{d}:{d}]\n", .{
+                self.slice([]const u8, input),
+                self.start,
+                self.end,
+            });
+            // render cursor ^ or ^~~^
+            if (self.start_pos == self.end_pos)
+                try writer.print(" {[0]c: >[1]} [{[2]d}]", .{
+                    '^', // [0]
+                    self.start_pos + 1, // [1] pad before ^
+                    self.start_pos, // [2]
+                })
+            else
+                try writer.print(" {[0]c: >[1]}{[0]c:~>[2]} [{[3]d}:{[4]d}]", .{
+                    '^', // [0]
+                    self.start_pos + 1, // [1] pad before first ^
+                    self.end_pos - self.start_pos, // [2] pad before second ^
+                    self.start_pos, // [3]
+                    self.end_pos, // [4]
+                });
+            try writer.print(" len={d}", .{self.rangeLen()});
         }
     };
 
@@ -332,7 +368,7 @@ pub const View = struct {
         /// Custom left and right spans relative to index/range.
         exp_custom: Span,
 
-        pub fn len(self: @This()) usize {
+        pub fn len(self: Mode) usize {
             return switch (self) {
                 .exp_custom => |amt| amt.left + amt.right,
                 inline else => |amt| amt,
@@ -340,7 +376,7 @@ pub const View = struct {
         }
     };
 
-    /// Helper to calculate correct start:end indices for a slice view mode.
+    /// Helper to calculate correct start:end indices for different view modes.
     const Span = struct {
         left: usize,
         right: usize,
@@ -359,37 +395,80 @@ pub const View = struct {
             return self.left +| self.right;
         }
 
+        pub fn init(
+            mode: View.Mode,
+            middle_len: usize,
+            comptime opt: View.Options,
+        ) ?Span {
+            var view: View.Span = undefined;
+            switch (mode) {
+                inline .around, .left, .right => |view_len, tag| {
+                    // check if the range fits
+                    if (middle_len +| opt.min_pad *| 2 > view_len)
+                        return null;
+                    // otherwise distribute available space
+                    const len_left = view_len - middle_len;
+                    switch (tag) {
+                        .around => {
+                            const pad = len_left / 2;
+                            view = View.Span{ .left = pad, .right = pad };
+                            if (len_left & 1 != 0) { // compensate lost item during odd division
+                                if (opt.rshift_uneven) view.right +|= 1 else view.left +|= 1;
+                            }
+                        },
+                        .left => view = View.Span{ .left = len_left, .right = 0 },
+                        .right => view = View.Span{ .left = 0, .right = len_left },
+                        else => unreachable,
+                    }
+                },
+                .exp_sides => |view_len| view = View.Span{ .left = view_len, .right = view_len },
+                .exp_left => |view_len| view = View.Span{ .left = view_len, .right = 0 },
+                .exp_right => |view_len| view = View.Span{ .left = 0, .right = view_len },
+                .exp_custom => |view_len| view = View.Span{ .left = view_len.left, .right = view_len.right },
+            }
+
+            // include cursor's thickness
+            view.right +|= middle_len;
+
+            // extra shift
+            if (opt.extra_shift) |shift| {
+                switch (shift) {
+                    .left => |amt| view.shiftLeft(amt),
+                    .right => |amt| view.shiftRight(amt),
+                }
+            }
+
+            return view;
+        }
+
         pub fn retrieve(
             self: *const Span,
             slice: anytype,
             index: usize,
-            extra: usize,
-            comptime trunc_mode: View.Options.TruncMode,
+            index_width: usize,
+            comptime opt: View.Options,
         ) View {
-            const size_len = self.len();
+            const span_len = self.len();
             const slice_start = @min(
                 index -| self.left,
-                switch (trunc_mode) {
+                switch (opt.trunc_mode) {
                     .hard => slice.len,
                     .hard_flex => b: {
-                        const overrun = index -| (slice.len -| 1);
-                        break :b slice.len -| (size_len -| overrun);
+                        const index_end = index + (index_width -| 1);
+                        const overrun = index_end -| (slice.len -| 1);
+                        break :b slice.len -| (span_len -| overrun);
                     },
-                    .soft => slice.len -| size_len,
+                    .soft => slice.len -| span_len,
                 },
             );
             const slice_end = @min(
                 slice.len,
-                switch (trunc_mode) {
-                    .hard => index +| self.right +| extra,
-                    .hard_flex, .soft => slice_start +| size_len +| extra,
+                switch (opt.trunc_mode) {
+                    .hard => index +| self.right,
+                    .hard_flex, .soft => slice_start +| span_len,
                 },
             );
             return .{ .start = slice_start, .end = slice_end };
-        }
-
-        test Span {
-            //
         }
     };
 };
@@ -438,39 +517,11 @@ pub fn viewRelIndex(
     mode: View.Mode,
     comptime opt: View.Options,
 ) View.RelIndex {
-    var view: View.Span = undefined;
-    switch (mode) {
-        inline .around, .left, .right => |view_len, tag| {
-            if (view_len == 0) {
-                const i = @min(index, slice.len);
-                return .{ .start = i, .end = i, .index_pos = index -| i };
-            }
-            switch (tag) {
-                .around => {
-                    view = View.Span{ .left = view_len / 2, .right = view_len / 2 };
-                    if (view_len & 1 != 0) view.right +|= 1 // compensate odd division
-                    else if (opt.rshift_even_len) view.shiftRight(1);
-                },
-                .left => view = View.Span{ .left = view_len -| 1, .right = 1 },
-                .right => view = View.Span{ .left = 0, .right = view_len },
-                else => unreachable,
-            }
-        },
-        .exp_sides => |len| view = View.Span{ .left = len, .right = len +| 1 },
-        .exp_left => |len| view = View.Span{ .left = len, .right = 1 },
-        .exp_right => |len| view = View.Span{ .left = 0, .right = len +| 1 },
-        .exp_custom => |len| view = View.Span{ .left = len.left, .right = len.right },
-    }
-
-    // extra shift
-    if (opt.extra_shift) |shift| {
-        switch (shift) {
-            .left => |amt| view.shiftLeft(amt),
-            .right => |amt| view.shiftRight(amt),
-        }
-    }
-
-    return view.retrieve(slice, index, 0, opt.trunc_mode).toRelIndex(index);
+    var view: View.Span = View.Span.init(mode, 1, opt) orelse { // zero len view
+        const i = @min(index, slice.len);
+        return .{ .start = i, .end = i, .index_pos = index -| i };
+    };
+    return view.retrieve(slice, index, 0, opt).toRelIndex(index);
 }
 
 test viewRelIndex {
@@ -479,11 +530,7 @@ test viewRelIndex {
     const equal = struct {
         pub fn run(expect: []const u8, extra: anytype, view: View.RelIndex) !void {
             var buf = std.BoundedArray(u8, 1024){};
-            const w = buf.writer();
-            // render input
-            try w.print(" {s} [{d}:{d}]\n", .{ view.slice([]const u8, input), view.start, view.end });
-            // render cursor
-            try w.print(" {[0]c: >[1]} [{[2]d}]", .{ '^', view.index_pos + 1, view.index_pos });
+            try view.debugRender(buf.writer(), input);
             try std.testing.expectEqualStrings(expect, buf.slice());
             try std.testing.expectEqual(extra[0], view.indexPosExceeds());
         }
@@ -560,11 +607,11 @@ test viewRelIndex {
         , .{false}, viewRelIndex("012345678", 4, .{ .around = 1 }, .{ .trunc_mode = .soft }));
         //                            ^
 
-        // [.rshift_even_len]
+        // [.rshift_uneven = false]
         try equal(
             \\ 4 [4:5]
             \\ ^ [0]
-        , .{false}, viewRelIndex("012345678", 4, .{ .around = 1 }, .{ .rshift_even_len = false }));
+        , .{false}, viewRelIndex("012345678", 4, .{ .around = 1 }, .{ .rshift_uneven = false }));
         //                            ^
 
         try equal(
@@ -591,11 +638,11 @@ test viewRelIndex {
         , .{false}, viewRelIndex("012345678", 4, .{ .around = 2 }, .{}));
         //                            ^-
 
-        // [.rshift_even_len]
+        // [.rshift_uneven = false]
         try equal(
             \\ 34 [3:5]
             \\  ^ [1]
-        , .{false}, viewRelIndex("012345678", 4, .{ .around = 2 }, .{ .rshift_even_len = false }));
+        , .{false}, viewRelIndex("012345678", 4, .{ .around = 2 }, .{ .rshift_uneven = false }));
         //                           -^
 
         // even len (4)
@@ -603,80 +650,80 @@ test viewRelIndex {
         try equal(
             \\ 3456 [3:7]
             \\  ^ [1]
-        , .{false}, viewRelIndex("012345678", 4, .{ .around = 4 }, .{ .rshift_even_len = true }));
+        , .{false}, viewRelIndex("012345678", 4, .{ .around = 4 }, .{ .rshift_uneven = true }));
         //                           -^--
 
-        // [.rshift_even_len = false]
+        // [.rshift_uneven = false]
         try equal(
             \\ 2345 [2:6]
             \\   ^ [2]
-        , .{false}, viewRelIndex("012345678", 4, .{ .around = 4 }, .{ .rshift_even_len = false }));
+        , .{false}, viewRelIndex("012345678", 4, .{ .around = 4 }, .{ .rshift_uneven = false }));
         //                          --^-
 
         try equal(
             \\ 012 [0:3]
             \\ ^ [0]
-        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .hard, .rshift_even_len = true }));
+        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .hard, .rshift_uneven = true }));
         //                       -^--
         try equal(
             \\ 0123 [0:4]
             \\ ^ [0]
-        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_even_len = true }));
+        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_uneven = true }));
         //                       -^--+
         try equal(
             \\ 0123 [0:4]
             \\ ^ [0]
-        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_even_len = true }));
+        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_uneven = true }));
         //                       -^--+
 
-        // [.rshift_even_len = false]
+        // [.rshift_uneven = false]
         try equal(
             \\ 01 [0:2]
             \\ ^ [0]
-        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .hard, .rshift_even_len = false }));
+        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .hard, .rshift_uneven = false }));
         //                      --^-
         try equal(
             \\ 0123 [0:4]
             \\ ^ [0]
-        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_even_len = false }));
+        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_uneven = false }));
         //                      --^-++
         try equal(
             \\ 0123 [0:4]
             \\ ^ [0]
-        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_even_len = false }));
+        , .{false}, viewRelIndex("012345678", 0, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_uneven = false }));
         //                      --^-++
 
         try equal(
             \\ 8 [8:9]
             \\  ^ [1]
-        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .hard, .rshift_even_len = true }));
+        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .hard, .rshift_uneven = true }));
         //                                -^--
         try equal(
             \\ 678 [6:9]
             \\    ^ [3]
-        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_even_len = true }));
+        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_uneven = true }));
         //                              ++-^--
         try equal(
             \\ 5678 [5:9]
             \\     ^ [4]
-        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_even_len = true }));
+        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_uneven = true }));
         //                             +++-^--
 
-        // [.rshift_even_len = false]
+        // [.rshift_uneven = false]
         try equal(
             \\ 78 [7:9]
             \\   ^ [2]
-        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .hard, .rshift_even_len = false }));
+        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .hard, .rshift_uneven = false }));
         //                               --^-
         try equal(
             \\ 678 [6:9]
             \\    ^ [3]
-        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_even_len = false }));
+        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .hard_flex, .rshift_uneven = false }));
         //                              +--^-
         try equal(
             \\ 5678 [5:9]
             \\     ^ [4]
-        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_even_len = false }));
+        , .{false}, viewRelIndex("012345678", 9, .{ .around = 4 }, .{ .trunc_mode = .soft, .rshift_uneven = false }));
         //                             ++--^-
 
         // odd len (5)
@@ -917,9 +964,9 @@ test viewRelIndex {
     // [.trunc_mode = *]
     {
         try equal(
-            \\ 012345 [0:6]
+            \\ 1234567 [1:8]
             \\   ^ [2]
-        , .{false}, viewRelIndex("012345678", 2, .{ .exp_custom = .{ .left = 2, .right = 4 } }, .{}));
+        , .{false}, viewRelIndex("012345678", 3, .{ .exp_custom = .{ .left = 2, .right = 4 } }, .{}));
         //                         --^----
     }
 
@@ -954,43 +1001,10 @@ pub fn viewRelRange(
 
     // ensure start <= end
     const s, const e = if (start < end) .{ start, end } else .{ end, start };
-    const range = e - s +| 1; // make end inclusive
+    const range_len = e - s +| 1; // +1 makes end inclusive
 
-    var view: View.Span = undefined;
-    switch (mode) {
-        inline .around, .left, .right => |view_len, tag| {
-            // if the range doesn't fit
-            if (range +| opt.min_pad *| 2 > view_len) return null;
-            // otherwise distribute available space
-            const len_left = view_len - range;
-            switch (tag) {
-                .around => {
-                    const pad = len_left / 2;
-                    view = View.Span{ .left = pad, .right = pad };
-                    if (len_left & 1 != 0) { // compensate lost item during odd division
-                        if (opt.rshift_odd_pad) view.right +|= 1 else view.left +|= 1;
-                    }
-                },
-                .left => view = View.Span{ .left = len_left, .right = 0 },
-                .right => view = View.Span{ .left = 0, .right = len_left },
-                else => unreachable,
-            }
-        },
-        .exp_sides => |len| view = View.Span{ .left = len, .right = len },
-        .exp_left => |len| view = View.Span{ .left = len, .right = 0 },
-        .exp_right => |len| view = View.Span{ .left = 0, .right = len },
-        .exp_custom => |len| view = View.Span{ .left = len.left, .right = len.right },
-    }
-
-    // extra shift
-    if (opt.extra_shift) |shift| {
-        switch (shift) {
-            .left => |amt| view.shiftLeft(amt),
-            .right => |amt| view.shiftRight(amt),
-        }
-    }
-
-    return view.retrieve(slice, s, range, opt.trunc_mode).toRelRange(s, e);
+    const view = View.Span.init(mode, range_len, opt) orelse return null;
+    return view.retrieve(slice, s, range_len, opt).toRelRange(s, e);
 }
 
 test viewRelRange {
@@ -999,42 +1013,18 @@ test viewRelRange {
     const equal = struct {
         pub fn run(expect: []const u8, extra: anytype, view: ?View.RelRange) !void {
             var buf = std.BoundedArray(u8, 1024){};
-            const w = buf.writer();
+            const writer = buf.writer();
             if (view) |v| {
-                // render input
-                try w.print(" {s} [{d}:{d}]\n", .{ v.slice([]const u8, input), v.start, v.end });
-                // render cursor
-                if (v.start_pos == v.end_pos)
-                    try w.print(" {[0]c: >[1]} [{[2]d}] len={[3]d}", .{
-                        '^', // 0
-                        v.start_pos + 1, // 1
-                        v.start_pos, // 2
-                        v.rangeLen(), // 3
-                    })
-                else
-                    try w.print(" {[0]c: >[1]}{[0]c:~>[2]} [{[3]d}:{[4]d}] len={[5]d}", .{
-                        '^', // 0
-                        v.start_pos + 1, // 1
-                        v.end_pos - v.start_pos, // 2
-                        v.start_pos, // 3
-                        v.end_pos, // 4
-                        v.rangeLen(), // 5
-                    });
+                try v.debugRender(writer, input);
                 try std.testing.expectEqualStrings(expect, buf.slice());
                 try std.testing.expectEqual(extra[0], v.startPosExceeds());
                 try std.testing.expectEqual(extra[1], v.endPosExceeds());
             } else {
-                try w.print(" null", .{});
+                try writer.print(" null", .{});
                 try std.testing.expectEqualStrings(expect, buf.slice());
             }
         }
     }.run;
-
-    try equal(
-        \\ 34 [3:5]
-        \\ ^^ [0:1] len=2
-    , .{ false, false }, viewRelRange("0123456789", 3, 4, .{ .exp_sides = 0 }, .{}));
-    //                                    ^^
 
     // [start == end]
     // ----------------
@@ -1054,7 +1044,7 @@ test viewRelRange {
             \\  [10:10]
             \\  ^ [1] len=1
         , .{ true, true }, viewRelRange("0123456789", 11, 11, .{ .right = 0 }, .{}));
-        //                                            ^
+        //                                          ^
     }
 
     // [.around] view mode
@@ -1083,7 +1073,7 @@ test viewRelRange {
         , .{ true, true }, viewRelRange("0123456789", 11, 14, .{ .around = 4 }, .{}));
         //                                           ^~~^
 
-        // range does not fit view len [.min_pad]
+        // [.min_pad] range doesn't fit view len
         //
         try equal(
             \\ null
@@ -1103,6 +1093,18 @@ test viewRelRange {
         , .{ false, false }, viewRelRange("0123456789", 3, 5, .{ .around = 7 }, .{ .min_pad = 3 }));
         //                                 %--^~^--%
 
+        // [.rshift_uneven = *]
+        try equal(
+            \\ 234567 [2:8]
+            \\  ^~^ [1:3] len=3
+        , .{ false, false }, viewRelRange("0123456789", 3, 5, .{ .around = 6 }, .{ .rshift_uneven = true }));
+        //                                   -^~^--
+        try equal(
+            \\ 123456 [1:7]
+            \\   ^~^ [2:4] len=3
+        , .{ false, false }, viewRelRange("0123456789", 3, 5, .{ .around = 6 }, .{ .rshift_uneven = false }));
+        //                                  --^~^-
+
         // [.trunc_mode = hard]
         try equal(
             \\ 01234 [0:5]
@@ -1121,16 +1123,32 @@ test viewRelRange {
             \\ ^~^ [0:2] len=3
         , .{ false, false }, viewRelRange("0123456789", 0, 2, .{ .around = 7 }, .{ .trunc_mode = .hard_flex }));
         //                               --^~^--++
-        // try equal(
-        //     \\ 3456789 [3:10]
-        //     \\     ^~^ [4:6] len=3
-        // , .{ false, false }, viewRelRange("0123456789", 7, 9, .{ .around = 7 }, .{ .trunc_mode = .hard_flex }));
-        // //                                    ++--^~^-- (TODO)
+        try equal(
+            \\ 3456789 [3:10]
+            \\     ^~^ [4:6] len=3
+        , .{ false, false }, viewRelRange("0123456789", 7, 9, .{ .around = 7 }, .{ .trunc_mode = .hard_flex }));
+        //                                    ++--^~^--
+        try equal(
+            \\ 456789 [4:10]
+            \\     ^~^ [4:6] len=3
+        , .{ false, false }, viewRelRange("0123456789", 8, 10, .{ .around = 7 }, .{ .trunc_mode = .hard_flex }));
+        //                                     ++--^~^--
+        try equal(
+            \\ 6789 [6:10]
+            \\     ^~^ [4:6] len=3
+        , .{ false, true }, viewRelRange("0123456789", 10, 12, .{ .around = 7 }, .{ .trunc_mode = .hard_flex }));
+        //                                      ++--^~^--
     }
 
     // [.exp_sides] view mode
     // ----------------
     {
+        try equal(
+            \\ 34 [3:5]
+            \\ ^^ [0:1] len=2
+        , .{ false, false }, viewRelRange("0123456789", 3, 4, .{ .exp_sides = 0 }, .{}));
+        //                                    ^^
+
         try equal(
             \\ 12345678 [1:9]
             \\   ^~~^ [2:5] len=4
@@ -1146,6 +1164,13 @@ test viewRelRange {
             \\   ^~~^ [2:5] len=4
         , .{ false, false }, viewRelRange("0123456789", 3, 6, .{ .exp_left = 2 }, .{}));
         //                                  --^~~^
+
+        try equal(
+            \\ 89 [8:10]
+            \\   ^~~^ [2:5] len=4
+        , .{ false, true }, viewRelRange("0123456789", 10, 13, .{ .exp_left = 2 }, .{}));
+        //                                        --^~~^
+
     }
 
     // [.exp_right] view mode
