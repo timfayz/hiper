@@ -403,21 +403,21 @@ pub const View = struct {
             var view: View.Span = undefined;
             switch (mode) {
                 inline .around, .left, .right => |view_len, tag| {
-                    // check if the range fits
+                    // range view, check if the range fits
                     if (middle_len +| opt.min_pad *| 2 > view_len)
                         return null;
-                    // otherwise distribute available space
-                    const len_left = view_len - middle_len;
+                    // if it does, distribute available span
+                    const avail_len = view_len - middle_len;
                     switch (tag) {
                         .around => {
-                            const pad = len_left / 2;
+                            const pad = avail_len / 2;
                             view = View.Span{ .left = pad, .right = pad };
-                            if (len_left & 1 != 0) { // compensate lost item during odd division
+                            if (avail_len & 1 != 0) { // compensate lost item during odd division
                                 if (opt.rshift_uneven) view.right +|= 1 else view.left +|= 1;
                             }
                         },
-                        .left => view = View.Span{ .left = len_left, .right = 0 },
-                        .right => view = View.Span{ .left = 0, .right = len_left },
+                        .left => view = View.Span{ .left = avail_len, .right = 0 },
+                        .right => view = View.Span{ .left = 0, .right = avail_len },
                         else => unreachable,
                     }
                 },
@@ -1031,9 +1031,9 @@ test viewRelRange {
     // fallback to viewRelIndex
     {
         try equal(
-            \\ 3456 [3:7]
+            \\ 3 [3:4]
             \\ ^ [0] len=1
-        , .{ false, false }, viewRelRange("0123456789", 3, 3, .{ .right = 4 }, .{}));
+        , .{ false, false }, viewRelRange("0123456789", 3, 3, .{ .around = 1 }, .{}));
         //                                    ^
         try equal(
             \\  [3:3]
