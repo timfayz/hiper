@@ -9,6 +9,14 @@
 
 const std = @import("std");
 
+/// Returns a tuple of two numbers sorted in ascending order.
+pub fn orderPair(
+    num1: anytype,
+    num2: anytype,
+) struct { @TypeOf(num1), @TypeOf(num2) } {
+    return if (num1 < num2) .{ num1, num2 } else .{ num2, num1 };
+}
+
 pub fn typeIsNum(T: type) void {
     if (@typeInfo(T) != .int and @typeInfo(T) != .float)
         @compileError("type must be a number, got " ++ @tagName(@typeInfo(T)));
