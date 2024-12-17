@@ -2,6 +2,7 @@
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
 //! Public API:
+//! - orderPair
 //! - typeIsNum
 //! - countIntLen
 //! - isInRangeInc
