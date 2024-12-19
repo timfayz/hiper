@@ -66,18 +66,20 @@ pub fn printLine(
     // if scope is null but scope.rangeLen() fits mode.len(), it may mean
     // we need to split the view at each index separately
 
-    const num_col_len = if (opt.show_line_num) num.countIntLen(ret.lastLineNum()) else 0;
-    const num_col_sep_len = if (opt.show_line_num) opt.line_num_sep.len else 0;
-
     // render lines
-    for (ret.lines, ret.firstLineNum().., 0..) |line, ln, i| {
-        if (opt.show_line_num) try writeLineNum(writer, ln, num_col_len, opt);
-        const trim_len = try writeLine(writer, input, mode, scope.?, line, opt);
-        // cursor
-        if (opt.show_cursor and ret.curr_line_pos == i) {
-            const extra_pad = num_col_len + num_col_sep_len + trim_len;
-            try writeCursor(writer, input, scope.?, extra_pad, opt);
-        }
+    const line_num_len = if (opt.show_line_num) num.countIntLen(ret.lastLineNum()) else 0;
+    for (ret.lines, ret.firstLineNum().., 0..) |line, line_number, i| {
+        try writeLine(
+            writer,
+            input,
+            line,
+            line_number,
+            line_num_len,
+            ret.curr_line_pos == i,
+            mode,
+            scope.?,
+            opt,
+        );
     }
 }
 
@@ -87,34 +89,34 @@ pub fn printLine(
 fn printLineWithCursor(
     writer: anytype,
     input: []const u8,
-    mode: slice.ViewMode,
+    index: anytype,
+    comptime mode: slice.ViewMode,
     amount: lr.ReadRequest,
+    line_num: lr.CurrLineNum,
     comptime opt: PrintOptions,
 ) !void {
     comptime var opt_ = opt;
     opt_.show_cursor = true; // force
-    return printLine(writer, input, mode, amount, opt_);
-}
-
-/// Implementation function.
-fn writeLineNum(
-    writer: anytype,
-    line_num: usize,
-    pad_size: usize,
-    comptime opt: PrintOptions,
-) !void {
-    try writer.print("{d: <[1]}" ++ opt.line_num_sep, .{ line_num, pad_size });
+    return printLine(writer, input, index, mode, amount, line_num, opt_);
 }
 
 /// Implementation function.
 fn writeLine(
     writer: anytype,
     input: []const u8,
+    line: []const u8,
+    line_num: usize,
+    line_num_len: usize,
+    line_is_curr: bool,
     mode: slice.ViewMode,
     scope: CurrLineScope,
-    line: []const u8,
     comptime opt: PrintOptions,
-) !usize {
+) !void {
+    // render line number
+    if (opt.show_line_num)
+        try writer.print("{d: <[1]}" ++ opt.line_num_sep, .{ line_num, line_num_len });
+
+    // render line
     var trunc_len: usize = 0;
     if (mode == .full) { // full line
         try writer.writeAll(line);
@@ -139,7 +141,12 @@ fn writeLine(
         }
     }
     try writer.writeByte('\n');
-    return trunc_len;
+
+    // render cursor
+    if (opt.show_cursor and line_is_curr) {
+        const extra_pad = line_num_len + (if (opt.show_line_num) opt.line_num_sep.len else 0) + trunc_len;
+        try writeCursor(writer, input, scope, extra_pad, opt);
+    }
 }
 
 /// Implementation function.
@@ -226,8 +233,7 @@ test printLine {
     , string(&buf));
 
     // [.show_eof]
-    try printLine(w, "hello", 1, .{ .full = {} }, .{ .forward = 1 }, .detect, .{
-        .show_cursor = true,
+    try printLineWithCursor(w, "hello", 1, .{ .full = {} }, .{ .forward = 1 }, .detect, .{
         .show_eof = false,
     });
     try equal(
@@ -236,8 +242,7 @@ test printLine {
     , string(&buf));
 
     // [.hint_printable_chars]
-    try printLine(w, "hello", 1, .{ .full = {} }, .{ .forward = 1 }, .detect, .{
-        .show_cursor = true,
+    try printLineWithCursor(w, "hello", 1, .{ .full = {} }, .{ .forward = 1 }, .detect, .{
         .hint_printable_chars = true,
     });
     try equal(
@@ -245,13 +250,27 @@ test printLine {
         \\    ^ ('\x65')
     , string(&buf));
 
-    // (end of string) hint
-    try printLine(w, "hello", 5, .{ .full = {} }, .{ .forward = 1 }, .detect, .{
-        .show_cursor = true,
-    });
+    // end of string hint
+    try printLineWithCursor(w, "hello", 5, .{ .full = {} }, .{ .forward = 1 }, .detect, .{});
     try equal(
         \\1| hello␃
         \\        ^ (end of string)
+    , string(&buf));
+
+    // newline hint
+    try printLineWithCursor(w, "hello\n", 5, .{ .full = {} }, .{ .forward = 1 }, .detect, .{});
+    try equal(
+        \\1| hello
+        \\        ^ (newline)
+    , string(&buf));
+
+    // [.show_cursor_hint]
+    try printLineWithCursor(w, "hello", 5, .{ .full = {} }, .{ .forward = 1 }, .detect, .{
+        .show_cursor_hint = false,
+    });
+    try equal(
+        \\1| hello␃
+        \\        ^
     , string(&buf));
 
     // [.show_line_num]
@@ -274,11 +293,15 @@ test printLine {
         \\First line.
         //           ^11
         \\This is the second.
-        //                   ^30
+        //^12                ^31
         \\A third line is a longer one.
+        //^32                          ^61
         \\
+        //^62
         \\Fifth line.
+        //^63        ^74
         \\Sixth one.
+        //^75       ^85
         \\
     ;
 
@@ -302,5 +325,29 @@ test printLine {
         \\10| 
         \\11| Fifth line.
         \\12| Sixth one.
+    , string(&buf));
+
+    // [.backward] read, [.around] mode, trunc [.hard_flex]
+    try printLineWithCursor(w, input, 85, .{ .around = .{ .len = 5 } }, .{ .backward = 6 }, .detect, .{
+        .trunc_mode = .hard_flex,
+        .show_cursor_hint = true,
+    });
+    try equal(
+        \\1| ..line..
+        \\2| ..s th..
+        \\3| ..d li..
+        \\4| 
+        \\5| ..line..
+        \\6| ..one.
+        \\         ^
+    , string(&buf));
+
+    // [.trunc_sym]
+    try printLineWithCursor(w, input, 85, .{ .around = .{ .len = 5 } }, .{ .backward = 1 }, .detect, .{
+        .trunc_sym = "__",
+    });
+    try equal(
+        \\6| __one.
+        \\         ^
     , string(&buf));
 }
