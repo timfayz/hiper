@@ -40,8 +40,8 @@ pub fn printLine(
     input: []const u8,
     index: anytype,
     comptime mode: slice.ViewMode,
-    amount: lr.ReadRequest,
-    line_num: lr.CurrLineNum,
+    comptime amount: lr.ReadAmount,
+    line_num: lr.LineNumMode,
     comptime opt: PrintOptions,
 ) !void {
     if (mode.len() == 0) return;
@@ -52,7 +52,7 @@ pub fn printLine(
 
     // read first index
     var buf: [opt.buf_size][]const u8 = undefined;
-    const ret = lr.readLines(&buf, input, index_start, line_num, amount);
+    const ret = lr.readLines(&buf, input, index_start, amount, line_num);
     if (ret.isEmpty()) return;
 
     // determine the scope of current line to constrain others
@@ -91,8 +91,8 @@ fn printLineWithCursor(
     input: []const u8,
     index: anytype,
     comptime mode: slice.ViewMode,
-    amount: lr.ReadRequest,
-    line_num: lr.CurrLineNum,
+    comptime amount: lr.ReadAmount,
+    line_num: lr.LineNumMode,
     comptime opt: PrintOptions,
 ) !void {
     comptime var opt_ = opt;

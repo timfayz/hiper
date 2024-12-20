@@ -508,9 +508,7 @@ test viewRelIndex {
         }
     }.run;
 
-    // [.around]
-    // -------------------
-    // [.trunc_mode = *]
+    // [.around] view mode
     {
         // exceeding len
         //
@@ -652,9 +650,7 @@ test viewRelIndex {
         //                            +++--^--
     }
 
-    // [.right]
-    // -------------------
-    // [.trunc_mode = *]
+    // [.right] view mode
     {
         try equal(
             \\  [4:4]
@@ -689,9 +685,7 @@ test viewRelIndex {
         //                            ++++ ^---
     }
 
-    // [.left]
-    // -------------------
-    // [.trunc_mode = *]
+    // [.left] view mode
     {
         try equal(
             \\  [4:4]
@@ -728,9 +722,7 @@ test viewRelIndex {
         //                              ---^
     }
 
-    // [.exp_right]
-    // -------------------
-    // [.trunc_mode = *]
+    // [.exp_right] view mode
     {
         try equal(
             \\ 3 [3:4]
@@ -766,9 +758,7 @@ test viewRelIndex {
         //                           +++++ ^----
     }
 
-    // [.exp_left]
-    // -------------------
-    // [.trunc_mode = *]
+    // [.exp_left] view mode
     {
         try equal(
             \\ 3 [3:4]
@@ -805,9 +795,7 @@ test viewRelIndex {
         //                             ----^
     }
 
-    // [.exp_sides]
-    // -------------------
-    // [.trunc_mode = *]
+    // [.exp_sides] view mode
     {
         try equal(
             \\ 3 [3:4]
@@ -844,9 +832,7 @@ test viewRelIndex {
         //                              ---^---
     }
 
-    // [.exp_custom]
-    // -------------------
-    // [.trunc_mode = *]
+    // [.exp_custom] view mode
     {
         try equal(
             \\ 1234567 [1:8]
@@ -855,8 +841,7 @@ test viewRelIndex {
         //                         --^----
     }
 
-    // [.extra_shift = *]
-    // -------------------
+    // [.extra_shift]
     {
         try equal(
             \\ 3456 [3:7]
@@ -890,7 +875,6 @@ test viewRelRange {
     }.run;
 
     // [.around] view mode
-    // ----------------
     {
         // [start == end]
         //
@@ -1000,7 +984,6 @@ test viewRelRange {
     }
 
     // [.exp_sides] view mode
-    // ----------------
     {
         try equal(
             \\ 34 [3:5]
@@ -1016,7 +999,6 @@ test viewRelRange {
     }
 
     // [.exp_left] view mode
-    // ----------------
     {
         try equal(
             \\ 123456 [1:7]
@@ -1033,7 +1015,6 @@ test viewRelRange {
     }
 
     // [.exp_right] view mode
-    // ----------------
     {
         try equal(
             \\ 345678 [3:9]
@@ -1043,7 +1024,6 @@ test viewRelRange {
     }
 
     // [.exp_custom] view mode
-    // ----------------
     {
         try equal(
             \\ 12345678 [1:9]
