@@ -2,12 +2,13 @@
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
 //! Public API:
-//! - defaults (options)
-//! - scopeActive
-//! - print
-//! - writer
-//! - writeFn
-//! - flush
+//! - defaults
+//! - scopeActive()
+//! - scope()
+//! - print()
+//! - writer()
+//! - writeFn()
+//! - flush()
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -27,14 +28,12 @@ pub const defaults = struct {
     /// Forced prefix for all scopes.
     pub const log_prefix_all_scopes = if (rootHas("log_prefix_all_scopes")) rootGet("log_prefix_all_scopes") else "";
     /// Active log scopes. If not set, it will default to `.log`.
-    pub const log_scopes = blk: {
-        if (rootHas("log_scopes")) {
-            const scopes = rootGet("log_scopes");
-            if (@typeInfo(@TypeOf(scopes)) != .Struct)
-                @compileError("log_scopes must be a tuple");
-            break :blk scopes;
-        } else break :blk .{.log}; // default scope
-    };
+    pub const log_scopes = if (rootHas("log_scopes")) blk: {
+        const scopes = rootGet("log_scopes");
+        if (@typeInfo(@TypeOf(scopes)) != .Struct)
+            @compileError("log_scopes must be a tuple");
+        break :blk scopes;
+    } else .{.log}; // default scope
 
     const root = @import("root");
 
@@ -91,28 +90,28 @@ pub fn scope(
         WriterType: ?type = null,
     },
 ) type {
-    const LineWriter = @import("line_writer.zig").BufferedLineWriter(.{
+    const UnderlyingWriter = if (opt.WriterType) |T| T else @TypeOf(defaults.log_writer);
+    const WrappingWriter = @import("line_writer.zig").BufferedLineWriter(UnderlyingWriter, opt.buffer_size, .{
         .prefix = defaults.log_prefix_all_scopes ++ opt.prefix,
         .postfix = opt.postfix,
-        .buffer_size = opt.buffer_size,
         .lock_stderr_on_flush = opt.lock_stderr_on_flush,
-        .WriterType = if (opt.WriterType) |W| W else @TypeOf(defaults.log_writer),
     });
 
     return struct {
-        underlying_writer: LineWriter = LineWriter.init(if (opt.WriterType) |_| undefined else defaults.log_writer),
+        underlying_writer: WrappingWriter =
+            WrappingWriter.init(if (opt.WriterType) |_| undefined else defaults.log_writer),
 
         const Self = @This();
-        const Error = LineWriter.Error;
+        const Error = WrappingWriter.Error;
         const Writer = std.io.Writer(*Self, Error, write);
 
         pub fn init(underlying_writer: anytype) Self {
-            if (opt.WriterType == null) @compileError("no .WriterType was specified, init with scope(...){} instead");
-            return Self{ .underlying_writer = LineWriter.init(underlying_writer) };
+            if (opt.WriterType == null) @compileError("provide opt.WriterType when initializing scope(...){}");
+            return Self{ .underlying_writer = WrappingWriter.init(underlying_writer) };
         }
 
         /// Prints a formatted string within the specified `tag` scope using
-        /// `defaults.log_writer`.
+        /// `defaults.log_writer` and flushes automatically.
         pub fn print(s: *Self, comptime format: []const u8, args: anytype) Error!void {
             if (!builtin.is_test and !scopeActive(tag)) return;
             try s.underlying_writer.writer().print(format, args);
@@ -142,30 +141,44 @@ pub fn scope(
 /// Default scope.
 var defaultScope = scope(.log, .{ .prefix = defaults.log_prefix_default_scope }){};
 
-/// Prints a formatted string within default's `.log` scope using
-/// `defaults.log_writer` under the hood. Use `scope(..)` to initialize your own
-/// scope or use `defaults.log_writer.print()` for raw, unconditional logging.
+/// Prints a formatted string within the default `.log` scope using
+/// `defaults.log_writer`. Use `scope(..)` to initialize your own scope.
 pub const print = defaultScope.print;
 
-/// Returns writer interface within default's `.log` scope. If the scope is
+/// Returns writer interface within the default `.log` scope. If the scope is
 /// inactive, it becomes a "null writer".
 pub const writer = defaultScope.writer;
 
-/// Write primitive within default's `.log` scope.
+/// Write primitive within the default `.log` scope.
 pub const writeFn = defaultScope.write;
 
-/// Flushes the entire buffer within default's `.log` scope. Use this to
+/// Flushes the entire buffer within the default `.log` scope. Use this to
 /// ensure the buffer is written out after multiple writes via the `writer`
 /// interface or `writeFn` directly.
 pub const flush = defaultScope.flush;
 
-test {
+test scope {
     const t = std.testing;
-    var out = std.ArrayList(u8).init(t.allocator);
+    var out = std.BoundedArray(u8, 512){};
     const out_writer = out.writer();
-    defer out.deinit();
 
-    var sc = scope(.scope_tag, .{
+    var phony_scope = scope(.not_exist, .{
+        .WriterType = @TypeOf(out_writer),
+    }).init(out_writer);
+
+    if (scopeActive(.not_exist))
+        try phony_scope.print("hello", .{});
+
+    if (scopeActive(.log))
+        try phony_scope.print("world", .{});
+
+    try t.expectEqualStrings(
+        \\not_exist: world
+        \\
+    , out.slice());
+    out.clear();
+
+    var sc = scope(.tag, .{
         .buffer_size = 10,
         .WriterType = @TypeOf(out_writer),
     }).init(out_writer);
@@ -174,23 +187,23 @@ test {
     try sc.print("very long print", .{});
 
     try t.expectEqualStrings(
-        \\scope_tag: long print
-        \\scope_tag: very long 
-        \\scope_tag: print
+        \\tag: long print
+        \\tag: very long 
+        \\tag: print
         \\
-    , out.items);
-    out.clearAndFree();
+    , out.slice());
+    out.clear();
 
     try std.fmt.format(sc.writer(), "{s}", .{"very long print"});
     try t.expectEqualStrings(
-        \\scope_tag: very long 
+        \\tag: very long 
         \\
-    , out.items);
+    , out.slice());
 
     try sc.flush();
     try t.expectEqualStrings(
-        \\scope_tag: very long 
-        \\scope_tag: print
+        \\tag: very long 
+        \\tag: print
         \\
-    , out.items);
+    , out.slice());
 }
