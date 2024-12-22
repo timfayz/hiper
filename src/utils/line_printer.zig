@@ -10,6 +10,7 @@ const std = @import("std");
 const lr = @import("line_reader.zig");
 const slice = @import("slice.zig");
 const num = @import("num.zig");
+const meta = @import("meta.zig");
 const CurrLineScope = slice.View(.range);
 
 /// Line printing options.
@@ -46,9 +47,9 @@ pub fn printLine(
 ) !void {
     if (!mode.isExt() and mode.len() == 0) return;
 
-    const index_start, const index_end = if (num.isNum(index))
+    const index_start, const index_end = if (meta.isNum(index))
         .{ index, index }
-    else if (std.meta.fields(@TypeOf(index)).len == 1)
+    else if (meta.isTuple(index) and index.len == 1)
         .{ index[0], index[0] }
     else
         num.orderPair(index[0], index[1]);

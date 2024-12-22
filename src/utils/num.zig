@@ -18,17 +18,6 @@ pub fn orderPair(
     return if (num1 <= num2) .{ num1, num2 } else .{ num2, num1 };
 }
 
-/// Checks comptime if `num` is a number (integer or float).
-pub inline fn isNum(num: anytype) bool {
-    return switch (@typeInfo(@TypeOf(num))) {
-        .int => true,
-        .comptime_int => true,
-        .float => true,
-        .comptime_float => true,
-        else => false,
-    };
-}
-
 /// Returns the number of digits in an integer.
 pub fn countIntLen(int: usize) usize {
     if (int == 0) return 1;
