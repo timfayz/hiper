@@ -44,10 +44,15 @@ pub fn printLine(
     line_num: lr.LineNumMode,
     comptime opt: PrintOptions,
 ) !void {
-    if (mode.len() == 0) return;
+    if (!mode.isExt() and mode.len() == 0) return;
 
-    const index_start, const index_end =
-        if (num.isNum(index)) .{ index, index } else num.orderPair(index[0], index[1]);
+    const index_start, const index_end = if (num.isNum(index))
+        .{ index, index }
+    else if (std.meta.fields(@TypeOf(index)).len == 1)
+        .{ index[0], index[0] }
+    else
+        num.orderPair(index[0], index[1]);
+
     const range_len = index_end - index_start;
 
     // read first index
@@ -56,7 +61,7 @@ pub fn printLine(
     if (ret.isEmpty()) return;
 
     // determine the scope of current line to constrain others
-    const scope: ?CurrLineScope = slice.viewRelRange(ret.currLine(), .{
+    const line_scope: ?CurrLineScope = slice.viewRelRange(ret.currLine(), .{
         ret.index_pos,
         ret.index_pos + range_len,
     }, mode, .{ .trunc_mode = opt.trunc_mode });
@@ -67,19 +72,16 @@ pub fn printLine(
     // we need to split the view at each index separately
 
     // render lines
-    const line_num_len = if (opt.show_line_num) num.countIntLen(ret.lastLineNum()) else 0;
-    for (ret.lines, ret.firstLineNum().., 0..) |line, line_number, i| {
-        try writeLine(
-            writer,
-            input,
-            line,
-            line_number,
-            line_num_len,
-            ret.curr_line_pos == i,
-            mode,
-            scope.?,
-            opt,
-        );
+    if (line_scope) |scope| {
+        const line_num_len = if (opt.show_line_num) num.countIntLen(ret.lastLineNum()) else 0;
+        for (ret.lines, ret.firstLineNum().., 0..) |line, line_number, i| {
+            const line_is_curr = ret.curr_line_pos == i;
+            try writeLine(writer, input, mode, line, line_number, line_num_len, line_is_curr, scope, opt);
+        }
+    }
+    // can't render and it's range
+    else if (range_len > 0) {
+        // TODO
     }
 }
 
@@ -104,12 +106,12 @@ fn printLineWithCursor(
 fn writeLine(
     writer: anytype,
     input: []const u8,
+    mode: slice.ViewMode,
     line: []const u8,
     line_num: usize,
     line_num_len: usize,
     line_is_curr: bool,
-    mode: slice.ViewMode,
-    scope: CurrLineScope,
+    line_scope: CurrLineScope,
     comptime opt: PrintOptions,
 ) !void {
     // render line number
@@ -125,10 +127,10 @@ fn writeLine(
     } else if (line.len == 0) { // empty line
         if (opt.show_eof and slice.indexOfEnd(input, line) >= input.len)
             try writer.writeAll("␃");
-    } else if (scope.start > line.len) { // skipped line
+    } else if (line_scope.start > line.len) { // skipped line
         try writer.writeAll(opt.trunc_sym);
     } else { // trimmed line
-        const seg = scope.sliceBounded([]const u8, line);
+        const seg = line_scope.sliceBounded([]const u8, line);
         if (slice.indexOfStart(line, seg) > 0) {
             try writer.writeAll(opt.trunc_sym);
             trunc_len = opt.trunc_sym.len;
@@ -145,7 +147,7 @@ fn writeLine(
     // render cursor
     if (opt.show_cursor and line_is_curr) {
         const extra_pad = line_num_len + (if (opt.show_line_num) opt.line_num_sep.len else 0) + trunc_len;
-        try writeCursor(writer, input, scope, extra_pad, opt);
+        try writeCursor(writer, input, line_scope, extra_pad, opt);
     }
 }
 
