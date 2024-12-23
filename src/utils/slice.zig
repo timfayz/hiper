@@ -241,20 +241,17 @@ pub fn View(comptime tag: ViewTag) type {
             /// Checks if relative range start position exceeds the actual view
             /// boundaries.
             pub fn startPosExceeds(self: *const Self) bool {
-                if (tag != .range) @compileError("available only in View(.range) mode");
                 return self.pos.start > self.len();
             }
 
             /// Checks if relative range end position exceeds the actual view
             /// boundaries.
             pub fn endPosExceeds(self: *const Self) bool {
-                if (tag != .range) @compileError("available only in View(.range) mode");
                 return self.pos.end > self.len();
             }
 
             /// Returns the length of the requested view range.
             pub fn rangeLen(self: *const Self) usize {
-                if (tag != .range) @compileError("available only in View(.range) mode");
                 return self.pos.end - self.pos.start +| 1;
             }
         } else struct {};
@@ -317,22 +314,81 @@ pub const ViewMode = union(enum) {
     /// Retrieves a view extended by custom lengths on the left and right sides.
     ext_custom: struct { left: usize, right: usize },
 
+    /// Returns the length of the mode or the extension length for extension modes.
     pub fn len(self: ViewMode) usize {
         return if (switch (self) {
-            inline .around, .left, .right => |mode| mode.len,
             .full => std.math.maxInt(usize),
-            .ext_custom => |mode| mode.left + mode.right,
+            inline .around, .left, .right => |m| m.len,
+            .ext_custom => |m| m.left + m.right,
             inline else => |amt| amt,
         }) |val| val else std.math.maxInt(usize);
     }
 
+    /// Checks if the view mode extends the view.
     pub fn isExt(self: ViewMode) bool {
         return switch (self) {
-            inline .ext_sides, .ext_left, .ext_right, .ext_custom => true,
+            .ext_sides, .ext_left, .ext_right, .ext_custom => true,
             else => false,
         };
     }
+
+    /// Checks if the view mode can fit the requested `length`.
+    pub fn fits(self: ViewMode, length: usize) bool {
+        return switch (self) {
+            inline .start, .end => length <= self.len(),
+            .around => |m| (length +| m.min_pad *| 2) <= self.len(),
+            inline .left, .right => |m| length +| m.min_pad <= self.len(),
+            .full, .ext_sides, .ext_left, .ext_right, .ext_custom => true,
+        };
+    }
 };
+
+test ViewMode {
+    const equal = std.testing.expectEqual;
+
+    // [len()]
+    const max = std.math.maxInt(usize);
+    try equal(max, (ViewMode{ .start = null }).len());
+    try equal(max, (ViewMode{ .end = null }).len());
+    try equal(max, (ViewMode{ .full = {} }).len());
+    try equal(max, (ViewMode{ .around = .{ .len = null } }).len());
+    try equal(max, (ViewMode{ .left = .{ .len = null } }).len());
+    try equal(max, (ViewMode{ .right = .{ .len = null } }).len());
+    try equal(max, (ViewMode{ .ext_left = null }).len());
+    try equal(max, (ViewMode{ .ext_right = null }).len());
+    try equal(max, (ViewMode{ .ext_sides = null }).len());
+
+    try equal(10, (ViewMode{ .start = 10 }).len());
+    try equal(10, (ViewMode{ .end = 10 }).len());
+    try equal(10, (ViewMode{ .around = .{ .len = 10 } }).len());
+    try equal(10, (ViewMode{ .left = .{ .len = 10 } }).len());
+    try equal(10, (ViewMode{ .right = .{ .len = 10 } }).len());
+    try equal(10, (ViewMode{ .ext_left = 10 }).len());
+    try equal(10, (ViewMode{ .ext_right = 10 }).len());
+    try equal(10, (ViewMode{ .ext_sides = 10 }).len());
+    try equal(10, (ViewMode{ .ext_custom = .{ .left = 4, .right = 6 } }).len());
+
+    // [fits()]
+    try equal(true, (ViewMode{ .start = 5 }).fits(5));
+    try equal(false, (ViewMode{ .start = 5 }).fits(6));
+    try equal(true, (ViewMode{ .end = 5 }).fits(5));
+    try equal(false, (ViewMode{ .end = 5 }).fits(6));
+    try equal(true, (ViewMode{ .full = {} }).fits(max));
+    try equal(true, (ViewMode{ .around = .{ .len = 6, .min_pad = 2 } }).fits(2));
+    try equal(false, (ViewMode{ .around = .{ .len = 6, .min_pad = 2 } }).fits(3));
+    try equal(true, (ViewMode{ .left = .{ .len = 6, .min_pad = 2 } }).fits(4));
+    try equal(false, (ViewMode{ .left = .{ .len = 6, .min_pad = 2 } }).fits(5));
+    try equal(true, (ViewMode{ .right = .{ .len = 6, .min_pad = 2 } }).fits(4));
+    try equal(false, (ViewMode{ .right = .{ .len = 6, .min_pad = 2 } }).fits(5));
+    try equal(true, (ViewMode{ .ext_left = 0 }).fits(max));
+    try equal(true, (ViewMode{ .ext_right = 0 }).fits(max));
+    try equal(true, (ViewMode{ .ext_sides = 0 }).fits(max));
+    try equal(true, (ViewMode{ .ext_custom = .{ .left = 0, .right = 0 } }).fits(max));
+
+    // [isExt()]
+    try equal(false, (ViewMode{ .start = 5 }).isExt());
+    try equal(true, (ViewMode{ .ext_custom = .{ .left = 0, .right = 0 } }).isExt());
+}
 
 pub const ViewOptions = struct {
     /// Defines how view primitives truncate view span on overrun.
@@ -440,7 +496,7 @@ pub fn viewRel(
             const start, const end = .{ 0, input.len };
             return View(tag).init(.{ start, end, index_start, index_end });
         },
-        .around => |m| if (range_len +| m.min_pad *| 2 > view_len) null else blk: {
+        .around => if (!mode.fits(range_len)) null else blk: {
             const avail_len = view_len - range_len;
             const side = avail_len / 2;
             var view: Span = .{ .left = side, .right = side +| range_len };
@@ -449,10 +505,10 @@ pub fn viewRel(
             }
             break :blk view;
         },
-        .left => |m| if (range_len +| m.min_pad > view_len) null else blk: {
+        .left => if (!mode.fits(range_len)) null else blk: {
             break :blk .{ .left = view_len - range_len, .right = range_len };
         },
-        .right => |m| if (range_len +| m.min_pad > view_len) null else blk: {
+        .right => if (!mode.fits(range_len)) null else blk: {
             break :blk .{ .left = 0, .right = view_len };
         },
         .ext_sides => .{ .left = view_len, .right = view_len +| range_len },
@@ -840,6 +896,11 @@ test viewRelIndex {
 
     // [.ext_custom] view mode
     {
+        try equal(
+            \\ 3 [3:4]
+            \\ ^ [0]
+        , .{false}, viewRelIndex("012345678", 3, .{ .ext_custom = .{ .left = 0, .right = 0 } }, .{}));
+        //                           ^
         try equal(
             \\ 1234567 [1:8]
             \\   ^ [2]
