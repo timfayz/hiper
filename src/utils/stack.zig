@@ -3,28 +3,48 @@
 
 //! Public API:
 //! - Stack
-//! - init
-//! - StackFromSlice
-//! - initFromSliceFilled
-//! - initFromSliceEmpty
-//! - initFromSliceSetLen
+//! - init()
+//! - initFromSlice()
+//! - initFromSliceFilled()
+//! - initFromSliceSetLen()
 
 const std = @import("std");
+const IntFittingRange = std.math.IntFittingRange;
 
-pub fn Stack(T: type, length: usize) type {
-    if (length == 0) @compileError("stack length cannot be zero");
+pub fn Stack(T: type, length: ?usize) type {
+    if (length) |l| if (l == 0) @compileError("stack length cannot be zero");
     return struct {
-        const Len = std.math.IntFittingRange(0, length);
-
-        arr: [length]T = undefined,
-        top: Len = 0,
-        nil: bool = true, // signifies the stack is empty
+        arr: if (length) |l| [l]T else []T = undefined,
+        top: if (length) |l| IntFittingRange(0, l) else usize = 0,
+        nil: bool = true,
 
         const Self = @This();
         pub const Error = error{NoSpaceLeft};
 
+        pub usingnamespace if (length == null) struct {
+            pub fn initFull(slc: []T) Self {
+                return .{
+                    .arr = slc,
+                    .nil = if (slc.len == 0) true else false,
+                    .top = slc.len,
+                };
+            }
+
+            pub fn initEmpty(slc: []T) Self {
+                return .{ .arr = slc, .nil = true, .top = 0 };
+            }
+
+            pub fn initFilled(slc: []T, size: usize) Self {
+                return if (size == 0) .{ .arr = slc, .nil = true, .top = 0 } else .{
+                    .arr = slc,
+                    .nil = false,
+                    .top = if (size >= slc.len) slc.len else size,
+                };
+            }
+        } else struct {};
+
         pub fn pop(s: *Self) T {
-            s.top -= 1;
+            s.top -= 1; // underflow is intentional
             if (s.top == 0) s.nil = true;
             return s.arr[s.top];
         }
@@ -71,14 +91,30 @@ pub fn Stack(T: type, length: usize) type {
         pub fn slice(s: *Self) []T {
             return s.arr[0..s.top];
         }
+
+        pub fn sliceRest(s: *Self) []T {
+            return s.arr[s.top..];
+        }
     };
 }
 
-pub inline fn init(T: type, comptime length: usize) Stack(T, length) {
-    return Stack(T, length){};
+pub fn init(T: type, comptime len: usize) Stack(T, len) {
+    return .{};
 }
 
-test "test Stack" {
+pub fn initFromSlice(T: type, slice: []T) Stack(T, null) {
+    return Stack(T, null).initEmpty(slice);
+}
+
+pub fn initFromSliceFull(T: type, slice: []T) Stack(T, null) {
+    return Stack(T, null).initFull(slice);
+}
+
+pub fn initFromSliceFilled(T: type, slice: []T, size: usize) Stack(T, null) {
+    return Stack(T, null).initFilled(slice, size);
+}
+
+test Stack {
     const t = std.testing;
     // test internals
     {
@@ -110,10 +146,13 @@ test "test Stack" {
         try stack2.push(3);
         try t.expectEqualSlices(usize, &[_]usize{ 1, 2, 3 }, stack2.slice());
     }
-    // test general usage
+
+    // normal use
     {
-        const stack_size = 100;
+        // [buffer based]
+        const stack_size = 10;
         var s = Stack(usize, stack_size){};
+        s = init(usize, stack_size); // the same
 
         try t.expectEqual(stack_size, s.cap());
 
@@ -127,7 +166,7 @@ test "test Stack" {
         try t.expectEqual(0, s.left());
 
         // pop
-        var i: usize = s.len(); // 100
+        var i: usize = s.len(); // 10
         while (i > 0) : (i -= 1) {
             try t.expectEqual(i, s.len());
             try t.expectEqual(stack_size - s.len(), s.left());
@@ -135,130 +174,28 @@ test "test Stack" {
         }
         try t.expectEqual(0, s.len());
         try t.expectEqual(stack_size, s.left());
+
+        // [slice based]
+        var buf: [5]u8 = undefined;
+
+        var s1 = initFromSlice(u8, buf[0..]);
+        try t.expectEqual(5, s1.sliceRest().len);
+
+        try s1.push('a');
+        try s1.push('b');
+        try t.expectEqualSlices(u8, "ab", s1.slice());
+        try t.expectEqual(3, s1.sliceRest().len);
+
+        var s2 = initFromSliceFilled(u8, buf[0..], 2);
+        try s2.push('c');
+        try t.expectEqualSlices(u8, "abc", s2.slice());
+        try t.expectEqual(2, s2.sliceRest().len);
+
+        buf[3] = 'd';
+        buf[4] = 'e';
+
+        var s3 = initFromSliceFull(u8, buf[0..]);
+        try t.expectEqualSlices(u8, "abcde", s3.slice());
+        try t.expectEqual(0, s3.sliceRest().len);
     }
-}
-
-pub fn StackFromSlice(T: type) type {
-    return struct {
-        slc: []T,
-        top: usize,
-        nil: bool,
-
-        const Self = @This();
-        pub const Error = error{NoSpaceLeft};
-
-        pub fn initFull(slc: []T) Self {
-            return Self{
-                .slc = slc,
-                .nil = if (slc.len == 0) true else false,
-                .top = slc.len,
-            };
-        }
-
-        pub fn initEmpty(slc: []T) Self {
-            return Self{ .slc = slc, .nil = true, .top = 0 };
-        }
-
-        pub fn initPrefill(slc: []T, length: usize) Self {
-            if (length == 0) {
-                return Self{ .slc = slc, .nil = true, .top = 0 };
-            }
-            return Self{
-                .slc = slc,
-                .nil = false,
-                .top = if (length >= slc.len) slc.len else length,
-            };
-        }
-
-        pub fn pop(s: *Self) T {
-            s.top -= 1;
-            if (s.top == 0) s.nil = true;
-            return s.slc[s.top];
-        }
-
-        pub fn popOrNull(s: *Self) ?T {
-            if (s.nil) return null;
-            s.top -= 1;
-            if (s.top == 0) s.nil = true;
-            return s.slc[s.top];
-        }
-
-        pub fn push(s: *Self, item: T) Error!void {
-            if (s.top >= s.slc.len) return Error.NoSpaceLeft;
-            s.slc[s.top] = item;
-            s.top +|= 1;
-            s.nil = false;
-        }
-
-        pub fn len(s: *Self) usize {
-            return s.top;
-        }
-
-        pub fn cap(s: *Self) usize {
-            return s.slc.len;
-        }
-
-        pub fn left(s: *Self) usize {
-            return s.slc.len - s.top;
-        }
-
-        pub fn empty(s: *Self) bool {
-            return s.nil == true;
-        }
-
-        pub fn full(s: *Self) bool {
-            return s.top == s.slc.len;
-        }
-
-        pub fn reset(s: *Self) void {
-            s.top = 0;
-            s.nil = true;
-        }
-
-        pub fn slice(s: *Self) []T {
-            return s.slc[0..s.top];
-        }
-
-        pub fn sliceLeft(s: *Self) []T {
-            return s.slc[s.top..];
-        }
-    };
-}
-
-pub inline fn initFromSliceFull(T: type, slice: []T) StackFromSlice(T) {
-    return StackFromSlice(T).initFull(slice);
-}
-
-pub inline fn initFromSliceEmpty(T: type, slice: []T) StackFromSlice(T) {
-    return StackFromSlice(T).initEmpty(slice);
-}
-
-pub inline fn initFromSlicePrefill(T: type, slice: []T, len: usize) StackFromSlice(T) {
-    return StackFromSlice(T).initPrefill(slice, len);
-}
-
-test "+StackFromSlice" {
-    const t = std.testing;
-
-    var buf: [5]u8 = undefined;
-
-    var stack1 = initFromSliceEmpty(u8, buf[0..]);
-    try t.expectEqual(5, stack1.sliceLeft().len);
-
-    try stack1.push('a');
-    try stack1.push('b');
-    try t.expectEqualSlices(u8, "ab", stack1.slice());
-    try t.expectEqual(3, stack1.sliceLeft().len);
-
-    var stack2 = initFromSlicePrefill(u8, buf[0..], 2);
-    try stack2.push('c');
-    try t.expectEqualSlices(u8, "abc", stack2.slice());
-    try t.expectEqual(2, stack2.sliceLeft().len);
-
-    buf[3] = 'd';
-    buf[4] = 'e';
-
-    var stack3 = initFromSliceFull(u8, buf[0..]);
-    try t.expectEqualSlices(u8, "abcde", stack3.slice());
-    try t.expectEqual(0, stack3.sliceLeft().len);
 }

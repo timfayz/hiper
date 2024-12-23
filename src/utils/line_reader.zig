@@ -844,7 +844,7 @@ fn readLinesImpl(
     var line_end = indexOfLineEnd(input, index);
     const index_pos = index - line_start;
 
-    var s = stack.initFromSliceEmpty([]const u8, buf);
+    var s = stack.initFromSlice([]const u8, buf);
     s.push(input[line_start..line_end]) catch unreachable; // current line
 
     var i: usize = amount - 1;
