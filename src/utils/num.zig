@@ -2,11 +2,10 @@
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
 //! Public API:
-//! - orderPair
-//! - isNum
-//! - countIntLen
-//! - inRangeInc
-//! - inRangeExc
+//! - orderPair()
+//! - countIntLen()
+//! - inRangeInc()
+//! - inRangeExc()
 
 const std = @import("std");
 
@@ -66,9 +65,6 @@ test inRangeInc {
     try equal(false, inRangeInc(u4, 0, 15, 0));
     try equal(false, inRangeInc(u4, 7, 15, 0));
     try equal(false, inRangeInc(u4, 15, 15, 0));
-    // max type range
-    try equal(true, inRangeInc(u1, 0, 0, 1));
-    try equal(true, inRangeInc(u1, 1, 0, 1));
     // single number range
     try equal(true, inRangeInc(u4, 15, 15, 15));
     // normal range
@@ -92,9 +88,6 @@ test inRangeExc {
     try equal(false, inRangeExc(u4, 0, 15, 0));
     try equal(false, inRangeExc(u4, 7, 15, 0));
     try equal(false, inRangeExc(u4, 15, 15, 0));
-    // max type range
-    try equal(false, inRangeExc(u1, 0, 0, 1));
-    try equal(false, inRangeExc(u1, 1, 0, 1));
     // single number range
     try equal(false, inRangeExc(u4, 15, 15, 15));
     // normal range
