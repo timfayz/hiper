@@ -2,14 +2,14 @@
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
 //! Public API:
-//! - BufferedLineWriterOptions
-//! - bufferedLineWriter()
-//! - writeByLine()
-//! - BufferedLineWriter()
+//! - LineStreamerOptions
+//! - LineStreamer()
+//! - lineStreamer()
+//! - streamLines()
 
 const std = @import("std");
 
-pub const BufferedLineWriterOptions = struct {
+pub const LineStreamerOptions = struct {
     /// Prefix added to each line.
     prefix: []const u8 = "",
     /// Postfix added before '\n' on each line.
@@ -20,31 +20,11 @@ pub const BufferedLineWriterOptions = struct {
     lock_stderr_on_flush: bool = false,
 };
 
-/// Shortcut for `BufferedLineWriter(@TypeOf(writer), 4096, opt).init(writer)`.
-pub fn bufferedLineWriter(
-    underlying_writer: anytype,
-    comptime opt: BufferedLineWriterOptions,
-) BufferedLineWriter(@TypeOf(underlying_writer), 4096, opt) {
-    return .{ .underlying_writer = underlying_writer };
-}
-
-/// Shortcut for creating `BufferedLineWriter`, writing bytes to it, and flushing.
-pub fn writeByLine(
-    underlying_writer: anytype,
-    bytes: []const u8,
-    comptime buffer_size: usize,
-    comptime opt: BufferedLineWriterOptions,
-) @TypeOf(underlying_writer).Error!void {
-    var blw = BufferedLineWriter(@TypeOf(underlying_writer), buffer_size, opt).init(underlying_writer);
-    try blw.writer().writeAll(bytes);
-    try blw.flush();
-}
-
 /// A writer that streams the buffer line by line. If a line exceeds the buffer,
 /// it splits it by the buffer size. To render lines correctly, lines should not
 /// exceed `buffer_size - 1`. After writing is complete, use `flush()` to write
 /// out the remaining buffered data.
-pub fn BufferedLineWriter(WriterType: type, buffer_size: usize, opt: BufferedLineWriterOptions) type {
+pub fn LineStreamer(WriterType: type, buffer_size: usize, opt: LineStreamerOptions) type {
     if (buffer_size < 1) @compileError("buffer_size cannot be less than 1");
     return struct {
         underlying_writer: WriterType,
@@ -141,7 +121,7 @@ pub fn BufferedLineWriter(WriterType: type, buffer_size: usize, opt: BufferedLin
     };
 }
 
-test BufferedLineWriter {
+test LineStreamer {
     const t = std.testing;
     var out = std.BoundedArray(u8, 512){};
     const OutWriter = @TypeOf(out.writer());
@@ -149,7 +129,7 @@ test BufferedLineWriter {
     // normal usage
     {
         // shortcuts
-        try writeByLine(out.writer(), "hello world", 6, .{ .prefix = "pre: " });
+        try streamLines(out.writer(), "hello world", 6, .{ .prefix = "pre: " });
         try t.expectEqualStrings(
             \\pre: hello 
             \\pre: world
@@ -157,7 +137,7 @@ test BufferedLineWriter {
         , out.slice());
         out.clear();
 
-        var blw0 = bufferedLineWriter(out.writer(), .{ .prefix = "pre: " });
+        var blw0 = lineStreamer(out.writer(), .{ .prefix = "pre: " });
         try blw0.print("hello world", .{});
         try t.expectEqualStrings(
             \\pre: hello world
@@ -166,7 +146,7 @@ test BufferedLineWriter {
         out.clear();
 
         // [.prefix]
-        var blw1 = BufferedLineWriter(OutWriter, 4, .{
+        var blw1 = LineStreamer(OutWriter, 4, .{
             .prefix = "pre: ",
         }).init(out.writer());
 
@@ -217,7 +197,7 @@ test BufferedLineWriter {
         out.clear();
 
         // [.skip_last_empty_line]
-        var blw2 = BufferedLineWriter(OutWriter, 4, .{
+        var blw2 = LineStreamer(OutWriter, 4, .{
             .prefix = "pre: ",
             .skip_last_empty_line = false,
         }).init(out.writer());
@@ -236,7 +216,7 @@ test BufferedLineWriter {
         out.clear();
 
         // [.postfix]
-        var blw3 = BufferedLineWriter(OutWriter, 4, .{
+        var blw3 = LineStreamer(OutWriter, 4, .{
             .postfix = " :post",
         }).init(out.writer());
 
@@ -253,7 +233,7 @@ test BufferedLineWriter {
 
     // test internals
     {
-        var blw = BufferedLineWriter(OutWriter, 4, .{
+        var blw = LineStreamer(OutWriter, 4, .{
             .prefix = "pre: ",
             .skip_last_empty_line = false,
         }).init(out.writer());
@@ -295,7 +275,7 @@ test BufferedLineWriter {
         out.clear();
     }
     {
-        var blw = BufferedLineWriter(OutWriter, 4, .{ .prefix = "pre: " }).init(out.writer());
+        var blw = LineStreamer(OutWriter, 4, .{ .prefix = "pre: " }).init(out.writer());
 
         try blw.writer().writeAll("11\n22");
         //                         ^^^-^ (first pass)
@@ -334,4 +314,24 @@ test BufferedLineWriter {
 
         out.clear();
     }
+}
+
+/// Shortcut for `LineStreamer(@TypeOf(writer), 4096, opt).init(writer)`.
+pub fn lineStreamer(
+    underlying_writer: anytype,
+    comptime opt: LineStreamerOptions,
+) LineStreamer(@TypeOf(underlying_writer), 4096, opt) {
+    return .{ .underlying_writer = underlying_writer };
+}
+
+/// Shortcut for creating `LineStreamer`, writing bytes to it, and flushing.
+pub fn streamLines(
+    underlying_writer: anytype,
+    bytes: []const u8,
+    comptime buffer_size: usize,
+    comptime opt: LineStreamerOptions,
+) @TypeOf(underlying_writer).Error!void {
+    var blw = LineStreamer(@TypeOf(underlying_writer), buffer_size, opt).init(underlying_writer);
+    try blw.writer().writeAll(bytes);
+    try blw.flush();
 }

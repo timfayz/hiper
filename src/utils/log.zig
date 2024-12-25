@@ -91,7 +91,7 @@ pub fn scope(
     },
 ) type {
     const UnderlyingWriter = if (opt.WriterType) |T| T else @TypeOf(defaults.log_writer);
-    const WrappingWriter = @import("line_writer.zig").BufferedLineWriter(UnderlyingWriter, opt.buffer_size, .{
+    const WrappingWriter = @import("line_streamer.zig").LineStreamer(UnderlyingWriter, opt.buffer_size, .{
         .prefix = defaults.log_prefix_all_scopes ++ opt.prefix,
         .postfix = opt.postfix,
         .lock_stderr_on_flush = opt.lock_stderr_on_flush,
