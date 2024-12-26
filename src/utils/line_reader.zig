@@ -196,35 +196,30 @@ pub const LineNumMode = union(enum) {
 
 /// The result of a single-line reading.
 pub const ReadLine = struct {
-    /// The retrieved line, or `null` if no line was read.
-    line: ?[]const u8,
-    /// The detected or specified line number (starting from 1).
-    /// If no line was read, this value is `0`.
+    /// The retrieved line.
+    line: []const u8,
+    /// The line number (1-based, detected or set).
     line_num: usize,
-    /// The index position within the current line.
+    /// The index position within the line.
     index_pos: usize,
 };
 
 /// Retrieves a line from input starting at the given index. Returns the line,
 /// line number (1-based, detected or set), and index position within the line.
-/// If the position exceeds the line's length, it points to the next line or EOF.
+/// If the position exceeds the line's length, it points to the newline or EOF.
 pub fn readLine(
     input: []const u8,
     index: usize,
     curr_ln: LineNumMode,
-) ReadLine {
-    if (index > input.len)
-        return .{ .line = null, .index_pos = 0, .line_num = 0 };
+) ?ReadLine {
+    if (index > input.len) return null;
     const line_start = indexOfLineStart(input, index);
     const line_end = indexOfLineEnd(input, index);
     const index_pos = index - line_start;
     return .{
         .line = input[line_start..line_end],
         .index_pos = index_pos,
-        .line_num = if (curr_ln == .detect)
-            countLineNumForw(input, 0, line_start)
-        else
-            curr_ln.set,
+        .line_num = if (curr_ln == .detect) countLineNumForw(input, 0, line_start) else curr_ln.set,
     };
 }
 
@@ -233,8 +228,8 @@ test readLine {
     const Info = ReadLine;
 
     // [.detect]
+    try equal(null, readLine("", 100, .detect));
     try equal(Info{ .line = "", .line_num = 1, .index_pos = 0 }, readLine("", 0, .detect));
-    try equal(Info{ .line = null, .line_num = 0, .index_pos = 0 }, readLine("", 100, .detect));
     try equal(Info{ .line = "", .line_num = 1, .index_pos = 0 }, readLine("\n", 0, .detect));
     try equal(Info{ .line = "", .line_num = 2, .index_pos = 0 }, readLine("\n", 1, .detect));
     try equal(Info{ .line = "one", .line_num = 2, .index_pos = 3 }, readLine("\none", 4, .detect));
@@ -247,8 +242,8 @@ test readLine {
     try equal(Info{ .line = "two", .line_num = 2, .index_pos = 2 }, readLine("one\ntwo", 6, .detect));
 
     // [.set = *]
+    try equal(null, readLine("", 100, .{ .set = 42 }));
     try equal(Info{ .line = "", .line_num = 42, .index_pos = 0 }, readLine("", 0, .{ .set = 42 }));
-    try equal(Info{ .line = null, .line_num = 0, .index_pos = 0 }, readLine("", 100, .{ .set = 42 }));
     try equal(Info{ .line = "one", .line_num = 42, .index_pos = 1 }, readLine("one", 1, .{ .set = 42 }));
     try equal(Info{ .line = "one", .line_num = 42, .index_pos = 1 }, readLine("one\n", 1, .{ .set = 42 }));
     try equal(Info{ .line = "", .line_num = 42, .index_pos = 0 }, readLine("one\n", 4, .{ .set = 42 }));
@@ -430,6 +425,11 @@ pub const ReadLines = struct {
     /// Subtract 1 to start reading the next line backward.
     pub fn indexFirstRead(self: *const ReadLines, input: []const u8) usize {
         return slice.indexOfStart(input, self.firstLine());
+    }
+
+    /// Checks if the provided index is within the already read range.
+    pub fn containsIndex(self: *const ReadLines, index: usize, input: []const u8) bool {
+        return index >= self.indexFirstRead(input) and index <= self.indexLastRead(input);
     }
 
     pub fn debugWrite(self: *const ReadLines, writer: anytype) !void {
@@ -847,20 +847,18 @@ fn readLinesImpl(
     var s = stack.initFromSlice([]const u8, buf);
     s.push(input[line_start..line_end]) catch unreachable; // current line
 
-    var i: usize = amount - 1;
-    while (i != 0 and !s.full()) : (i -= 1) {
+    var amt: usize = amount;
+    while (amt > 1 and !s.full()) : (amt -= 1) {
         switch (dir) {
             .forward => {
                 if (line_end >= input.len) break;
-                const start_shifted = line_end + 1;
-                line_start = start_shifted;
-                line_end = indexOfLineEnd(input, start_shifted);
+                line_start = line_end + 1;
+                line_end = indexOfLineEnd(input, line_start);
             },
             .backward => {
                 if (line_start == 0) break;
-                const end_shifted = line_start - 1;
-                line_end = end_shifted;
-                line_start = indexOfLineStart(input, end_shifted);
+                line_end = line_start - 1;
+                line_start = indexOfLineStart(input, line_end);
             },
         }
         s.push(input[line_start..line_end]) catch unreachable;
