@@ -7,11 +7,12 @@
 //! - printLinesWithCursor()
 
 const std = @import("std");
-const lr = @import("line_reader.zig");
+const stack = @import("stack.zig");
 const slice = @import("slice.zig");
 const num = @import("num.zig");
 const meta = @import("meta.zig");
-const LineScope = slice.View(.range);
+const lr = @import("line_reader.zig");
+const LineSegment = slice.View(.range);
 
 /// Line printing options.
 pub const PrintOptions = struct {
@@ -56,28 +57,39 @@ pub fn printLines(
             num.orderPair(index[0], index[1]);
     };
     if (index_start > input.len or index_end > input.len) return;
-    const range_len = index_end - index_start;
+    // if (input.len == 0) return; TODO?
 
+    const range_ilen = index_end - index_start;
     var lines_buf: [opt.buf_size][]const u8 = undefined;
 
-    // invariants:
-    // mode.len >= 1
-    // index_start <= index_end
-    // index_start, index_end <= input.len
-    // opt.buf_size > 0
-    // input.len > 0 TODO?
+    const first = lr.readLines(&lines_buf, input, index_start, amount, line_num);
+    if (first.isEmpty()) return;
 
-    const first: ?lr.ReadLines = blk: {
-        // non-range or range that fits the view
-        if (range_len == 0 or mode.fits(range_len)) {
-            const read = lr.readLines(&lines_buf, input, index_start, amount, line_num);
-            if (read.isEmpty()) return;
-            break :blk read;
+    var segments = stack.init(LineSegment, 2);
+
+    // non-range
+    if (range_ilen == 0) {
+        if (mode == .full)
+            return renderLines(writer, input, first, null, range_ilen, opt);
+        const curr_line_seg = slice.viewRelRange(first.currLine(), .{
+            first.index_pos,
+            first.index_pos,
+        }, mode, .{ .trunc_mode = opt.trunc_mode }) orelse return;
+        segments.push(curr_line_seg) catch unreachable;
+        return renderLines(writer, input, first, segments.slice(), range_ilen, opt);
+    }
+    // range TODO
+    else {
+        // range fits first read range
+        if (first.containsIndex(index_end, input)) {
+            // range fits current line range
+            const end_pos = first.index_pos + range_ilen;
+            if (end_pos <= first.currLine().len) {
+                //
+            }
+        } else {
+            //
         }
-        break :blk null; // TODO
-    };
-    if (first) |read| {
-        try printLinesImpl(writer, input, range_len, read, mode, opt);
     }
 }
 
@@ -99,49 +111,54 @@ fn printLinesWithCursor(
 }
 
 /// Implementation function.
-fn printLinesImpl(
+fn renderLines(
     writer: anytype,
     input: []const u8,
-    range_len: usize,
     read: lr.ReadLines,
-    comptime mode: slice.ViewMode,
+    line_segs: ?[]LineSegment,
+    range_len: usize,
     comptime opt: PrintOptions,
 ) !void {
-    const scope = slice.viewRelRange(read.currLine(), .{
-        read.index_pos,
-        read.index_pos + range_len,
-    }, mode, .{ .trunc_mode = opt.trunc_mode }) orelse return;
-
-    const ln_len = if (opt.show_line_num) num.countIntLen(read.lastLineNum()) else 0;
+    const line_num_len = if (opt.show_line_num) num.countIntLen(read.lastLineNum()) else 0;
 
     for (read.lines, read.firstLineNum().., 0..) |line, ln, i| {
         // render line number
         if (opt.show_line_num)
-            try writer.print("{d: <[1]}" ++ opt.line_num_sep, .{ ln, ln_len });
+            try writer.print("{d: <[1]}" ++ opt.line_num_sep, .{ ln, line_num_len });
 
         // render line
-        var trunc_len: usize = 0;
-        if (line.len != 0 and scope.start > line.len) { // skip
-            try writer.writeAll(opt.trunc_sym);
-        } else { // trim
-            const seg = if (mode == .full) line else scope.sliceBounded([]const u8, line);
-            if (slice.indexOfStart(line, seg) > 0) {
-                try writer.writeAll(opt.trunc_sym);
-                trunc_len = opt.trunc_sym.len;
+        if (line_segs) |segs| {
+            for (segs) |line_seg| {
+                // render line segments
+                const seg = line_seg.sliceBounded([]const u8, line);
+                if (line_seg.start > 0 and line.len != 0) {
+                    try writer.writeAll(opt.trunc_sym);
+                }
+                try writer.writeAll(seg);
+                if (line_seg.end < line.len)
+                    try writer.writeAll(opt.trunc_sym)
+                else if (opt.show_eof and slice.indexOfEnd(input, seg) >= input.len)
+                    try writer.writeAll("␃");
             }
-            try writer.writeAll(seg);
-            if (slice.indexOfEnd(line, seg) < line.len) {
-                try writer.writeAll(opt.trunc_sym);
-            } else if (opt.show_eof and slice.indexOfEnd(input, seg) >= input.len) {
+        } else {
+            try writer.writeAll(line);
+            if (opt.show_eof and slice.indexOfEnd(input, line) >= input.len)
                 try writer.writeAll("␃");
-            }
         }
         try writer.writeByte('\n');
 
         // render cursor
         if (opt.show_cursor and read.curr_line_pos == i) {
-            const ln_sep_len = if (opt.show_line_num) opt.line_num_sep.len else 0;
-            const pad = ln_len +| ln_sep_len +| trunc_len +| scope.pos.start;
+            const trunc_len = blk: {
+                if (line_segs) |segs| break :blk if (segs[0].start > 0) opt.trunc_sym.len else 0;
+                break :blk 0;
+            };
+            const start_pos = blk: {
+                if (line_segs) |segs| break :blk segs[0].pos.start;
+                break :blk read.index_pos;
+            };
+            const sep_len = if (opt.show_line_num) opt.line_num_sep.len else 0;
+            const pad = line_num_len +| sep_len +| trunc_len +| start_pos;
             // head
             try writer.writeByteNTimes(' ', pad);
             try writer.writeByte(opt.cursor_head_char);
@@ -149,7 +166,7 @@ fn printLinesImpl(
             if (range_len > 0) {
                 if (range_len == 1) { // `^^`
                     try writer.writeByte(opt.cursor_head_char);
-                } else if (range_len > 1 and !scope.endPosExceeds()) { // `^~~^`
+                } else if (range_len > 1 and (read.index_pos + range_len) <= read.currLine().len) { // `^~~^`
                     try writer.writeByteNTimes(opt.cursor_body_char, range_len -| 1); // 1 excludes tail
                     try writer.writeByte(opt.cursor_head_char);
                 } else { // `^~~`
