@@ -13,6 +13,7 @@ right: usize,
 
 pub const Span = @This();
 pub const Dir = enum { left, right };
+pub const Rel = enum { none, index, range };
 pub const Amount = struct {
     amt: union(enum) {
         left: ?usize,
@@ -20,8 +21,9 @@ pub const Amount = struct {
         around: ?usize,
         custom: Span,
     },
-    fit: ?struct { min_pad: usize = 0 } = null,
     rshift_uneven: bool = true,
+    fit: ?struct { min_pad: usize = 0 } = .{},
+    compensate: enum { none, all, part } = .none,
 
     /// Returns the total span length.
     pub fn len(self: Amount) usize {
@@ -117,25 +119,25 @@ test Amount {
     try equal(10, (Amount{ .amt = .{ .custom = .{ .left = 4, .right = 6 } } }).len());
 
     // [extends()]
-    try equal(true, (Amount{ .amt = .{ .left = 10 } }).extends());
-    try equal(false, (Amount{ .amt = .{ .left = 10 }, .fit = .{} }).extends());
+    try equal(true, (Amount{ .amt = .{ .left = 10 }, .fit = null }).extends());
+    try equal(false, (Amount{ .amt = .{ .left = 10 } }).extends());
 
     // [fits()]
-    try equal(true, (Amount{ .amt = .{ .left = 10 } }).fits(max));
-    try equal(true, (Amount{ .amt = .{ .left = 10 }, .fit = .{} }).fits(10));
-    try equal(false, (Amount{ .amt = .{ .left = 10 }, .fit = .{} }).fits(11));
+    try equal(true, (Amount{ .amt = .{ .left = 10 }, .fit = null }).fits(max));
+    try equal(true, (Amount{ .amt = .{ .left = 10 } }).fits(10));
+    try equal(false, (Amount{ .amt = .{ .left = 10 } }).fits(11));
 
-    try equal(true, (Amount{ .amt = .{ .right = 10 } }).fits(max));
-    try equal(true, (Amount{ .amt = .{ .right = 10 }, .fit = .{} }).fits(10));
-    try equal(false, (Amount{ .amt = .{ .right = 10 }, .fit = .{} }).fits(11));
+    try equal(true, (Amount{ .amt = .{ .right = 10 }, .fit = null }).fits(max));
+    try equal(true, (Amount{ .amt = .{ .right = 10 } }).fits(10));
+    try equal(false, (Amount{ .amt = .{ .right = 10 } }).fits(11));
 
-    try equal(true, (Amount{ .amt = .{ .around = 10 } }).fits(max));
-    try equal(true, (Amount{ .amt = .{ .around = 10 }, .fit = .{} }).fits(10));
-    try equal(false, (Amount{ .amt = .{ .around = 10 }, .fit = .{} }).fits(11));
+    try equal(true, (Amount{ .amt = .{ .around = 10 }, .fit = null }).fits(max));
+    try equal(true, (Amount{ .amt = .{ .around = 10 } }).fits(10));
+    try equal(false, (Amount{ .amt = .{ .around = 10 } }).fits(11));
 
-    try equal(true, (Amount{ .amt = .{ .custom = .{ .left = 4, .right = 6 } } }).fits(max));
-    try equal(true, (Amount{ .amt = .{ .custom = .{ .left = 4, .right = 6 } }, .fit = .{} }).fits(10));
-    try equal(false, (Amount{ .amt = .{ .custom = .{ .left = 4, .right = 6 } }, .fit = .{} }).fits(11));
+    try equal(true, (Amount{ .amt = .{ .custom = .{ .left = 4, .right = 6 } }, .fit = null }).fits(max));
+    try equal(true, (Amount{ .amt = .{ .custom = .{ .left = 4, .right = 6 } } }).fits(10));
+    try equal(false, (Amount{ .amt = .{ .custom = .{ .left = 4, .right = 6 } } }).fits(11));
 }
 
 test Span {

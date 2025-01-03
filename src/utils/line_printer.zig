@@ -9,6 +9,7 @@
 const std = @import("std");
 const stack = @import("stack.zig");
 const slice = @import("slice.zig");
+const span = @import("span.zig");
 const num = @import("num.zig");
 const meta = @import("meta.zig");
 const lr = @import("line_reader.zig");
@@ -41,13 +42,13 @@ pub fn printLines(
     writer: anytype,
     input: []const u8,
     index: anytype,
-    comptime mode: slice.ViewMode,
+    comptime mode: span.Amount,
     comptime amount: lr.ReadAmount,
     line_num: lr.LineNumMode,
     comptime opt: PrintOptions,
 ) !void {
     if (opt.buf_size == 0) return;
-    if (!mode.isExt() and mode.len() == 0) return;
+    if (!mode.extends() and mode.len() == 0) return;
     const index_start, const index_end = blk: {
         break :blk if (meta.isNum(index))
             .{ index, index }
@@ -69,8 +70,6 @@ pub fn printLines(
 
     // non-range
     if (range_ilen == 0) {
-        if (mode == .full)
-            return renderLines(writer, input, first, null, range_ilen, opt);
         const curr_line_seg = slice.viewRelRange(first.currLine(), .{
             first.index_pos,
             first.index_pos,
@@ -100,7 +99,7 @@ fn printLinesWithCursor(
     writer: anytype,
     input: []const u8,
     index: anytype,
-    comptime mode: slice.ViewMode,
+    comptime mode: span.Amount,
     comptime amount: lr.ReadAmount,
     line_num: lr.LineNumMode,
     comptime opt: PrintOptions,
@@ -219,19 +218,19 @@ test printLines {
     const w = buf.writer();
 
     // out-of-bounds read
-    try printLines(w, "hello", 100, .{ .full = {} }, .{ .forward = 1 }, .detect, .{});
+    try printLines(w, "hello", 100, .{ .amt = .{ .around = 100 } }, .{ .forward = 1 }, .detect, .{});
     try equal(
         \\
     , string(&buf));
 
     // normal read
-    try printLines(w, "hello", 1, .{ .full = {} }, .{ .forward = 1 }, .detect, .{});
+    try printLines(w, "hello", 1, .{ .amt = .{ .around = 100 } }, .{ .forward = 1 }, .detect, .{});
     try equal(
         \\1| hello␃
     , string(&buf));
 
     // [.show_cursor]
-    try printLines(w, "hello", 1, .{ .full = {} }, .{ .forward = 1 }, .detect, .{
+    try printLines(w, "hello", 1, .{ .amt = .{ .around = 100 } }, .{ .forward = 1 }, .detect, .{
         .show_cursor = true,
     });
     try equal(
@@ -240,7 +239,7 @@ test printLines {
     , string(&buf));
 
     // [.show_eof]
-    try printLinesWithCursor(w, "hello", 1, .{ .full = {} }, .{ .forward = 1 }, .detect, .{
+    try printLinesWithCursor(w, "hello", 1, .{ .amt = .{ .around = 100 } }, .{ .forward = 1 }, .detect, .{
         .show_eof = false,
     });
     try equal(
@@ -249,7 +248,7 @@ test printLines {
     , string(&buf));
 
     // [.hint_printable_chars]
-    try printLinesWithCursor(w, "hello\nworld", 7, .{ .full = {} }, .{ .backward = 2 }, .detect, .{
+    try printLinesWithCursor(w, "hello\nworld", 7, .{ .amt = .{ .around = 100 } }, .{ .backward = 2 }, .detect, .{
         .hint_printable_chars = true,
     });
     try equal(
@@ -259,7 +258,7 @@ test printLines {
     , string(&buf));
 
     // end of string hint
-    try printLinesWithCursor(w, "hello\nworld", 11, .{ .full = {} }, .{ .backward = 2 }, .detect, .{});
+    try printLinesWithCursor(w, "hello\nworld", 11, .{ .amt = .{ .around = 100 } }, .{ .backward = 2 }, .detect, .{});
     try equal(
         \\1| hello
         \\2| world␃
@@ -267,14 +266,14 @@ test printLines {
     , string(&buf));
 
     // newline hint
-    try printLinesWithCursor(w, "hello\n", 5, .{ .full = {} }, .{ .forward = 1 }, .detect, .{});
+    try printLinesWithCursor(w, "hello\n", 5, .{ .amt = .{ .around = 100 } }, .{ .forward = 1 }, .detect, .{});
     try equal(
         \\1| hello
         \\        ^ (newline)
     , string(&buf));
 
     // [.show_cursor_hint]
-    try printLinesWithCursor(w, "hello\n", 5, .{ .full = {} }, .{ .forward = 1 }, .detect, .{
+    try printLinesWithCursor(w, "hello\n", 5, .{ .amt = .{ .around = 100 } }, .{ .forward = 1 }, .detect, .{
         .show_cursor_hint = false,
     });
     try equal(
@@ -283,7 +282,7 @@ test printLines {
     , string(&buf));
 
     // [.show_line_num]
-    try printLines(w, "hello", 1, .{ .full = {} }, .{ .forward = 1 }, .detect, .{
+    try printLines(w, "hello", 1, .{ .amt = .{ .around = 100 } }, .{ .forward = 1 }, .detect, .{
         .show_line_num = false,
     });
     try equal(
@@ -291,7 +290,7 @@ test printLines {
     , string(&buf));
 
     // [.line_num_sep]
-    try printLines(w, "hello", 1, .{ .full = {} }, .{ .forward = 1 }, .detect, .{
+    try printLines(w, "hello", 1, .{ .amt = .{ .around = 100 } }, .{ .forward = 1 }, .detect, .{
         .line_num_sep = "__",
     });
     try equal(
@@ -315,10 +314,10 @@ test printLines {
     ;
 
     // [.detect] automatic line numbering
-    try printLines(w, input, 15, .{ .full = {} }, .{ .forward = 6 }, .detect, .{});
+    try printLines(w, input, 15, .{ .amt = .{ .around = 100 } }, .{ .forward = 6 }, .detect, .{});
     try equal(
         \\2| This is the second.
-        \\3| A third line is a longer one.
+        \\3| A third line is a l..
         \\4| 
         \\5| Fifth line.
         \\6| Sixth one.
@@ -326,18 +325,18 @@ test printLines {
     , string(&buf));
 
     // [.set = *] manual line numbering
-    try printLines(w, input, 1, .{ .full = {} }, .{ .forward = 6 }, .{ .set = 7 }, .{});
+    try printLines(w, input, 1, .{ .amt = .{ .around = 100 } }, .{ .forward = 6 }, .{ .set = 7 }, .{});
     try equal(
         \\7 | First line.
-        \\8 | This is the second.
-        \\9 | A third line is a longer one.
+        \\8 | This is the..
+        \\9 | A third lin..
         \\10| 
         \\11| Fifth line.
         \\12| Sixth one.
     , string(&buf));
 
     // [.backward] read, [.around] mode, trunc [.hard_flex]
-    try printLinesWithCursor(w, input, 85, .{ .around = .{ .len = 5 } }, .{ .backward = 6 }, .detect, .{
+    try printLinesWithCursor(w, input, 85, .{ .amt = .{ .around = 5 } }, .{ .backward = 6 }, .detect, .{
         .trunc_mode = .hard_flex,
         .show_cursor_hint = true,
     });
@@ -352,7 +351,7 @@ test printLines {
     , string(&buf));
 
     // [.trunc_sym]
-    try printLinesWithCursor(w, input, 85, .{ .around = .{ .len = 5 } }, .{ .backward = 1 }, .detect, .{
+    try printLinesWithCursor(w, input, 85, .{ .amt = .{ .around = 5 } }, .{ .backward = 1 }, .detect, .{
         .trunc_sym = "__",
     });
     try equal(

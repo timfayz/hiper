@@ -10,11 +10,19 @@
 const std = @import("std");
 
 /// Returns a tuple of two numbers sorted in ascending order.
-pub fn orderPair(
+pub fn orderPairAsc(
     num1: anytype,
     num2: anytype,
 ) struct { @TypeOf(num1), @TypeOf(num2) } {
     return if (num1 <= num2) .{ num1, num2 } else .{ num2, num1 };
+}
+
+/// Returns a tuple of two numbers sorted in ascending order.
+pub fn orderPairDesc(
+    num1: anytype,
+    num2: anytype,
+) struct { @TypeOf(num1), @TypeOf(num2) } {
+    return if (num1 >= num2) .{ num1, num2 } else .{ num2, num1 };
 }
 
 /// Returns the number of digits in an integer.
