@@ -3,7 +3,10 @@
 
 //! Public API:
 //! - isStruct()
+//! - isSlice()
 //! - isTuple()
+//! - isTupleOf()
+//! - isOneOf()
 //! - isNum()
 //! - isInt()
 //! - isFloat()
@@ -22,6 +25,30 @@ test isStruct {
     try equal(false, isStruct(.{1}));
     try equal(false, isStruct(struct { usize }{1}));
     try equal(true, isStruct(struct { field: usize }{ .field = 1 }));
+}
+
+/// Checks comptime if `arg` is a slice.
+pub inline fn isSlice(arg: anytype) bool {
+    const info = @typeInfo(@TypeOf(arg));
+    return info == .pointer and info.pointer.size == .Slice;
+}
+
+test isSlice {
+    const equal = std.testing.expectEqual;
+    try equal(false, isSlice(1));
+    try equal(true, isSlice(@as([]const u8, "hello")));
+}
+
+/// Checks comptime if `arg` is an optional type.
+pub inline fn isOptional(arg: anytype) bool {
+    const info = @typeInfo(@TypeOf(arg));
+    return info == .optional;
+}
+
+test isOptional {
+    const equal = std.testing.expectEqual;
+    try equal(false, isOptional(1));
+    try equal(true, isOptional(@as(?u8, 1)));
 }
 
 /// Checks comptime if `arg` is a tuple (structs are not considered tuples).
@@ -65,10 +92,10 @@ pub inline fn isOneOf(arg: anytype, types: anytype) bool {
 
 test isOneOf {
     const equal = std.testing.expectEqual;
-    try equal(true, isOneOf(@as(usize, 1), .{ f32, bool, usize }));
-    try equal(false, isOneOf(@as(u8, 1), .{ f32, bool, usize }));
     try equal(false, isOneOf(@as(u8, 1), .{f32}));
-    try equal(true, isOneOf(.{1}, .{struct { comptime comptime_int = 1 }}));
+    try equal(false, isOneOf(@as(u8, 1), .{ f32, bool, usize }));
+    try equal(true, isOneOf(@as(usize, 1), .{ f32, bool, usize }));
+    try equal(true, isOneOf(.{1}, .{ f32, struct { comptime comptime_int = 1 } }));
 }
 
 /// Checks comptime if `arg` is a number (integer or float).
@@ -82,6 +109,13 @@ pub inline fn isNum(arg: anytype) bool {
     };
 }
 
+test isNum {
+    const equal = std.testing.expectEqual;
+    try equal(true, isNum(1));
+    try equal(true, isNum(1.1));
+    try equal(false, isNum(.{1}));
+}
+
 /// Checks comptime if `arg` is an integer.
 pub inline fn isInt(arg: anytype) bool {
     return switch (@typeInfo(@TypeOf(arg))) {
@@ -91,6 +125,13 @@ pub inline fn isInt(arg: anytype) bool {
     };
 }
 
+test isInt {
+    const equal = std.testing.expectEqual;
+    try equal(true, isInt(1));
+    try equal(false, isInt(1.1));
+    try equal(false, isInt(.{1}));
+}
+
 /// Checks comptime if `arg` is a number (integer or float).
 pub inline fn isFloat(arg: anytype) bool {
     return switch (@typeInfo(@TypeOf(arg))) {
@@ -98,20 +139,6 @@ pub inline fn isFloat(arg: anytype) bool {
         .comptime_float => true,
         else => false,
     };
-}
-
-test isNum {
-    const equal = std.testing.expectEqual;
-    try equal(true, isNum(1));
-    try equal(true, isNum(1.1));
-    try equal(false, isNum(.{1}));
-}
-
-test isInt {
-    const equal = std.testing.expectEqual;
-    try equal(true, isInt(1));
-    try equal(false, isInt(1.1));
-    try equal(false, isInt(.{1}));
 }
 
 test isFloat {
