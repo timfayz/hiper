@@ -14,14 +14,19 @@ const num = @import("num.zig");
 const meta = @import("meta.zig");
 
 pub const Side = enum { left, right };
+pub const SideSize = union(Side) { left: usize, right: usize };
 pub const TruncMode = enum { hard, hard_flex, soft };
 
 pub const Options = struct {
     rshift_uneven: bool = true,
-    fit: ?struct { min_pad: usize = 0 } = null,
-    shift: ?union(Side) { left: usize, right: usize } = null,
-    extra_side: Side = .right,
     trunc_mode: TruncMode = .hard,
+    shift: ?SideSize = null,
+    extra: Extra = .{},
+
+    pub const Extra = struct {
+        side: Side = .right,
+        min_pad: usize = 0,
+    };
 };
 
 pub const Mode = union(enum) {
@@ -35,41 +40,36 @@ pub const Mode = union(enum) {
     around: ?usize,
     custom: Span, // native
 
-    pub fn toSpan(
+    fn toSpanImpl(
         self: Mode,
         extra: usize,
+        comptime fit: bool,
         comptime opt: Options,
-    ) if (opt.fit == null) Span else ?Span {
-        if (opt.fit) |fit| {
-            if (switch (self) {
-                .around => extra +| fit.min_pad *| 2 > self.len(),
-                inline .left, .right => extra +| fit.min_pad > self.len(),
-                .custom => extra > self.len(),
-            }) return null;
-        }
-
+    ) if (fit) ?Span else Span {
         var span: Span = .{ .left = 0, .right = 0 };
-        const span_extends = opt.fit == null;
         switch (self) {
             .left => {
-                span.left = if (span_extends) self.len() else self.len() - extra;
-                span.extendSide(opt.extra_side, extra);
+                if (fit and extra +| opt.extra.min_pad > self.len()) return null;
+                span.left = if (fit) self.len() - extra else self.len();
+                span.extendSide(opt.extra.side, extra);
             },
             .right => {
-                span.right = if (span_extends) self.len() else self.len() - extra;
-                span.extendSide(opt.extra_side, extra);
+                if (fit and extra +| opt.extra.min_pad > self.len()) return null;
+                span.right = if (fit) self.len() - extra else self.len();
+                span.extendSide(opt.extra.side, extra);
             },
             .around => {
-                const avail_len = if (span_extends) self.len() else self.len() - extra;
+                if (fit and extra +| opt.extra.min_pad *| 2 > self.len()) return null;
+                const avail_len = if (fit) self.len() - extra else self.len();
                 span = .{ .left = avail_len / 2, .right = avail_len / 2 };
                 if (avail_len & 1 != 0) { // compensate lost item during odd division
                     if (opt.rshift_uneven) span.right +|= 1 else span.left +|= 1;
                 }
-                span.extendSide(opt.extra_side, extra);
+                span.extendSide(opt.extra.side, extra);
             },
             .custom => |amt| {
                 span = .{ .left = amt.left, .right = amt.right };
-                if (span_extends) span.extendSide(opt.extra_side, extra);
+                span.extendSide(opt.extra.side, extra);
             },
         }
 
@@ -81,18 +81,13 @@ pub const Mode = union(enum) {
         return span;
     }
 
-    // pub fn toRange(
-    //     self: Mode,
-    //     extra: usize,
-    //     pos: usize,
-    //     within: Range,
-    //     comptime opt: Options,
-    // ) ?Range {
-    //     const span = self.toSpanExtra(extra, opt);
-    //     if (meta.isOptional(span))
-    //         if (span) |v| v.toRange(within, pos, opt.compensate) else null;
-    //     return span.toRange(within, pos, opt.compensate);
-    // }
+    pub fn toSpanFit(self: Mode, extra: usize, comptime opt: Options) ?Span {
+        return self.toSpanImpl(extra, true, opt);
+    }
+
+    pub fn toSpanExt(self: Mode, extra: usize, comptime opt: Options) Span {
+        return self.toSpanImpl(extra, false, opt);
+    }
 
     pub fn len(self: Mode) usize {
         return switch (self) {
@@ -121,40 +116,40 @@ test Mode {
 
     // [.fit == null]
     // [.left]
-    try equal(Span{ .left = 10, .right = 0 }, (Mode{ .left = 10 }).toSpan(0, .{}));
-    try equal(Span{ .left = 10, .right = 4 }, (Mode{ .left = 10 }).toSpan(4, .{ .extra_side = .right }));
-    try equal(Span{ .left = 14, .right = 0 }, (Mode{ .left = 10 }).toSpan(4, .{ .extra_side = .left }));
+    try equal(Span{ .left = 10, .right = 0 }, (Mode{ .left = 10 }).toSpanExt(0, .{}));
+    try equal(Span{ .left = 10, .right = 4 }, (Mode{ .left = 10 }).toSpanExt(4, .{ .extra = .{ .side = .right } }));
+    try equal(Span{ .left = 14, .right = 0 }, (Mode{ .left = 10 }).toSpanExt(4, .{ .extra = .{ .side = .left } }));
     // [.right]
-    try equal(Span{ .left = 0, .right = 10 }, (Mode{ .right = 10 }).toSpan(0, .{}));
-    try equal(Span{ .left = 0, .right = 14 }, (Mode{ .right = 10 }).toSpan(4, .{ .extra_side = .right }));
-    try equal(Span{ .left = 4, .right = 10 }, (Mode{ .right = 10 }).toSpan(4, .{ .extra_side = .left }));
+    try equal(Span{ .left = 0, .right = 10 }, (Mode{ .right = 10 }).toSpanExt(0, .{}));
+    try equal(Span{ .left = 0, .right = 14 }, (Mode{ .right = 10 }).toSpanExt(4, .{ .extra = .{ .side = .right } }));
+    try equal(Span{ .left = 4, .right = 10 }, (Mode{ .right = 10 }).toSpanExt(4, .{ .extra = .{ .side = .left } }));
     // [.around]
-    try equal(Span{ .left = 4, .right = 5 }, (Mode{ .around = 9 }).toSpan(0, .{}));
-    try equal(Span{ .left = 5, .right = 4 }, (Mode{ .around = 9 }).toSpan(0, .{ .rshift_uneven = false }));
-    try equal(Span{ .left = 9, .right = 5 }, (Mode{ .around = 9 }).toSpan(5, .{ .extra_side = .left }));
-    try equal(Span{ .left = 4, .right = 10 }, (Mode{ .around = 9 }).toSpan(5, .{ .extra_side = .right }));
+    try equal(Span{ .left = 4, .right = 5 }, (Mode{ .around = 9 }).toSpanExt(0, .{}));
+    try equal(Span{ .left = 5, .right = 4 }, (Mode{ .around = 9 }).toSpanExt(0, .{ .rshift_uneven = false }));
+    try equal(Span{ .left = 9, .right = 5 }, (Mode{ .around = 9 }).toSpanExt(5, .{ .extra = .{ .side = .left } }));
+    try equal(Span{ .left = 4, .right = 10 }, (Mode{ .around = 9 }).toSpanExt(5, .{ .extra = .{ .side = .right } }));
 
     // [.fit != null]
     // [.left]
-    try equal(null, (Mode{ .left = 10 }).toSpan(11, .{ .fit = .{} }));
-    try equal(Span{ .left = 0, .right = 10 }, (Mode{ .left = 10 }).toSpan(10, .{ .extra_side = .right, .fit = .{} }));
-    try equal(Span{ .left = 6, .right = 4 }, (Mode{ .left = 10 }).toSpan(4, .{ .extra_side = .right, .fit = .{} }));
-    try equal(Span{ .left = 10, .right = 0 }, (Mode{ .left = 10 }).toSpan(4, .{ .extra_side = .left, .fit = .{ .min_pad = 6 } }));
-    try equal(null, (Mode{ .left = 10 }).toSpan(4, .{ .extra_side = .left, .fit = .{ .min_pad = 7 } }));
+    try equal(null, (Mode{ .left = 10 }).toSpanFit(11, .{}));
+    try equal(Span{ .left = 0, .right = 10 }, (Mode{ .left = 10 }).toSpanFit(10, .{ .extra = .{ .side = .right } }));
+    try equal(Span{ .left = 6, .right = 4 }, (Mode{ .left = 10 }).toSpanFit(4, .{ .extra = .{ .side = .right } }));
+    try equal(Span{ .left = 10, .right = 0 }, (Mode{ .left = 10 }).toSpanFit(4, .{ .extra = .{ .side = .left, .min_pad = 6 } }));
+    try equal(null, (Mode{ .left = 10 }).toSpanFit(4, .{ .extra = .{ .side = .left, .min_pad = 7 } }));
     // [.right]
-    try equal(null, (Mode{ .right = 10 }).toSpan(11, .{ .fit = .{} }));
-    try equal(Span{ .left = 0, .right = 10 }, (Mode{ .right = 10 }).toSpan(10, .{ .extra_side = .right, .fit = .{} }));
-    try equal(Span{ .left = 4, .right = 6 }, (Mode{ .right = 10 }).toSpan(4, .{ .extra_side = .left, .fit = .{} }));
-    try equal(Span{ .left = 0, .right = 10 }, (Mode{ .right = 10 }).toSpan(4, .{ .extra_side = .right, .fit = .{ .min_pad = 6 } }));
-    try equal(null, (Mode{ .right = 10 }).toSpan(4, .{ .extra_side = .right, .fit = .{ .min_pad = 7 } }));
+    try equal(null, (Mode{ .right = 10 }).toSpanFit(11, .{}));
+    try equal(Span{ .left = 0, .right = 10 }, (Mode{ .right = 10 }).toSpanFit(10, .{ .extra = .{ .side = .right } }));
+    try equal(Span{ .left = 4, .right = 6 }, (Mode{ .right = 10 }).toSpanFit(4, .{ .extra = .{ .side = .left } }));
+    try equal(Span{ .left = 0, .right = 10 }, (Mode{ .right = 10 }).toSpanFit(4, .{ .extra = .{ .side = .right, .min_pad = 6 } }));
+    try equal(null, (Mode{ .right = 10 }).toSpanFit(4, .{ .extra = .{ .side = .right, .min_pad = 7 } }));
     // [.around]
-    try equal(null, (Mode{ .around = 10 }).toSpan(11, .{ .fit = .{} }));
-    try equal(Span{ .left = 0, .right = 10 }, (Mode{ .around = 10 }).toSpan(10, .{ .extra_side = .right, .fit = .{} }));
-    try equal(Span{ .left = 2, .right = 8 }, (Mode{ .around = 10 }).toSpan(5, .{ .extra_side = .right, .fit = .{} }));
-    try equal(Span{ .left = 8, .right = 2 }, (Mode{ .around = 10 }).toSpan(5, .{ .extra_side = .left, .fit = .{}, .rshift_uneven = false }));
-    try equal(Span{ .left = 7, .right = 3 }, (Mode{ .around = 10 }).toSpan(5, .{ .extra_side = .left, .fit = .{} }));
-    try equal(Span{ .left = 7, .right = 3 }, (Mode{ .around = 10 }).toSpan(5, .{ .extra_side = .left, .fit = .{ .min_pad = 2 } }));
-    try equal(null, (Mode{ .around = 10 }).toSpan(5, .{ .extra_side = .left, .fit = .{ .min_pad = 3 } }));
+    try equal(null, (Mode{ .around = 10 }).toSpanFit(11, .{}));
+    try equal(Span{ .left = 0, .right = 10 }, (Mode{ .around = 10 }).toSpanFit(10, .{ .extra = .{ .side = .right } }));
+    try equal(Span{ .left = 2, .right = 8 }, (Mode{ .around = 10 }).toSpanFit(5, .{ .extra = .{ .side = .right } }));
+    try equal(Span{ .left = 8, .right = 2 }, (Mode{ .around = 10 }).toSpanFit(5, .{ .rshift_uneven = false, .extra = .{ .side = .left } }));
+    try equal(Span{ .left = 7, .right = 3 }, (Mode{ .around = 10 }).toSpanFit(5, .{ .extra = .{ .side = .left } }));
+    try equal(Span{ .left = 7, .right = 3 }, (Mode{ .around = 10 }).toSpanFit(5, .{ .extra = .{ .side = .left, .min_pad = 2 } }));
+    try equal(null, (Mode{ .around = 10 }).toSpanFit(5, .{ .extra = .{ .side = .left, .min_pad = 3 } }));
 }
 
 pub const Span = struct {
