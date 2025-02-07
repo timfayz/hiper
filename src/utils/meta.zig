@@ -30,7 +30,7 @@ test isStruct {
 /// Checks comptime if `arg` is a slice.
 pub inline fn isSlice(arg: anytype) bool {
     const info = @typeInfo(@TypeOf(arg));
-    return info == .pointer and info.pointer.size == .Slice;
+    return info == .pointer and info.pointer.size == .slice;
 }
 
 test isSlice {
