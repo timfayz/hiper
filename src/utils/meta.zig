@@ -10,6 +10,7 @@
 //! - isNum()
 //! - isInt()
 //! - isFloat()
+//! - cPtr()
 
 const std = @import("std");
 const meta = std.meta;
@@ -146,4 +147,14 @@ test isFloat {
     try equal(false, isFloat(1));
     try equal(true, isFloat(1.1));
     try equal(false, isFloat(.{1}));
+}
+
+/// Casts pointer of any type to a C-style pointer (`[*c]`).
+inline fn cPtr(ptr: anytype) [*c]const std.meta.Child(@TypeOf(ptr)) {
+    return @as([*c]const std.meta.Child(@TypeOf(ptr)), ptr);
+}
+
+test cPtr {
+    const ptr: []const u8 = "hello";
+    try std.testing.expectEqual([*c]const u8, @TypeOf(cPtr(ptr.ptr)));
 }
