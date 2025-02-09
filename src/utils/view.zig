@@ -13,7 +13,14 @@ const std = @import("std");
 const num = @import("num.zig");
 const meta = @import("meta.zig");
 
-pub const Side = enum { left, right };
+pub const Side = enum {
+    left,
+    right,
+
+    pub fn opposite(self: Side) Side {
+        return if (self == .left) .right else .left;
+    }
+};
 pub const SideSize = union(Side) { left: usize, right: usize };
 pub const TruncMode = enum { hard, hard_flex, soft };
 
