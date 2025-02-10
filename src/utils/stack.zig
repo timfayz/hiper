@@ -9,7 +9,7 @@
 //! - initFromSliceFilled()
 
 const std = @import("std");
-const err = @import("err.zig");
+const generic = @import("generic.zig");
 const IntFittingRange = std.math.IntFittingRange;
 
 /// A generic stack implementation. Can be either fixed-array- or slice-based. If
@@ -23,7 +23,7 @@ pub fn Stack(T: type, length: ?usize) type {
         nil: bool = true,
 
         const Self = @This();
-        pub const Error = err.Generic.NoSpaceLeft;
+        pub const Error = generic.Error.NoSpaceLeft;
         pub const Writer = std.io.Writer(*Self, Error, write);
 
         pub usingnamespace if (length == null) struct {
