@@ -16,8 +16,9 @@ const num = @import("num.zig");
 const meta = @import("meta.zig");
 
 pub const Error = struct {
-    pub const NoSpaceLeft = error{NoSpaceLeft};
-    pub const OutOfBounds = error{OutOfBounds};
+    pub const OutOfSpace = error{OutOfSpace};
+    pub const OutOfSlice = error{OutOfSlice};
+    pub const InsufficientSpace = error{InsufficientSpace};
 };
 
 pub const TruncMode = enum { hard, hard_flex, soft };
@@ -68,12 +69,12 @@ pub const DirPair = struct {
         }
     }
 
-    pub fn nonZeroDir(self: *const DirPair) ?DirTag {
+    pub fn uniqueNonZeroDir(self: *const DirPair) ?DirTag {
         if (self.left != 0 and self.right == 0)
             return .left;
         if (self.left == 0 and self.right != 0)
             return .right;
-        return null; // both 0 or 1+
+        return null; // both 0 or >0
     }
 
     pub fn toRange(
@@ -82,53 +83,37 @@ pub const DirPair = struct {
         within: Range,
         comptime trunc_mode: TruncMode,
     ) Range {
-        if (pos < within.start) { // -*- [  ]
-            const end = switch (trunc_mode) {
-                .hard => pos +| self.right,
-                .hard_flex => pos +| self.len(),
-                .soft => within.start +| self.len(),
-            };
-            return Range.init(within.start, @min(within.end, end));
-        } else if (pos < within.end) { // [-*-]
-            switch (trunc_mode) {
-                .hard => {
-                    const start = @max(within.start, pos -| self.left);
-                    const end = @min(within.end, pos +| self.right);
-                    return Range.init(start, end);
-                },
-                else => {
-                    const start = pos -| self.left;
-                    const end = pos +| self.right;
-                    const unused_left = self.left - (pos - start);
-                    const unused_right = self.right - (end - pos);
-
-                    if (start < within.start) {
-                        const overrun = within.start - start;
-                        return Range.init(
-                            within.start,
-                            @min(within.end, end +| overrun +| unused_left),
-                        );
-                    } else if (end > within.end) {
-                        const overrun = end - within.end;
-                        return Range.init(
-                            @max(within.start, start -| overrun -| unused_right),
-                            within.end,
-                        );
-                    }
-
-                    return Range.init(
-                        @max(within.start, start -| unused_right),
-                        @min(within.end, end +| unused_left),
-                    );
-                },
-            }
-        } else { // [  ] -*-
-            const start = switch (trunc_mode) {
-                .hard => pos -| self.left,
-                .hard_flex => pos -| self.len(),
-                .soft => within.end -| self.len(),
-            };
-            return Range.init(@max(within.start, start), within.end);
+        switch (trunc_mode) {
+            .hard => return Range.init(pos -| self.left, pos +| self.right).clamp(within),
+            .hard_flex, .soft => |mode| {
+                if (pos < within.start) {
+                    const end = (if (mode == .hard_flex) pos else within.start) +| self.len();
+                    return Range.init(within.start, end).clampEnd(within);
+                }
+                if (pos < within.end) {
+                    const range = Range.init(pos -| self.left, pos +| self.right);
+                    var clamped = range.clamp(within);
+                    var reminder = range.clampReminder(within);
+                    // reminder of potential overflow/underflow {
+                    reminder.left +|= self.left - (pos - range.start);
+                    reminder.right +|= self.right - (range.end - pos);
+                    // }
+                    if (reminder.uniqueNonZeroDir()) |dir| switch (dir) {
+                        .left => {
+                            clamped.end +|= reminder.left;
+                            return clamped.clampEnd(within);
+                        },
+                        .right => {
+                            clamped.start -|= reminder.right;
+                            return clamped.clampStart(within);
+                        },
+                    };
+                    return clamped;
+                }
+                // pos >= within.end
+                const start = (if (mode == .hard_flex) pos else within.end) -| self.len();
+                return Range.init(start, within.end).clampStart(within);
+            },
         }
     }
 };
@@ -136,167 +121,143 @@ pub const DirPair = struct {
 test DirPair {
     const equal = std.testing.expectEqualDeep;
 
-    // [nonZeroSide()]
-    try equal(null, DirPair.init(5, 5).nonZeroDir());
-    try equal(null, DirPair.init(0, 0).nonZeroDir());
-    try equal(.right, DirPair.init(0, 5).nonZeroDir());
-    try equal(.left, DirPair.init(5, 0).nonZeroDir());
+    // [nonZeroDir()]
+
+    try equal(null, DirPair.init(5, 5).uniqueNonZeroDir());
+    try equal(null, DirPair.init(0, 0).uniqueNonZeroDir());
+    try equal(.right, DirPair.init(0, 5).uniqueNonZeroDir());
+    try equal(.left, DirPair.init(5, 0).uniqueNonZeroDir());
 
     // [toRange()]
+
     const within = Range.init(5, 10); // Range is a half-open range [2, 7)
+
+    // [.hard mode]
+    //    0123456789ABCDEF
+    //         -----        (within)
+    //     ~~^              (case 1)
+    //     ~~^^^^^^^        (case 2)
+    //     ~~^^^^^^^^^      (case 3)
+    try equal(Range.init(5, 5), DirPair.init(2, 1).toRange(3, within, .hard)); // 1
+    try equal(Range.init(5, 10), DirPair.init(2, 7).toRange(3, within, .hard)); // 2
+    try equal(Range.init(5, 10), DirPair.init(2, 9).toRange(3, within, .hard)); // 3
 
     // -*- [  ]
 
-    // [.hard]
-    //    0123456789abcdef
-    //         -----      (within)
-    try equal(Range.init(5, 5), DirPair.init(2, 2).toRange(3, within, .hard));
-    //     ~~^^
-    try equal(Range.init(5, 10), DirPair.init(2, 7).toRange(3, within, .hard));
-    //     ~~^^^^^^^
-    try equal(Range.init(5, 10), DirPair.init(2, 9).toRange(3, within, .hard));
-    //     ~~^^^^^^^^^
+    // [.hard_flex mode]
+    //    0123456789ABCDEF
+    //         -----        (within)
+    //     ~~^^++           (case 1)
+    //    ~~^^ +            (case 2)
+    //     ~~^^^^^^^        (case 3)
+    //     ~~^^^^^^^^^      (case 4)
+    try equal(Range.init(5, 7), DirPair.init(2, 2).toRange(3, within, .hard_flex)); // 1
+    try equal(Range.init(5, 6), DirPair.init(2, 2).toRange(2, within, .hard_flex)); // 2
+    try equal(Range.init(5, 10), DirPair.init(2, 7).toRange(3, within, .hard_flex)); // 3
+    try equal(Range.init(5, 10), DirPair.init(2, 9).toRange(3, within, .hard_flex)); // 4
 
-    // [.hard_flex]
-    //    0123456789abcdef
-    //         -----      (within)
-    try equal(Range.init(5, 7), DirPair.init(2, 2).toRange(3, within, .hard_flex));
-    //     ~~^^++
-    try equal(Range.init(5, 8), DirPair.init(2, 2).toRange(4, within, .hard_flex));
-    //      ~~^^++
-    try equal(Range.init(5, 6), DirPair.init(2, 2).toRange(2, within, .hard_flex));
-    //    ~~^^ +
-    try equal(Range.init(5, 10), DirPair.init(2, 7).toRange(3, within, .hard_flex));
-    //     ~~^^^^^^^
-    try equal(Range.init(5, 10), DirPair.init(2, 9).toRange(3, within, .hard_flex));
-    //     ~~^^^^^^^^^
-
-    // [.soft]
-    //    0123456789abcdef
-    //         -----      (within)
-    try equal(Range.init(5, 9), DirPair.init(2, 2).toRange(3, within, .soft));
-    //     ~~^^++++
-    try equal(Range.init(5, 9), DirPair.init(2, 2).toRange(2, within, .soft));
-    //    ~~^^ ++++
-    try equal(Range.init(5, 9), DirPair.init(2, 2).toRange(4, within, .soft));
-    //      ~~^^+++
-    try equal(Range.init(5, 10), DirPair.init(2, 7).toRange(3, within, .soft));
-    //     ~~^^^^^^^
-    try equal(Range.init(5, 10), DirPair.init(2, 9).toRange(3, within, .soft));
-    //     ~~^^^^^^^^^
+    // [.soft mode]
+    //    0123456789ABCDEF
+    //         -----        (within)
+    //     ~~^^++++         (case 1)
+    //    ~~^^ ++++         (case 2)
+    //     ~~^^^^^^^        (case 3)
+    //     ~~^^^^^^^^^      (case 4)
+    try equal(Range.init(5, 9), DirPair.init(2, 2).toRange(3, within, .soft)); // 1
+    try equal(Range.init(5, 9), DirPair.init(2, 2).toRange(2, within, .soft)); // 2
+    try equal(Range.init(5, 10), DirPair.init(2, 7).toRange(3, within, .soft)); // 3
+    try equal(Range.init(5, 10), DirPair.init(2, 9).toRange(3, within, .soft)); // 4
 
     // [  ] -*-
 
-    // [.hard]
-    //    0123456789abcdef
-    //         -----      (within)
-    try equal(Range.init(10, 10), DirPair.init(2, 2).toRange(12, within, .hard));
-    //              ~~^^
-    try equal(Range.init(5, 10), DirPair.init(7, 2).toRange(12, within, .hard));
-    //         ~~~~~~~^^
-    try equal(Range.init(5, 10), DirPair.init(9, 2).toRange(12, within, .hard));
-    //       ~~~~~~~~~^^
+    // [.hard mode]
+    //    0123456789ABCDEF
+    //         -----        (within)
+    //               ~^^    (case 1)
+    //         ~~~~~~~^^    (case 2)
+    //       ~~~~~~~~~^^    (case 3)
+    try equal(Range.init(10, 10), DirPair.init(1, 2).toRange(12, within, .hard)); // 1
+    try equal(Range.init(5, 10), DirPair.init(7, 2).toRange(12, within, .hard)); // 2
+    try equal(Range.init(5, 10), DirPair.init(9, 2).toRange(12, within, .hard)); // 3
 
-    // [.hard_flex]
-    //    0123456789abcdef
-    //         -----      (within)
-    try equal(Range.init(8, 10), DirPair.init(2, 2).toRange(12, within, .hard_flex));
-    //            ++~~^^
-    try equal(Range.init(9, 10), DirPair.init(2, 2).toRange(13, within, .hard_flex));
-    //             + ~~^^
-    try equal(Range.init(7, 10), DirPair.init(2, 2).toRange(11, within, .hard_flex));
-    //           ++~~^^
-    try equal(Range.init(5, 10), DirPair.init(7, 2).toRange(12, within, .hard_flex));
-    //         ~~~~~~~^^
-    try equal(Range.init(5, 10), DirPair.init(9, 2).toRange(12, within, .hard_flex));
-    //       ~~~~~~~~~^^
+    // [.hard_flex mode]
+    //    0123456789ABCDEF
+    //         -----        (within)
+    //            ++~~^^    (case 1)
+    //             + ~~^^   (case 2)
+    //         ~~~~~~~^^    (case 3)
+    //       ~~~~~~~~~^^    (case 4)
+    try equal(Range.init(8, 10), DirPair.init(2, 2).toRange(12, within, .hard_flex)); // 1
+    try equal(Range.init(9, 10), DirPair.init(2, 2).toRange(13, within, .hard_flex)); // 2
+    try equal(Range.init(5, 10), DirPair.init(7, 2).toRange(12, within, .hard_flex)); // 3
+    try equal(Range.init(5, 10), DirPair.init(9, 2).toRange(12, within, .hard_flex)); // 4
 
-    // [.soft]
-    //    0123456789abcdef
-    //         -----      (within)
-    try equal(Range.init(6, 10), DirPair.init(2, 2).toRange(12, within, .soft));
-    //          ++++~~^^
-    try equal(Range.init(6, 10), DirPair.init(2, 2).toRange(13, within, .soft));
-    //          ++++ ~~^^
-    try equal(Range.init(6, 10), DirPair.init(2, 2).toRange(11, within, .soft));
-    //          +++~~^^
-    try equal(Range.init(5, 10), DirPair.init(7, 2).toRange(12, within, .soft));
-    //         ~~~~~~~^^
-    try equal(Range.init(5, 10), DirPair.init(9, 2).toRange(12, within, .soft));
-    //       ~~~~~~~~~^^
+    // [.soft mode]
+    //    0123456789ABCDEF
+    //         -----        (within)
+    //          ++++~~^^    (case 1)
+    //          ++++ ~~^^   (case 2)
+    //         ~~~~~~~^^    (case 3)
+    //       ~~~~~~~~~^^    (case 4)
+    try equal(Range.init(6, 10), DirPair.init(2, 2).toRange(12, within, .soft)); // 1
+    try equal(Range.init(6, 10), DirPair.init(2, 2).toRange(13, within, .soft)); // 2
+    try equal(Range.init(5, 10), DirPair.init(7, 2).toRange(12, within, .soft)); // 3
+    try equal(Range.init(5, 10), DirPair.init(9, 2).toRange(12, within, .soft)); // 4
 
     // [-*-]
+
     const max = std.math.maxInt(usize);
-    // [.hard]
-    //    0123456789abcdef
-    //         -----      (within)
-    try equal(Range.init(5, 10), DirPair.init(2, 3).toRange(7, within, .hard));
-    //         ~~^^^
-    try equal(Range.init(7, 10), DirPair.init(2, 3).toRange(9, within, .hard));
-    //           ~~^^^
-    try equal(Range.init(5, 8), DirPair.init(2, 3).toRange(5, within, .hard));
-    //       ~~^^^
-    try equal(Range.init(5, 10), DirPair.init(max, max).toRange(7, within, .hard));
-    //       ~~~~^^^^^
 
-    // [.hard_flex]
-    //    0123456789abcdef
-    //         -----      (within)
-    try equal(Range.init(5, 9), DirPair.init(2, 2).toRange(7, within, .hard_flex));
-    //         ~~^^
-    try equal(Range.init(6, 10), DirPair.init(2, 2).toRange(9, within, .hard_flex));
-    //          +~~^^
-    try equal(Range.init(6, 10), DirPair.init(2, 2).toRange(10, within, .hard_flex));
-    //          ++~~^^
-    try equal(Range.init(5, 9), DirPair.init(2, 2).toRange(5, within, .hard_flex));
-    //       ~~^^++
-    try equal(Range.init(5, 10), DirPair.init(max, max).toRange(7, within, .hard_flex));
-    //       ~~~~^^^^^
+    // [.hard mode]
+    //    0123456789ABCDEF
+    //         -----        (within)
+    //         ~~^^^        (case 1)
+    //           ~~^^^      (case 2)
+    //       ~~^^^          (case 3)
+    //       ~~~~^^^^^      (case 4)
+    try equal(Range.init(5, 10), DirPair.init(2, 3).toRange(7, within, .hard)); // 1
+    try equal(Range.init(7, 10), DirPair.init(2, 3).toRange(9, within, .hard)); // 2
+    try equal(Range.init(5, 8), DirPair.init(2, 3).toRange(5, within, .hard)); // 3
+    try equal(Range.init(5, 10), DirPair.init(max, max).toRange(7, within, .hard)); // 4
 
-    // [.soft]
-    //    0123456789abcdef
-    //         -----      (within)
-    try equal(Range.init(5, 9), DirPair.init(2, 2).toRange(7, within, .soft));
-    //         ~~^^
-    try equal(Range.init(6, 10), DirPair.init(2, 2).toRange(9, within, .soft));
-    //          +~~^^
-    try equal(Range.init(6, 10), DirPair.init(2, 2).toRange(10, within, .soft));
-    //          ++~~^^
-    try equal(Range.init(5, 9), DirPair.init(2, 2).toRange(5, within, .soft));
-    //       ~~^^++
-    try equal(Range.init(5, 10), DirPair.init(max, max).toRange(7, within, .soft));
-    //       ~~~~^^^^^
+    // [.hard_flex mode]
+    //    0123456789ABCDEF
+    //         -----        (within)
+    //         ~~^^         (case 1)
+    //          +~~^^       (case 2)
+    //       ~~^^++         (case 3)
+    //       ~~~~^^^^^      (case 4)
+    try equal(Range.init(5, 9), DirPair.init(2, 2).toRange(7, within, .hard_flex)); // 1
+    try equal(Range.init(6, 10), DirPair.init(2, 2).toRange(9, within, .hard_flex)); // 2
+    try equal(Range.init(5, 9), DirPair.init(2, 2).toRange(5, within, .hard_flex)); // 3
+    try equal(Range.init(5, 10), DirPair.init(max, max).toRange(7, within, .hard_flex)); // 4
 
-    // special case: span overflows type boundaries
+    // [.soft mode]
+    //    0123456789ABCDEF
+    //         -----        (within)
+    //         ~~^^         (case 1)
+    //          +~~^^       (case 2)
+    //       ~~^^++         (case 3)
+    //       ~~~~^^^^^      (case 4)
+    try equal(Range.init(5, 9), DirPair.init(2, 2).toRange(7, within, .soft)); // 1
+    try equal(Range.init(6, 10), DirPair.init(2, 2).toRange(9, within, .soft)); // 2
+    try equal(Range.init(5, 9), DirPair.init(2, 2).toRange(5, within, .soft)); // 3
+    try equal(Range.init(5, 10), DirPair.init(max, max).toRange(7, within, .soft)); // 4
 
-    // [.hard_flex, .soft]
-    const within1 = Range.init(1, 7);
+    // [.hard_flex, .soft mode]
+    // special case: range overflows/underflow
+
     //    012345678
     //     ------     (within)
     //   ~~~^+++
-    try equal(Range.init(1, 6), DirPair.init(3, 2).toRange(2, within1, .soft));
-    try equal(Range.init(1, 6), DirPair.init(3, 2).toRange(2, within1, .hard_flex));
+    try equal(Range.init(1, 6), DirPair.init(3, 2).toRange(2, Range.init(1, 7), .soft));
+    try equal(Range.init(1, 6), DirPair.init(3, 2).toRange(2, Range.init(1, 7), .hard_flex));
 
-    const within2 = Range.init(0, 6);
-    //    012345678
-    //    ------     (within)
-    // ~~~^^+++
-    try equal(Range.init(0, 5), DirPair.init(3, 2).toRange(0, within2, .soft));
-    try equal(Range.init(0, 5), DirPair.init(3, 2).toRange(0, within2, .hard_flex));
-
-    const within3 = Range.init(max - 7, max - 1);
-    //    max_int
-    //    ------     (within)
-    //     ++~^^^^
-    try equal(Range.init(max - 6, max - 1), DirPair.init(1, 4).toRange(max - 2, within3, .soft));
-    try equal(Range.init(max - 6, max - 1), DirPair.init(1, 4).toRange(max - 2, within3, .hard_flex));
-
-    const within4 = Range.init(max - 6, max);
-    //    max_int
-    //     ------    (within)
-    //      ++~^^^^
-    try equal(Range.init(max - 5, max), DirPair.init(1, 4).toRange(max - 2, within4, .soft));
-    try equal(Range.init(max - 5, max), DirPair.init(1, 4).toRange(max - 2, within4, .hard_flex));
+    //    ..max_int
+    //      ------     (within)
+    //       +++~^^^^
+    try equal(Range.init(max - 6, max - 1), DirPair.init(1, 4).toRange(max - 2, Range.init(max - 7, max - 1), .soft));
+    try equal(Range.init(max - 6, max - 1), DirPair.init(1, 4).toRange(max - 2, Range.init(max - 7, max - 1), .hard_flex));
 }
 
 pub const AbsDir = union(enum) {
@@ -327,7 +288,7 @@ pub const RelDir = union(enum) {
         shift: ?DirVal = null,
     };
 
-    fn toDirPair(
+    pub fn toDirPair(
         self: RelDir,
         extra: usize,
         comptime opt: Options,
@@ -367,7 +328,7 @@ pub const RelDir = union(enum) {
         return pair;
     }
 
-    fn toDirPairFit(self: RelDir, extra: usize, comptime opt: Options) ?DirPair {
+    pub fn toDirPairFit(self: RelDir, extra: usize, comptime opt: Options) ?DirPair {
         comptime var opt_ = opt;
         opt_.fit_extra = true;
         return self.toDirPair(extra, opt_);
@@ -386,10 +347,10 @@ test RelDir {
     const max = std.math.maxInt(usize);
 
     // [len()]
+
     try equal(max, (RelDir{ .left = null }).len());
     try equal(max, (RelDir{ .right = null }).len());
     try equal(max, (RelDir{ .around = null }).len());
-
     try equal(10, (RelDir{ .left = 10 }).len());
     try equal(10, (RelDir{ .right = 10 }).len());
     try equal(10, (RelDir{ .around = 10 }).len());
@@ -443,17 +404,14 @@ pub const Range = struct {
         return .{ .start = start, .end = end };
     }
 
-    /// Returns the total range length.
     pub fn len(self: *const Range) usize {
         return self.end - self.start;
     }
 
-    /// Returns `input[start..end]`.
     pub fn slice(self: *const Range, T: type, input: T) T {
         return input[self.start..self.end];
     }
 
-    /// Returns `input[start..end]`, clamped to the bounds of `input`.
     pub fn sliceBounded(self: *const Range, T: type, input: T) T {
         return input[@min(self.start, input.len)..@min(self.end, input.len)];
     }
@@ -465,30 +423,39 @@ pub const Range = struct {
         }
     }
 
-    /// Projects the given range onto `within` range, returning portions that fall outside.
-    fn truncate(self: Range, within: Range) struct { Range, DirPair } {
-        if (self.start < within.start) {
-            if (self.end <= within.start) return .{ // case [ ] ----
-                Range.init(within.start, within.start),
-                DirPair.init(self.len(), 0),
-            } else if (self.end <= within.end) return .{ // case [ --]--
-                Range.init(within.start, self.end),
-                DirPair.init(within.start - self.start, 0),
-            } else return .{ // case [ ---- ]
-                Range.init(within.start, within.end),
-                DirPair.init(within.start - self.start, self.end - within.end),
-            };
-        } else if (self.start < within.end) {
-            if (self.end <= within.end) return .{ // case -[--]-
-                Range.init(self.start, self.end),
-                DirPair.init(0, 0),
-            } else return .{ // case --[-- ]
-                Range.init(self.start, within.end),
-                DirPair.init(0, self.end - within.end),
-            };
-        } else return .{ // case ---- [ ]
-            Range.init(within.end, within.end),
-            DirPair.init(0, self.len()),
+    fn clamp(self: Range, within: Range) Range {
+        return .{
+            .start = std.math.clamp(self.start, within.start, within.end),
+            .end = std.math.clamp(self.end, within.start, within.end),
+        };
+    }
+
+    fn clampStart(self: Range, within: Range) Range {
+        return .{
+            .start = std.math.clamp(self.start, within.start, within.end),
+            .end = self.end,
+        };
+    }
+
+    fn clampEnd(self: Range, within: Range) Range {
+        return .{
+            .start = self.start,
+            .end = std.math.clamp(self.end, within.start, within.end),
+        };
+    }
+
+    fn leftComplement(self: Range) Range {
+        return .{ .start = 0, .end = self.start };
+    }
+
+    fn rightComplement(self: Range) Range {
+        return .{ .start = self.end, .end = std.math.maxInt(usize) };
+    }
+
+    fn clampReminder(self: Range, within: Range) DirPair {
+        return .{
+            .left = self.clamp(within.leftComplement()).len(),
+            .right = self.clamp(within.rightComplement()).len(),
         };
     }
 };
@@ -504,13 +471,18 @@ test Range {
     //                  ^^^^    (case 4)
     //                    ^^    (case 2)
 
-    // [project()]
     const within = Range.init(3, 7);
-    try equal(.{ Range.init(3, 3), DirPair{ .left = 2, .right = 0 } }, Range.init(1, 3).truncate(within)); // case 1
-    try equal(.{ Range.init(3, 5), DirPair{ .left = 2, .right = 0 } }, Range.init(1, 5).truncate(within)); // case 5
-    try equal(.{ Range.init(3, 7), DirPair{ .left = 2, .right = 2 } }, Range.init(1, 9).truncate(within)); // case 6
+    try equal(Range.init(3, 3), Range.init(1, 3).clamp(within)); // case 1
+    try equal(Range.init(3, 5), Range.init(1, 5).clamp(within)); // case 5
+    try equal(Range.init(3, 7), Range.init(1, 9).clamp(within)); // case 6
+    try equal(Range.init(3, 7), Range.init(3, 7).clamp(within)); // case 3
+    try equal(Range.init(5, 7), Range.init(5, 9).clamp(within)); // case 4
+    try equal(Range.init(7, 7), Range.init(7, 9).clamp(within)); // case 2
 
-    try equal(.{ Range.init(3, 7), DirPair{ .left = 0, .right = 0 } }, Range.init(3, 7).truncate(within)); // case 3
-    try equal(.{ Range.init(5, 7), DirPair{ .left = 0, .right = 2 } }, Range.init(5, 9).truncate(within)); // case 4
-    try equal(.{ Range.init(7, 7), DirPair{ .left = 0, .right = 2 } }, Range.init(7, 9).truncate(within)); // case 2
+    try equal(DirPair{ .left = 2, .right = 0 }, Range.init(1, 3).clampReminder(within)); // case 1
+    try equal(DirPair{ .left = 2, .right = 0 }, Range.init(1, 5).clampReminder(within)); // case 5
+    try equal(DirPair{ .left = 2, .right = 2 }, Range.init(1, 9).clampReminder(within)); // case 6
+    try equal(DirPair{ .left = 0, .right = 0 }, Range.init(3, 7).clampReminder(within)); // case 3
+    try equal(DirPair{ .left = 0, .right = 2 }, Range.init(5, 9).clampReminder(within)); // case 4
+    try equal(DirPair{ .left = 0, .right = 2 }, Range.init(7, 9).clampReminder(within)); // case 2
 }

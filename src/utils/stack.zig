@@ -23,7 +23,7 @@ pub fn Stack(T: type, length: ?usize) type {
         nil: bool = true,
 
         const Self = @This();
-        pub const Error = generic.Error.NoSpaceLeft;
+        pub const Error = generic.Error.OutOfSpace;
         pub const Writer = std.io.Writer(*Self, Error, write);
 
         pub usingnamespace if (length == null) struct {
@@ -71,7 +71,7 @@ pub fn Stack(T: type, length: ?usize) type {
         }
 
         pub fn push(s: *Self, item: T) Error!void {
-            if (s.len >= s.arr.len) return Error.NoSpaceLeft;
+            if (s.len >= s.arr.len) return Error.OutOfSpace;
             s.arr[s.len] = item;
             s.len +|= 1;
             s.nil = false;
@@ -156,7 +156,7 @@ test Stack {
         try t.expectEqual(true, stack1.full()); // (!) assert stack is full
         try t.expectEqual(42, stack1.peek()); // (!) assert peeking works
 
-        try t.expectError(error.NoSpaceLeft, stack1.push(1)); // (!) assert stack has no space left
+        try t.expectError(error.OutOfSpace, stack1.push(1)); // (!) assert stack has no space left
 
         try t.expectEqual(42, stack1.popOrNull()); // (!) assert stack pops what was put
         try t.expectEqual(0, stack1.len); // (!) assert stack len is decreased
