@@ -2,37 +2,28 @@
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
 //! Public API:
-//! - Error
-//! - TruncMode
-//! - DirTag
+//! - Dir
 //! - DirVal
 //! - DirPair
-//! - AbsDir
-//! - RelDir
+//! - TruncMode
 //! - Range
+//! - Abs
+//! - Rel
 
 const std = @import("std");
 const num = @import("num.zig");
 const meta = @import("meta.zig");
 
-pub const Error = struct {
-    pub const OutOfSpace = error{OutOfSpace};
-    pub const OutOfSlice = error{OutOfSlice};
-    pub const InsufficientSpace = error{InsufficientSpace};
-};
-
-pub const TruncMode = enum { hard, hard_flex, soft };
-
-pub const DirTag = enum {
+pub const Dir = enum {
     left,
     right,
 
-    pub fn opposite(self: DirTag) DirTag {
+    pub fn opposite(self: Dir) Dir {
         return if (self == .left) .right else .left;
     }
 };
 
-pub const DirVal = union(DirTag) {
+pub const DirVal = union(Dir) {
     left: usize,
     right: usize,
 };
@@ -49,7 +40,7 @@ pub const DirPair = struct {
         return self.left + self.right;
     }
 
-    pub fn shift(self: *DirPair, comptime dir: DirTag, amt: usize) void {
+    pub fn shift(self: *DirPair, comptime dir: Dir, amt: usize) void {
         switch (dir) {
             .left => {
                 self.left +|= amt;
@@ -62,14 +53,22 @@ pub const DirPair = struct {
         }
     }
 
-    pub fn extend(self: *DirPair, comptime dir: DirTag, amt: usize) void {
+    pub fn extend(self: *DirPair, comptime dir: Dir, amt: usize) void {
         switch (dir) {
             .left => self.left +|= amt,
             .right => self.right +|= amt,
         }
     }
 
-    pub fn uniqueNonZeroDir(self: *const DirPair) ?DirTag {
+    pub fn distribute(self: *DirPair, amt: usize, comptime rshift_uneven: bool) void {
+        self.left = amt / 2;
+        self.right = amt / 2;
+        if (amt & 1 != 0) { // compensate lost item during odd division
+            if (rshift_uneven) self.right +|= 1 else self.left +|= 1;
+        }
+    }
+
+    pub fn uniqueNonZeroDir(self: *const DirPair) ?Dir {
         if (self.left != 0 and self.right == 0)
             return .left;
         if (self.left == 0 and self.right != 0)
@@ -260,141 +259,11 @@ test DirPair {
     try equal(Range.init(max - 6, max - 1), DirPair.init(1, 4).toRange(max - 2, Range.init(max - 7, max - 1), .hard_flex));
 }
 
-pub const AbsDir = union(enum) {
-    first: ?usize,
-    last: ?usize,
-    middle: ?usize,
-    all: ?void,
-    one: ?void,
-
-    pub fn len(self: AbsDir) usize {
-        return switch (self) {
-            inline else => |amt| amt orelse std.math.maxInt(usize),
-        };
-    }
+pub const TruncMode = enum {
+    hard,
+    hard_flex,
+    soft,
 };
-
-pub const RelDir = union(enum) {
-    left: ?usize,
-    right: ?usize,
-    around: ?usize,
-    custom: DirPair,
-
-    pub const Options = struct {
-        rshift_uneven: bool = true,
-        extra_dir: DirTag = .right,
-        fit_extra: bool = false,
-        fit_pad: usize = 0,
-        shift: ?DirVal = null,
-    };
-
-    pub fn toDirPair(
-        self: RelDir,
-        extra: usize,
-        comptime opt: Options,
-    ) if (opt.fit_extra) ?DirPair else DirPair {
-        var pair: DirPair = .{ .left = 0, .right = 0 };
-        switch (self) {
-            .left => {
-                if (opt.fit_extra and extra +| opt.fit_pad > self.len()) return null;
-                pair.left = if (opt.fit_extra) self.len() - extra else self.len();
-                pair.extend(opt.extra_dir, extra);
-            },
-            .right => {
-                if (opt.fit_extra and extra +| opt.fit_pad > self.len()) return null;
-                pair.right = if (opt.fit_extra) self.len() - extra else self.len();
-                pair.extend(opt.extra_dir, extra);
-            },
-            .around => {
-                if (opt.fit_extra and extra +| opt.fit_pad *| 2 > self.len()) return null;
-                const avail_len = if (opt.fit_extra) self.len() - extra else self.len();
-                pair = .{ .left = avail_len / 2, .right = avail_len / 2 };
-                if (avail_len & 1 != 0) { // compensate lost item during odd division
-                    if (opt.rshift_uneven) pair.right +|= 1 else pair.left +|= 1;
-                }
-                pair.extend(opt.extra_dir, extra);
-            },
-            .custom => |amt| {
-                pair = .{ .left = amt.left, .right = amt.right };
-                pair.extend(opt.extra_dir, extra);
-            },
-        }
-
-        if (opt.shift) |shift| switch (shift) {
-            .left => |amt| pair.shift(shift, amt),
-            .right => |amt| pair.shift(shift, amt),
-        };
-
-        return pair;
-    }
-
-    pub fn toDirPairFit(self: RelDir, extra: usize, comptime opt: Options) ?DirPair {
-        comptime var opt_ = opt;
-        opt_.fit_extra = true;
-        return self.toDirPair(extra, opt_);
-    }
-
-    pub fn len(self: RelDir) usize {
-        return switch (self) {
-            .custom => |amt| amt.left +| amt.right,
-            inline else => |amt| amt orelse std.math.maxInt(usize),
-        };
-    }
-};
-
-test RelDir {
-    const equal = std.testing.expectEqualDeep;
-    const max = std.math.maxInt(usize);
-
-    // [len()]
-
-    try equal(max, (RelDir{ .left = null }).len());
-    try equal(max, (RelDir{ .right = null }).len());
-    try equal(max, (RelDir{ .around = null }).len());
-    try equal(10, (RelDir{ .left = 10 }).len());
-    try equal(10, (RelDir{ .right = 10 }).len());
-    try equal(10, (RelDir{ .around = 10 }).len());
-    try equal(10, (RelDir{ .custom = .{ .left = 4, .right = 6 } }).len());
-
-    // [.fit_extra = false]
-
-    // [.left mode]
-    try equal(DirPair{ .left = 10, .right = 0 }, (RelDir{ .left = 10 }).toDirPair(0, .{}));
-    try equal(DirPair{ .left = 10, .right = 4 }, (RelDir{ .left = 10 }).toDirPair(4, .{ .extra_dir = .right }));
-    try equal(DirPair{ .left = 14, .right = 0 }, (RelDir{ .left = 10 }).toDirPair(4, .{ .extra_dir = .left }));
-    // [.right mode]
-    try equal(DirPair{ .left = 0, .right = 10 }, (RelDir{ .right = 10 }).toDirPair(0, .{}));
-    try equal(DirPair{ .left = 0, .right = 14 }, (RelDir{ .right = 10 }).toDirPair(4, .{ .extra_dir = .right }));
-    try equal(DirPair{ .left = 4, .right = 10 }, (RelDir{ .right = 10 }).toDirPair(4, .{ .extra_dir = .left }));
-    // [.around mode]
-    try equal(DirPair{ .left = 4, .right = 5 }, (RelDir{ .around = 9 }).toDirPair(0, .{}));
-    try equal(DirPair{ .left = 5, .right = 4 }, (RelDir{ .around = 9 }).toDirPair(0, .{ .rshift_uneven = false }));
-    try equal(DirPair{ .left = 9, .right = 5 }, (RelDir{ .around = 9 }).toDirPair(5, .{ .extra_dir = .left }));
-    try equal(DirPair{ .left = 4, .right = 10 }, (RelDir{ .around = 9 }).toDirPair(5, .{ .extra_dir = .right }));
-
-    // [.fit_extra = true]
-
-    // [.left mode]
-    try equal(null, (RelDir{ .left = 10 }).toDirPairFit(11, .{}));
-    try equal(DirPair{ .left = 0, .right = 10 }, (RelDir{ .left = 10 }).toDirPairFit(10, .{ .extra_dir = .right }));
-    try equal(DirPair{ .left = 6, .right = 4 }, (RelDir{ .left = 10 }).toDirPairFit(4, .{ .extra_dir = .right }));
-    try equal(DirPair{ .left = 10, .right = 0 }, (RelDir{ .left = 10 }).toDirPairFit(4, .{ .extra_dir = .left, .fit_pad = 6 }));
-    try equal(null, (RelDir{ .left = 10 }).toDirPairFit(4, .{ .extra_dir = .left, .fit_pad = 7 }));
-    // [.right mode]
-    try equal(null, (RelDir{ .right = 10 }).toDirPairFit(11, .{}));
-    try equal(DirPair{ .left = 0, .right = 10 }, (RelDir{ .right = 10 }).toDirPairFit(10, .{ .extra_dir = .right }));
-    try equal(DirPair{ .left = 4, .right = 6 }, (RelDir{ .right = 10 }).toDirPairFit(4, .{ .extra_dir = .left }));
-    try equal(DirPair{ .left = 0, .right = 10 }, (RelDir{ .right = 10 }).toDirPairFit(4, .{ .extra_dir = .right, .fit_pad = 6 }));
-    try equal(null, (RelDir{ .right = 10 }).toDirPairFit(4, .{ .extra_dir = .right, .fit_pad = 7 }));
-    // [.around mode]
-    try equal(null, (RelDir{ .around = 10 }).toDirPairFit(11, .{}));
-    try equal(DirPair{ .left = 0, .right = 10 }, (RelDir{ .around = 10 }).toDirPairFit(10, .{ .extra_dir = .right }));
-    try equal(DirPair{ .left = 2, .right = 8 }, (RelDir{ .around = 10 }).toDirPairFit(5, .{ .extra_dir = .right }));
-    try equal(DirPair{ .left = 8, .right = 2 }, (RelDir{ .around = 10 }).toDirPairFit(5, .{ .rshift_uneven = false, .extra_dir = .left }));
-    try equal(DirPair{ .left = 7, .right = 3 }, (RelDir{ .around = 10 }).toDirPairFit(5, .{ .extra_dir = .left }));
-    try equal(DirPair{ .left = 7, .right = 3 }, (RelDir{ .around = 10 }).toDirPairFit(5, .{ .extra_dir = .left, .fit_pad = 2 }));
-    try equal(null, (RelDir{ .around = 10 }).toDirPairFit(5, .{ .extra_dir = .left, .fit_pad = 3 }));
-}
 
 pub const Range = struct {
     start: usize,
@@ -402,6 +271,10 @@ pub const Range = struct {
 
     pub fn init(start: usize, end: usize) Range {
         return .{ .start = start, .end = end };
+    }
+
+    pub fn initFromSlice(sl: anytype) Range {
+        return .{ .start = 0, .end = sl.len };
     }
 
     pub fn len(self: *const Range) usize {
@@ -416,7 +289,7 @@ pub const Range = struct {
         return input[@min(self.start, input.len)..@min(self.end, input.len)];
     }
 
-    pub fn extendDir(self: *Range, comptime side: DirTag, amt: usize) void {
+    pub fn extendDir(self: *Range, comptime side: Dir, amt: usize) void {
         switch (side) {
             .left => self.start +|= amt,
             .right => self.end -|= amt,
@@ -485,4 +358,129 @@ test Range {
     try equal(DirPair{ .left = 0, .right = 0 }, Range.init(3, 7).clampReminder(within)); // case 3
     try equal(DirPair{ .left = 0, .right = 2 }, Range.init(5, 9).clampReminder(within)); // case 4
     try equal(DirPair{ .left = 0, .right = 2 }, Range.init(7, 9).clampReminder(within)); // case 2
+}
+
+pub const Abs = union(enum) {
+    first: ?usize,
+    last: ?usize,
+    middle: ?usize,
+    all: ?void,
+    one: ?void,
+
+    pub fn len(self: Abs) usize {
+        return switch (self) {
+            inline else => |amt| amt orelse std.math.maxInt(usize),
+        };
+    }
+};
+
+pub const Rel = union(enum) {
+    left: ?usize,
+    right: ?usize,
+    around: ?usize,
+    custom: DirPair,
+
+    pub const Options = struct {
+        rshift_uneven: bool = true,
+        shift: ?DirVal = null,
+        extra_dir: Dir = .right,
+        fit_pad: usize = 0,
+    };
+
+    pub fn toPair(self: Rel, comptime opt: Options) DirPair {
+        return self.toPairWithExtra(0, opt);
+    }
+
+    pub fn toPairWithExtra(self: Rel, extra: usize, comptime opt: Options) DirPair {
+        var pair: DirPair = .{ .left = 0, .right = 0 };
+        switch (self) {
+            .left => pair.left = self.len(),
+            .right => pair.right = self.len(),
+            .around => pair.distribute(self.len(), opt.rshift_uneven),
+            .custom => |amt| pair = .{ .left = amt.left, .right = amt.right },
+        }
+        pair.extend(opt.extra_dir, extra);
+        if (opt.shift) |shift| pair.shift(shift, shift.amt);
+        return pair;
+    }
+
+    pub fn toPairWithExtraFit(self: Rel, extra: usize, comptime opt: Options) ?DirPair {
+        var pair: DirPair = .{ .left = 0, .right = 0 };
+        switch (self) {
+            .left => if (extra +| opt.fit_pad > self.len()) return null else {
+                pair.left = self.len() - extra;
+            },
+            .right => if (extra +| opt.fit_pad > self.len()) return null else {
+                pair.right = self.len() - extra;
+            },
+            .around => if (extra +| opt.fit_pad *| 2 > self.len()) return null else {
+                pair.distribute(self.len() - extra, opt.rshift_uneven);
+            },
+            .custom => |amt| pair = .{ .left = amt.left, .right = amt.right },
+        }
+        pair.extend(opt.extra_dir, extra);
+        if (opt.shift) |shift| pair.shift(shift, shift.amt);
+        return pair;
+    }
+
+    pub fn len(self: Rel) usize {
+        return switch (self) {
+            .custom => |amt| amt.left +| amt.right,
+            inline else => |amt| amt orelse std.math.maxInt(usize),
+        };
+    }
+};
+
+test Rel {
+    const equal = std.testing.expectEqualDeep;
+    const max = std.math.maxInt(usize);
+
+    // [len()]
+
+    try equal(max, (Rel{ .left = null }).len());
+    try equal(max, (Rel{ .right = null }).len());
+    try equal(max, (Rel{ .around = null }).len());
+    try equal(10, (Rel{ .left = 10 }).len());
+    try equal(10, (Rel{ .right = 10 }).len());
+    try equal(10, (Rel{ .around = 10 }).len());
+    try equal(10, (Rel{ .custom = .{ .left = 4, .right = 6 } }).len());
+
+    // [.fit_extra = false]
+
+    // [.left mode]
+    try equal(DirPair{ .left = 10, .right = 0 }, (Rel{ .left = 10 }).toPairWithExtra(0, .{}));
+    try equal(DirPair{ .left = 10, .right = 4 }, (Rel{ .left = 10 }).toPairWithExtra(4, .{ .extra_dir = .right }));
+    try equal(DirPair{ .left = 14, .right = 0 }, (Rel{ .left = 10 }).toPairWithExtra(4, .{ .extra_dir = .left }));
+    // [.right mode]
+    try equal(DirPair{ .left = 0, .right = 10 }, (Rel{ .right = 10 }).toPairWithExtra(0, .{}));
+    try equal(DirPair{ .left = 0, .right = 14 }, (Rel{ .right = 10 }).toPairWithExtra(4, .{ .extra_dir = .right }));
+    try equal(DirPair{ .left = 4, .right = 10 }, (Rel{ .right = 10 }).toPairWithExtra(4, .{ .extra_dir = .left }));
+    // [.around mode]
+    try equal(DirPair{ .left = 4, .right = 5 }, (Rel{ .around = 9 }).toPairWithExtra(0, .{}));
+    try equal(DirPair{ .left = 5, .right = 4 }, (Rel{ .around = 9 }).toPairWithExtra(0, .{ .rshift_uneven = false }));
+    try equal(DirPair{ .left = 9, .right = 5 }, (Rel{ .around = 9 }).toPairWithExtra(5, .{ .extra_dir = .left }));
+    try equal(DirPair{ .left = 4, .right = 10 }, (Rel{ .around = 9 }).toPairWithExtra(5, .{ .extra_dir = .right }));
+
+    // [.fit_extra = true]
+
+    // [.left mode]
+    try equal(null, (Rel{ .left = 10 }).toPairWithExtraFit(11, .{}));
+    try equal(DirPair{ .left = 0, .right = 10 }, (Rel{ .left = 10 }).toPairWithExtraFit(10, .{ .extra_dir = .right }));
+    try equal(DirPair{ .left = 6, .right = 4 }, (Rel{ .left = 10 }).toPairWithExtraFit(4, .{ .extra_dir = .right }));
+    try equal(DirPair{ .left = 10, .right = 0 }, (Rel{ .left = 10 }).toPairWithExtraFit(4, .{ .extra_dir = .left, .fit_pad = 6 }));
+    try equal(null, (Rel{ .left = 10 }).toPairWithExtraFit(4, .{ .extra_dir = .left, .fit_pad = 7 }));
+    // [.right mode]
+    try equal(null, (Rel{ .right = 10 }).toPairWithExtraFit(11, .{}));
+    try equal(DirPair{ .left = 0, .right = 10 }, (Rel{ .right = 10 }).toPairWithExtraFit(10, .{ .extra_dir = .right }));
+    try equal(DirPair{ .left = 4, .right = 6 }, (Rel{ .right = 10 }).toPairWithExtraFit(4, .{ .extra_dir = .left }));
+    try equal(DirPair{ .left = 0, .right = 10 }, (Rel{ .right = 10 }).toPairWithExtraFit(4, .{ .extra_dir = .right, .fit_pad = 6 }));
+    try equal(null, (Rel{ .right = 10 }).toPairWithExtraFit(4, .{ .extra_dir = .right, .fit_pad = 7 }));
+    // [.around mode]
+    try equal(null, (Rel{ .around = 10 }).toPairWithExtraFit(11, .{}));
+    try equal(DirPair{ .left = 0, .right = 10 }, (Rel{ .around = 10 }).toPairWithExtraFit(10, .{ .extra_dir = .right }));
+    try equal(DirPair{ .left = 2, .right = 8 }, (Rel{ .around = 10 }).toPairWithExtraFit(5, .{ .extra_dir = .right }));
+    try equal(DirPair{ .left = 8, .right = 2 }, (Rel{ .around = 10 }).toPairWithExtraFit(5, .{ .rshift_uneven = false, .extra_dir = .left }));
+    try equal(DirPair{ .left = 7, .right = 3 }, (Rel{ .around = 10 }).toPairWithExtraFit(5, .{ .extra_dir = .left }));
+    try equal(DirPair{ .left = 7, .right = 3 }, (Rel{ .around = 10 }).toPairWithExtraFit(5, .{ .extra_dir = .left, .fit_pad = 2 }));
+    try equal(null, (Rel{ .around = 10 }).toPairWithExtraFit(5, .{ .extra_dir = .left, .fit_pad = 3 }));
 }
