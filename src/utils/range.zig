@@ -265,6 +265,14 @@ pub const TruncMode = enum {
     soft,
 };
 
+pub fn init(start: usize, end: usize) Range {
+    return Range.init(start, end);
+}
+
+pub fn initFromSlice(sl: anytype) Range {
+    return Range.initFromSlice(sl);
+}
+
 pub const Range = struct {
     start: usize,
     end: usize,
@@ -365,7 +373,6 @@ pub const Abs = union(enum) {
     last: ?usize,
     middle: ?usize,
     all: ?void,
-    one: ?void,
 
     pub fn len(self: Abs) usize {
         return switch (self) {

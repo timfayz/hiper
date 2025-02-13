@@ -149,12 +149,12 @@ test isFloat {
     try equal(false, isFloat(.{1}));
 }
 
-/// Casts pointer of any type to a C-style pointer (`[*c]`).
-inline fn cPtr(ptr: anytype) [*c]const std.meta.Child(@TypeOf(ptr)) {
-    return @as([*c]const std.meta.Child(@TypeOf(ptr)), ptr);
-}
+pub inline fn errorSet(arg: anytype) []const std.builtin.Type.Error {
+    const info = @typeInfo(if (@TypeOf(arg) == type) arg else @TypeOf(arg));
 
-test cPtr {
-    const ptr: []const u8 = "hello";
-    try std.testing.expectEqual([*c]const u8, @TypeOf(cPtr(ptr.ptr)));
+    return comptime switch (info) {
+        .error_set => |errors| errors.?,
+        .error_union => |u| std.meta.fields(u.error_set),
+        else => @compileError("type doesn't have error info"),
+    };
 }
