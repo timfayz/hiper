@@ -326,7 +326,7 @@ pub fn truncIndices(
         return pair.toRange(index, range.initFromSlice(slice), trunc_mode);
     } else if (meta.isTuple(index) and index.len == 2) {
         const start, const end = num.orderPairAsc(index[0], index[1]);
-        const pair = view_range.toPairWithExtra(end - start +| 1, opt);
+        const pair = view_range.toPairAddExtra(end - start +| 1, .right, opt);
         return pair.toRange(start, range.initFromSlice(slice), trunc_mode);
     }
 }
@@ -334,7 +334,7 @@ pub fn truncIndices(
 test truncIndices {
     const equal = std.testing.expectEqualDeep;
 
-    // [relative index]
+    // [around index]
     try equal(range.init(3, 6), truncIndices("01234567", 4, .{ .around = 3 }, .hard, .{}));
     //                                           ~^~
     try equal(range.init(2, 5), truncIndices("01234567", 4, .{ .left = 3 }, .hard, .{}));
@@ -342,7 +342,7 @@ test truncIndices {
     try equal(range.init(4, 7), truncIndices("01234567", 4, .{ .right = 3 }, .hard, .{}));
     //                                            ^~~
 
-    // [relative range]
+    // [around range]
     try equal(range.init(3, 9), truncIndices("0123456789", .{ 4, 6 }, .{ .around = 3 }, .hard, .{}));
     //                                           ~^^^~~
     try equal(range.init(2, 7), truncIndices("0123456789", .{ 4, 6 }, .{ .left = 2 }, .hard, .{}));

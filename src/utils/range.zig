@@ -390,15 +390,18 @@ pub const Rel = union(enum) {
     pub const Options = struct {
         rshift_uneven: bool = true,
         shift: ?DirVal = null,
-        extra_dir: Dir = .right,
-        fit_pad: usize = 0,
     };
 
     pub fn toPair(self: Rel, comptime opt: Options) DirPair {
-        return self.toPairWithExtra(0, opt);
+        return self.toPairAddExtra(0, .right, opt);
     }
 
-    pub fn toPairWithExtra(self: Rel, extra: usize, comptime opt: Options) DirPair {
+    pub fn toPairAddExtra(
+        self: Rel,
+        extra: usize,
+        comptime extra_dir: Dir,
+        comptime opt: Options,
+    ) DirPair {
         var pair: DirPair = .{ .left = 0, .right = 0 };
         switch (self) {
             .left => pair.left = self.len(),
@@ -406,26 +409,32 @@ pub const Rel = union(enum) {
             .around => pair.distribute(self.len(), opt.rshift_uneven),
             .custom => |amt| pair = .{ .left = amt.left, .right = amt.right },
         }
-        pair.extend(opt.extra_dir, extra);
+        pair.extend(extra_dir, extra);
         if (opt.shift) |shift| pair.shift(shift, shift.amt);
         return pair;
     }
 
-    pub fn toPairWithExtraFit(self: Rel, extra: usize, comptime opt: Options) ?DirPair {
+    pub fn toPairFitExtra(
+        self: Rel,
+        extra: usize,
+        comptime extra_dir: Dir,
+        comptime extra_pad: usize,
+        comptime opt: Options,
+    ) ?DirPair {
         var pair: DirPair = .{ .left = 0, .right = 0 };
         switch (self) {
-            .left => if (extra +| opt.fit_pad > self.len()) return null else {
+            .left => if (extra +| extra_pad > self.len()) return null else {
                 pair.left = self.len() - extra;
             },
-            .right => if (extra +| opt.fit_pad > self.len()) return null else {
+            .right => if (extra +| extra_pad > self.len()) return null else {
                 pair.right = self.len() - extra;
             },
-            .around => if (extra +| opt.fit_pad *| 2 > self.len()) return null else {
+            .around => if (extra +| extra_pad *| 2 > self.len()) return null else {
                 pair.distribute(self.len() - extra, opt.rshift_uneven);
             },
             .custom => |amt| pair = .{ .left = amt.left, .right = amt.right },
         }
-        pair.extend(opt.extra_dir, extra);
+        pair.extend(extra_dir, extra);
         if (opt.shift) |shift| pair.shift(shift, shift.amt);
         return pair;
     }
@@ -452,42 +461,42 @@ test Rel {
     try equal(10, (Rel{ .around = 10 }).len());
     try equal(10, (Rel{ .custom = .{ .left = 4, .right = 6 } }).len());
 
-    // [.fit_extra = false]
+    // [toPairAddExtra()]
 
     // [.left mode]
-    try equal(DirPair{ .left = 10, .right = 0 }, (Rel{ .left = 10 }).toPairWithExtra(0, .{}));
-    try equal(DirPair{ .left = 10, .right = 4 }, (Rel{ .left = 10 }).toPairWithExtra(4, .{ .extra_dir = .right }));
-    try equal(DirPair{ .left = 14, .right = 0 }, (Rel{ .left = 10 }).toPairWithExtra(4, .{ .extra_dir = .left }));
+    try equal(DirPair{ .left = 10, .right = 0 }, (Rel{ .left = 10 }).toPairAddExtra(0, .right, .{}));
+    try equal(DirPair{ .left = 10, .right = 4 }, (Rel{ .left = 10 }).toPairAddExtra(4, .right, .{}));
+    try equal(DirPair{ .left = 14, .right = 0 }, (Rel{ .left = 10 }).toPairAddExtra(4, .left, .{}));
     // [.right mode]
-    try equal(DirPair{ .left = 0, .right = 10 }, (Rel{ .right = 10 }).toPairWithExtra(0, .{}));
-    try equal(DirPair{ .left = 0, .right = 14 }, (Rel{ .right = 10 }).toPairWithExtra(4, .{ .extra_dir = .right }));
-    try equal(DirPair{ .left = 4, .right = 10 }, (Rel{ .right = 10 }).toPairWithExtra(4, .{ .extra_dir = .left }));
+    try equal(DirPair{ .left = 0, .right = 10 }, (Rel{ .right = 10 }).toPairAddExtra(0, .right, .{}));
+    try equal(DirPair{ .left = 0, .right = 14 }, (Rel{ .right = 10 }).toPairAddExtra(4, .right, .{}));
+    try equal(DirPair{ .left = 4, .right = 10 }, (Rel{ .right = 10 }).toPairAddExtra(4, .left, .{}));
     // [.around mode]
-    try equal(DirPair{ .left = 4, .right = 5 }, (Rel{ .around = 9 }).toPairWithExtra(0, .{}));
-    try equal(DirPair{ .left = 5, .right = 4 }, (Rel{ .around = 9 }).toPairWithExtra(0, .{ .rshift_uneven = false }));
-    try equal(DirPair{ .left = 9, .right = 5 }, (Rel{ .around = 9 }).toPairWithExtra(5, .{ .extra_dir = .left }));
-    try equal(DirPair{ .left = 4, .right = 10 }, (Rel{ .around = 9 }).toPairWithExtra(5, .{ .extra_dir = .right }));
+    try equal(DirPair{ .left = 4, .right = 5 }, (Rel{ .around = 9 }).toPairAddExtra(0, .right, .{}));
+    try equal(DirPair{ .left = 5, .right = 4 }, (Rel{ .around = 9 }).toPairAddExtra(0, .right, .{ .rshift_uneven = false }));
+    try equal(DirPair{ .left = 9, .right = 5 }, (Rel{ .around = 9 }).toPairAddExtra(5, .left, .{}));
+    try equal(DirPair{ .left = 4, .right = 10 }, (Rel{ .around = 9 }).toPairAddExtra(5, .right, .{}));
 
-    // [.fit_extra = true]
+    // [toPairFitExtra()]
 
     // [.left mode]
-    try equal(null, (Rel{ .left = 10 }).toPairWithExtraFit(11, .{}));
-    try equal(DirPair{ .left = 0, .right = 10 }, (Rel{ .left = 10 }).toPairWithExtraFit(10, .{ .extra_dir = .right }));
-    try equal(DirPair{ .left = 6, .right = 4 }, (Rel{ .left = 10 }).toPairWithExtraFit(4, .{ .extra_dir = .right }));
-    try equal(DirPair{ .left = 10, .right = 0 }, (Rel{ .left = 10 }).toPairWithExtraFit(4, .{ .extra_dir = .left, .fit_pad = 6 }));
-    try equal(null, (Rel{ .left = 10 }).toPairWithExtraFit(4, .{ .extra_dir = .left, .fit_pad = 7 }));
+    try equal(null, (Rel{ .left = 10 }).toPairFitExtra(11, .left, 0, .{}));
+    try equal(DirPair{ .left = 0, .right = 10 }, (Rel{ .left = 10 }).toPairFitExtra(10, .right, 0, .{}));
+    try equal(DirPair{ .left = 6, .right = 4 }, (Rel{ .left = 10 }).toPairFitExtra(4, .right, 0, .{}));
+    try equal(DirPair{ .left = 10, .right = 0 }, (Rel{ .left = 10 }).toPairFitExtra(4, .left, 6, .{}));
+    try equal(null, (Rel{ .left = 10 }).toPairFitExtra(4, .left, 7, .{}));
     // [.right mode]
-    try equal(null, (Rel{ .right = 10 }).toPairWithExtraFit(11, .{}));
-    try equal(DirPair{ .left = 0, .right = 10 }, (Rel{ .right = 10 }).toPairWithExtraFit(10, .{ .extra_dir = .right }));
-    try equal(DirPair{ .left = 4, .right = 6 }, (Rel{ .right = 10 }).toPairWithExtraFit(4, .{ .extra_dir = .left }));
-    try equal(DirPair{ .left = 0, .right = 10 }, (Rel{ .right = 10 }).toPairWithExtraFit(4, .{ .extra_dir = .right, .fit_pad = 6 }));
-    try equal(null, (Rel{ .right = 10 }).toPairWithExtraFit(4, .{ .extra_dir = .right, .fit_pad = 7 }));
+    try equal(null, (Rel{ .right = 10 }).toPairFitExtra(11, .right, 0, .{}));
+    try equal(DirPair{ .left = 0, .right = 10 }, (Rel{ .right = 10 }).toPairFitExtra(10, .right, 0, .{}));
+    try equal(DirPair{ .left = 4, .right = 6 }, (Rel{ .right = 10 }).toPairFitExtra(4, .left, 0, .{}));
+    try equal(DirPair{ .left = 0, .right = 10 }, (Rel{ .right = 10 }).toPairFitExtra(4, .right, 6, .{}));
+    try equal(null, (Rel{ .right = 10 }).toPairFitExtra(4, .right, 7, .{}));
     // [.around mode]
-    try equal(null, (Rel{ .around = 10 }).toPairWithExtraFit(11, .{}));
-    try equal(DirPair{ .left = 0, .right = 10 }, (Rel{ .around = 10 }).toPairWithExtraFit(10, .{ .extra_dir = .right }));
-    try equal(DirPair{ .left = 2, .right = 8 }, (Rel{ .around = 10 }).toPairWithExtraFit(5, .{ .extra_dir = .right }));
-    try equal(DirPair{ .left = 8, .right = 2 }, (Rel{ .around = 10 }).toPairWithExtraFit(5, .{ .rshift_uneven = false, .extra_dir = .left }));
-    try equal(DirPair{ .left = 7, .right = 3 }, (Rel{ .around = 10 }).toPairWithExtraFit(5, .{ .extra_dir = .left }));
-    try equal(DirPair{ .left = 7, .right = 3 }, (Rel{ .around = 10 }).toPairWithExtraFit(5, .{ .extra_dir = .left, .fit_pad = 2 }));
-    try equal(null, (Rel{ .around = 10 }).toPairWithExtraFit(5, .{ .extra_dir = .left, .fit_pad = 3 }));
+    try equal(null, (Rel{ .around = 10 }).toPairFitExtra(11, .right, 0, .{}));
+    try equal(DirPair{ .left = 0, .right = 10 }, (Rel{ .around = 10 }).toPairFitExtra(10, .right, 0, .{}));
+    try equal(DirPair{ .left = 2, .right = 8 }, (Rel{ .around = 10 }).toPairFitExtra(5, .right, 0, .{}));
+    try equal(DirPair{ .left = 8, .right = 2 }, (Rel{ .around = 10 }).toPairFitExtra(5, .left, 0, .{ .rshift_uneven = false }));
+    try equal(DirPair{ .left = 7, .right = 3 }, (Rel{ .around = 10 }).toPairFitExtra(5, .left, 0, .{}));
+    try equal(DirPair{ .left = 7, .right = 3 }, (Rel{ .around = 10 }).toPairFitExtra(5, .left, 2, .{}));
+    try equal(null, (Rel{ .around = 10 }).toPairFitExtra(5, .left, 3, .{}));
 }
