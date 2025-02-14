@@ -8,6 +8,9 @@
 //! - overlap()
 //! - overlaps()
 //! - contains()
+//! - extend()
+//! - continuous()
+//! - join()
 //! - startIndex()
 //! - endIndex()
 //! - bound()
@@ -61,18 +64,17 @@ test reverse {
     try equal("12345", "54321");
 }
 
-/// Returns the shared sub-slice of two slices. Both slices must be from the
-/// same source; use `contains` to verify this.
+/// Returns the shared sub-slice of two slices.
 ///
 /// ```txt
-/// [slice1 ] [ slice2]    (slices disjoint)
-/// [                 ]    (common span)
+/// [slice1 ] [ slice2]
+/// [                 ]    (common segment)
 ///
-/// [slice1   ]            (slices intersect)
+/// [slice1   ]
 ///         [   slice2]
-/// [                 ]    (common span)
+/// [                 ]    (common segment)
 /// ```
-pub fn commonSeg(T: type, slice1: []const T, slice2: []const T) []const T {
+pub fn commonSeg(T: type, slice1: T, slice2: T) T {
     const start = if (@intFromPtr(slice1.ptr) < @intFromPtr(slice2.ptr)) slice1.ptr else slice2.ptr;
     const end1 = slice1.ptr + slice1.len;
     const end2 = slice2.ptr + slice2.len;
@@ -84,26 +86,25 @@ test commonSeg {
     const equal = std.testing.expectEqualStrings;
     const input = "0123";
 
-    try equal("0123", commonSeg(u8, input[0..0], input[4..4])); // zero slices
-    try equal("0123", commonSeg(u8, input[4..4], input[0..0])); // reversed order
-    try equal("0123", commonSeg(u8, input[0..2], input[2..4])); // normal slices
-    try equal("0123", commonSeg(u8, input[2..4], input[0..2])); // reversed order
-    try equal("0123", commonSeg(u8, input[0..3], input[1..4])); // intersected slices
-    try equal("0123", commonSeg(u8, input[0..4], input[0..4])); // same slices
+    try equal("0123", commonSeg([]const u8, input[0..0], input[4..4])); // zero slices
+    try equal("0123", commonSeg([]const u8, input[4..4], input[0..0])); // reversed order
+    try equal("0123", commonSeg([]const u8, input[0..2], input[2..4])); // normal slices
+    try equal("0123", commonSeg([]const u8, input[2..4], input[0..2])); // reversed order
+    try equal("0123", commonSeg([]const u8, input[0..3], input[1..4])); // intersected slices
+    try equal("0123", commonSeg([]const u8, input[0..4], input[0..4])); // same slices
 }
 
-/// Returns the intersection of two slices. Both slices must be from the same
-/// source; use `contains` to verify this.
+/// Returns the intersection of two slices.
 ///
 /// ```txt
-/// [slice1 ] [ slice2]    (disjoint slices)
-///         null           (intersection)
+/// [slice1 ] [ slice2]
+///         null           (overlap)
 ///
-/// [slice1   ]            (intersecting slices)
+/// [slice1   ]
 ///         [   slice2]
-///         [ ]            (intersection)
+///         [ ]            (overlap)
 /// ```
-fn overlap(T: type, slice1: []const T, slice2: []const T) ?[]const T {
+fn overlap(T: type, slice1: T, slice2: T) ?T {
     const start = if (@intFromPtr(slice1.ptr) > @intFromPtr(slice2.ptr)) slice1.ptr else slice2.ptr;
     const end1 = slice1.ptr + slice1.len;
     const end2 = slice2.ptr + slice2.len;
@@ -119,15 +120,15 @@ test overlap {
     const equalSlices = std.testing.expectEqualSlices;
 
     const arr = [4]u64{ 0, 1, 2, 3 };
-    try equal(null, overlap(u64, arr[0..0], arr[4..4]));
-    try equal(null, overlap(u64, arr[0..2], arr[2..4]));
-    try equal(null, overlap(u64, arr[1..1], arr[0..4]));
-    try equalSlices(u64, arr[1..3], overlap(u64, arr[0..3], arr[1..4]).?);
-    try equalSlices(u64, arr[1..3], overlap(u64, arr[1..4], arr[0..3]).?);
-    try equalSlices(u64, arr[0..], overlap(u64, arr[0..4], arr[0..4]).?);
+    try equal(null, overlap([]const u64, arr[0..0], arr[4..4]));
+    try equal(null, overlap([]const u64, arr[0..2], arr[2..4]));
+    try equal(null, overlap([]const u64, arr[1..1], arr[0..4]));
+    try equalSlices(u64, arr[1..3], overlap([]const u64, arr[0..3], arr[1..4]).?);
+    try equalSlices(u64, arr[1..3], overlap([]const u64, arr[1..4], arr[0..3]).?);
+    try equalSlices(u64, arr[0..], overlap([]const u64, arr[0..4], arr[0..4]).?);
 }
 
-/// Checks if the provided segment is a valid sub-slice.
+/// Checks if the provided slices overlap.
 pub fn overlaps(slice1: anytype, slice2: anytype) bool {
     const start = if (@intFromPtr(slice1.ptr) > @intFromPtr(slice2.ptr)) slice1.ptr else slice2.ptr;
     const end1 = slice1.ptr + slice1.len;
@@ -147,36 +148,88 @@ test overlaps {
 }
 
 /// Checks if the provided segment is a valid sub-slice.
-pub fn contains(T: type, slice: []const T, seg: []const T) bool {
-    return @intFromPtr(slice.ptr) <= @intFromPtr(seg.ptr) and
-        @intFromPtr(slice.ptr + slice.len) >= @intFromPtr(seg.ptr + seg.len);
+pub fn contains(base: anytype, seg: anytype) bool {
+    return @intFromPtr(base.ptr) <= @intFromPtr(seg.ptr) and
+        @intFromPtr(base.ptr + base.len) >= @intFromPtr(seg.ptr + seg.len);
 }
 
 test contains {
     const equal = std.testing.expectEqual;
     const input: [11]u8 = "hello_world".*;
 
-    try equal(true, contains(u8, input[0..], input[0..0]));
-    try equal(true, contains(u8, input[0..], input[0..1]));
-    try equal(true, contains(u8, input[0..], input[3..6]));
-    try equal(true, contains(u8, input[0..], input[10..11]));
-    try equal(true, contains(u8, input[0..], input[11..11]));
-    try equal(false, contains(u8, input[0..], "hello_world"));
+    try equal(true, contains(input[0..], input[0..0]));
+    try equal(true, contains(input[0..], input[0..1]));
+    try equal(true, contains(input[0..], input[3..6]));
+    try equal(true, contains(input[0..], input[10..11]));
+    try equal(true, contains(input[0..], input[11..11]));
+    try equal(false, contains(input[0..], "hello_world"));
 
     // intersecting
-    try equal(true, contains(u8, input[0..5], input[0..5]));
-    try equal(true, contains(u8, input[0..0], input[0..0]));
-    try equal(true, contains(u8, input[11..11], input[11..11]));
-    try equal(false, contains(u8, input[0..5], input[0..]));
-    try equal(false, contains(u8, input[0..5], input[5..]));
-    try equal(false, contains(u8, input[0..6], input[5..]));
-    try equal(false, contains(u8, input[5..], input[0..5]));
+    try equal(true, contains(input[0..5], input[0..5]));
+    try equal(true, contains(input[0..0], input[0..0]));
+    try equal(true, contains(input[11..11], input[11..11]));
+    try equal(false, contains(input[0..5], input[0..]));
+    try equal(false, contains(input[0..5], input[5..]));
+    try equal(false, contains(input[0..6], input[5..]));
+    try equal(false, contains(input[5..], input[0..5]));
 }
 
-/// Retrieves the starting position of a segment in slice. Both slices must be
-/// from the same source; use `contains` to verify this.
-pub fn startIndex(slice: anytype, seg: anytype) usize {
-    return seg.ptr - slice.ptr;
+/// Extends slice to the right or left by the given size (no safety checks).
+pub fn extend(comptime dir: range.Dir, T: type, slice: T, size: usize) T {
+    return if (dir == .right)
+        slice.ptr[0 .. slice.len + size]
+    else
+        (slice.ptr - size)[0 .. slice.len + size];
+}
+
+test extend {
+    const equal = std.testing.expectEqualStrings;
+
+    const input = "0123456789";
+    try equal("2345", extend(.right, []const u8, input[2..4], 2));
+    try equal("2345", extend(.left, []const u8, input[4..6], 2));
+}
+
+/// Checks if two slices are contiguous in memory (in left-to-right order).
+pub fn continuous(slice1: anytype, slice2: anytype) bool {
+    return @intFromPtr(slice1.ptr + slice1.len) == @intFromPtr(slice2.ptr);
+}
+
+test continuous {
+    const equal = std.testing.expectEqual;
+
+    const input = "0123456789";
+    try equal(true, continuous(input[1..1], input[1..1]));
+    try equal(true, continuous(input[1..1], input[1..2]));
+    try equal(true, continuous(input[0..3], input[3..6]));
+    try equal(false, continuous(input[0..2], input[3..6]));
+    try equal(false, continuous(input[3..6], input[0..3]));
+}
+
+/// Extends slice to the right or left by the elements of extension (no safety checks).
+pub fn join(comptime dir: range.Dir, T: type, base: T, extension: T) T {
+    if (dir == .right) {
+        std.debug.assert(continuous(base, extension));
+        return base.ptr[0 .. base.len + extension.len];
+    } else {
+        std.debug.assert(continuous(extension, base));
+        return extension.ptr[0 .. extension.len + base.len];
+    }
+}
+
+test join {
+    const equal = std.testing.expectEqualStrings;
+
+    const input = "0123456789";
+    try equal("12345", join(.right, []const u8, input[1..3], input[3..6]));
+    try equal("12345", join(.left, []const u8, input[3..6], input[1..3]));
+    try equal("", join(.left, []const u8, input[0..0], input[0..0]));
+    try equal("0", join(.right, []const u8, input[0..0], input[0..1]));
+}
+
+/// Retrieves the index of the segment start within the slice.
+pub fn startIndex(base: anytype, seg: anytype) usize {
+    return seg.ptr - base.ptr;
 }
 
 test startIndex {
@@ -192,10 +245,9 @@ test startIndex {
     try equal(10, startIndex(input, input[10..10]));
 }
 
-/// Retrieves the ending position of a segment in slice. Both slices must be from
-/// the same source; use `contains` to verify this.
-pub fn endIndex(slice: anytype, seg: anytype) usize {
-    return (seg.ptr - slice.ptr) +| seg.len;
+/// Retrieves the index of the segment end within the slice.
+pub fn endIndex(base: anytype, seg: anytype) usize {
+    return (seg.ptr - base.ptr) +| seg.len;
 }
 
 test endIndex {
@@ -211,7 +263,7 @@ test endIndex {
     try equal(10, endIndex(input, input[3..10]));
 }
 
-/// Returns `[start..end]` slice segment bounded to `slice.len`.
+/// Returns `[start..end]` slice segment bounded to the `slice.len`.
 pub fn bound(T: type, slice: T, start: usize, end: usize) T {
     return slice[@min(start, slice.len)..@min(end, slice.len)];
 }
@@ -303,21 +355,20 @@ test truncIndices {
 pub const MoveError = err.InsufficientSpace || err.OutOfSlice;
 
 /// Moves a valid segment to the start or end of the given slice. If a move is
-/// required, the segment length must be less than the stack-allocated buffer
-/// size, `buf_size`.
+/// required, the segment length must be less than the stack-allocated `buf_size`.
 pub fn moveSeg(
     comptime dir: range.Dir,
     comptime buf_size: usize,
     T: type,
-    slice: []T,
+    base: []T,
     seg: []const T,
 ) MoveError!void {
-    if (!contains(T, slice, seg)) return MoveError.OutOfSlice;
+    if (!contains(base, seg)) return MoveError.OutOfSlice;
     if (seg.len > buf_size) return MoveError.InsufficientSpace;
-    if (seg.len == 0 or seg.len == slice.len) return;
+    if (seg.len == 0 or seg.len == base.len) return;
     switch (dir) {
-        .right => if (endIndex(slice, seg) == slice.len) return,
-        .left => if (startIndex(slice, seg) == 0) return,
+        .right => if (endIndex(base, seg) == base.len) return,
+        .left => if (startIndex(base, seg) == 0) return,
     }
 
     // make segment copy
@@ -331,23 +382,23 @@ pub fn moveSeg(
         // [ [seg_rhs]..... ] (step 1)
         // [ [seg_rhs][seg] ] (step 2)
         .right => {
-            const seg_rhs = slice[endIndex(slice, seg)..]; // step 0
-            const start: usize = startIndex(slice, seg);
+            const seg_rhs = base[endIndex(base, seg)..]; // step 0
+            const start: usize = startIndex(base, seg);
             const end: usize = start +| seg_rhs.len;
-            mem.copyForwards(T, slice[start..end], seg_rhs); // step 1
+            mem.copyForwards(T, base[start..end], seg_rhs); // step 1
             // copy seg to the end of slice
-            mem.copyForwards(T, slice[slice.len -| seg_copy.len..], seg_copy); // step 2
+            mem.copyForwards(T, base[base.len -| seg_copy.len..], seg_copy); // step 2
         },
         // [ [seg_lhs][seg] ] (step 0)
         // [ .....[seg_lhs] ] (step 1)
         // [ [seg][seg_lhs] ] (step 2)
         .left => {
-            const seg_lhs = slice[0..startIndex(slice, seg)]; // step 0
-            const end: usize = endIndex(slice, seg);
+            const seg_lhs = base[0..startIndex(base, seg)]; // step 0
+            const end: usize = endIndex(base, seg);
             const start: usize = end -| seg_lhs.len;
-            mem.copyBackwards(T, slice[start..end], seg_lhs); // step 1
+            mem.copyBackwards(T, base[start..end], seg_lhs); // step 1
             // copy seg to the beginning of the slice
-            mem.copyForwards(T, slice[0..seg_copy.len], seg_copy); // step 2
+            mem.copyForwards(T, base[0..seg_copy.len], seg_copy); // step 2
         },
     }
 }
@@ -425,15 +476,13 @@ test moveSeg {
 }
 
 /// Moves a valid segment to the beginning of the given slice. Returns an
-/// error if the segment is of different origin or its length exceeds
-/// 1024. Use `moveSeg` directly to increase the length.
-pub fn moveSegLeft(T: type, slice: []T, seg: []const T) MoveError!void {
-    return moveSeg(.left, 1024, T, slice, seg);
+/// error if the segment is of different origin or its length exceeds 1024.
+pub fn moveSegLeft(T: type, base: []T, seg: []const T) MoveError!void {
+    return moveSeg(.left, 1024, T, base, seg);
 }
 
 /// Moves a valid slice segment to the end of the given slice. Returns an error
-/// if the segment is different origins or its length exceeds 1024. Use `moveSeg`
-/// directly to increase the length.
-pub fn moveSegRight(T: type, slice: []T, seg: []const T) MoveError!void {
-    return moveSeg(.right, 1024, T, slice, seg);
+/// if the segment is different origins or its length exceeds 1024.
+pub fn moveSegRight(T: type, base: []T, seg: []const T) MoveError!void {
+    return moveSeg(.right, 1024, T, base, seg);
 }
