@@ -6,9 +6,9 @@
 //! - indexOfLineEnd()
 //! - countLineNum()
 //! - readLine()
-//! - writeLinesForward()
+//! - streamLinesForward()
 //! - readLinesForward()
-//! - writeLinesBackward()
+//! - streamLinesBackward()
 //! - readLinesBackward()
 //! - ReadLines
 //! - readLines()
@@ -159,7 +159,7 @@ test readLine {
 /// Retrieves lines from `input` starting at `index`, reading forward. Returns
 /// the number of lines written into `writer` and the index's relative position
 /// on the first written line (current line).
-fn writeLinesForward(
+pub fn streamLinesForward(
     writer: anytype,
     input: []const u8,
     index: usize,
@@ -192,7 +192,7 @@ pub fn readLinesForward(
     amount: usize,
 ) !ReadLines {
     var lines = stack.initFromSlice([]const u8, buf);
-    _, const index_pos = try writeLinesForward(lines.writer(), input, index, amount);
+    _, const index_pos = try streamLinesForward(lines.writer(), input, index, amount);
     return .{
         .lines = lines.slice(),
         .curr_line_pos = 0,
@@ -285,7 +285,7 @@ test readLinesForward {
 /// the number of lines written into `writer` and the index's relative position
 /// on the first written line (current line). Lines are written in traversal
 /// order (reversed).
-fn writeLinesBackward(
+pub fn streamLinesBackward(
     writer: anytype,
     input: []const u8,
     index: usize,
@@ -324,7 +324,7 @@ pub fn readLinesBackward(
     amount: usize,
 ) !ReadLines {
     var lines = stack.initFromSlice([]const u8, buf);
-    _, const index_pos = try writeLinesBackward(lines.writer(), input, index, amount);
+    _, const index_pos = try streamLinesBackward(lines.writer(), input, index, amount);
     const reversed = slice.reversed(@TypeOf(buf), lines.slice());
     return .{
         .lines = reversed,
@@ -481,14 +481,16 @@ pub const ReadLines = struct {
         return index >= self.indexFirstRead(input) and index <= self.indexLastRead(input);
     }
 
-    pub fn join(self: ReadLines, next: ReadLines, comptime dir: range.Dir, orig_buf: [][]const u8) !ReadLines {
-        if (self.isEmpty()) return next;
-        if (next.isEmpty()) return self;
-        var resulting = self;
-        if (dir == .left) try slice.moveSegLeft([]const u8, orig_buf, next.lines);
-        resulting.lines = orig_buf[0..next.total() +| self.total()];
-        if (dir == .left) resulting.curr_line_pos +|= next.total();
-        return resulting;
+    pub fn join(base: ReadLines, extension: ReadLines, comptime dir: range.Dir, buf: [][]const u8) !ReadLines {
+        if (base.isEmpty()) return extension;
+        if (extension.isEmpty()) return base;
+        var new = base;
+        new.lines = buf[0..base.total() +| extension.total()];
+        if (dir == .left) {
+            try slice.move(.left, 1024, []const u8, buf, extension.lines);
+            new.curr_line_pos +|= extension.total();
+        }
+        return new;
     }
 
     pub fn log(self: ReadLines, writer: anytype, first_line_num: usize) !void {

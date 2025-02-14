@@ -2,5 +2,6 @@
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
 pub const OutOfSpace = error{OutOfSpace};
-pub const OutOfSlice = error{OutOfSlice};
 pub const InsufficientSpace = error{InsufficientSpace};
+pub const InvalidLayout = error{InvalidLayout};
+pub const InvalidOrigin = error{InvalidOrigin};

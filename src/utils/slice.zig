@@ -4,7 +4,7 @@
 //! Public API:
 //! - reverse()
 //! - reversed()
-//! - commonSeg()
+//! - common()
 //! - overlap()
 //! - overlaps()
 //! - contains()
@@ -16,10 +16,7 @@
 //! - bound()
 //! - trunc()
 //! - truncIndices()
-//! - MoveError
-//! - moveSeg()
-//! - moveSegLeft()
-//! - moveSegRight()
+//! - move()
 
 const std = @import("std");
 const num = @import("num.zig");
@@ -74,7 +71,7 @@ test reverse {
 ///         [   slice2]
 /// [                 ]    (common segment)
 /// ```
-pub fn commonSeg(T: type, slice1: T, slice2: T) T {
+pub fn common(T: type, slice1: T, slice2: T) T {
     const start = if (@intFromPtr(slice1.ptr) < @intFromPtr(slice2.ptr)) slice1.ptr else slice2.ptr;
     const end1 = slice1.ptr + slice1.len;
     const end2 = slice2.ptr + slice2.len;
@@ -82,16 +79,16 @@ pub fn commonSeg(T: type, slice1: T, slice2: T) T {
     return start[0 .. end - start];
 }
 
-test commonSeg {
+test common {
     const equal = std.testing.expectEqualStrings;
     const input = "0123";
 
-    try equal("0123", commonSeg([]const u8, input[0..0], input[4..4])); // zero slices
-    try equal("0123", commonSeg([]const u8, input[4..4], input[0..0])); // reversed order
-    try equal("0123", commonSeg([]const u8, input[0..2], input[2..4])); // normal slices
-    try equal("0123", commonSeg([]const u8, input[2..4], input[0..2])); // reversed order
-    try equal("0123", commonSeg([]const u8, input[0..3], input[1..4])); // intersected slices
-    try equal("0123", commonSeg([]const u8, input[0..4], input[0..4])); // same slices
+    try equal("0123", common([]const u8, input[0..0], input[4..4])); // zero slices
+    try equal("0123", common([]const u8, input[4..4], input[0..0])); // reversed order
+    try equal("0123", common([]const u8, input[0..2], input[2..4])); // normal slices
+    try equal("0123", common([]const u8, input[2..4], input[0..2])); // reversed order
+    try equal("0123", common([]const u8, input[0..3], input[1..4])); // intersected slices
+    try equal("0123", common([]const u8, input[0..4], input[0..4])); // same slices
 }
 
 /// Returns the intersection of two slices.
@@ -207,24 +204,26 @@ test continuous {
 }
 
 /// Extends slice to the right or left by the elements of extension (no safety checks).
-pub fn join(comptime dir: range.Dir, T: type, base: T, extension: T) T {
+pub fn join(comptime dir: range.Dir, T: type, base: T, extension: T) err.InvalidLayout!T {
     if (dir == .right) {
-        std.debug.assert(continuous(base, extension));
+        if (!continuous(base, extension)) return error.InvalidLayout;
         return base.ptr[0 .. base.len + extension.len];
     } else {
-        std.debug.assert(continuous(extension, base));
+        if (!continuous(extension, base)) return error.InvalidLayout;
         return extension.ptr[0 .. extension.len + base.len];
     }
 }
 
 test join {
-    const equal = std.testing.expectEqualStrings;
+    const equal = std.testing.expectEqual;
 
     const input = "0123456789";
-    try equal("12345", join(.right, []const u8, input[1..3], input[3..6]));
-    try equal("12345", join(.left, []const u8, input[3..6], input[1..3]));
-    try equal("", join(.left, []const u8, input[0..0], input[0..0]));
-    try equal("0", join(.right, []const u8, input[0..0], input[0..1]));
+    try equal(error.InvalidLayout, join(.right, []const u8, input[1..3], input[4..6]));
+    try equal(error.InvalidLayout, join(.left, []const u8, input[1..3], input[4..6]));
+    try equal(input[1..6], try join(.right, []const u8, input[1..3], input[3..6]));
+    try equal(input[1..6], try join(.left, []const u8, input[3..6], input[1..3]));
+    try equal(input[1..1], try join(.right, []const u8, input[1..1], input[1..1]));
+    try equal(input[1..1], try join(.left, []const u8, input[1..1], input[1..1]));
 }
 
 /// Retrieves the index of the segment start within the slice.
@@ -352,19 +351,18 @@ test truncIndices {
     //                                            ^^^~~
 }
 
-pub const MoveError = err.InsufficientSpace || err.OutOfSlice;
-
-/// Moves a valid segment to the start or end of the given slice. If a move is
-/// required, the segment length must be less than the stack-allocated `buf_size`.
-pub fn moveSeg(
+/// Moves a valid segment to the start or end of the given slice. Returns an
+/// error if the segment comes from a different origin or its length exceeds
+/// stack-allocated `buf_size`.
+pub fn move(
     comptime dir: range.Dir,
     comptime buf_size: usize,
     T: type,
     base: []T,
     seg: []const T,
-) MoveError!void {
-    if (!contains(base, seg)) return MoveError.OutOfSlice;
-    if (seg.len > buf_size) return MoveError.InsufficientSpace;
+) (err.InsufficientSpace || err.InvalidOrigin)!void {
+    if (!contains(base, seg)) return error.InvalidOrigin;
+    if (seg.len > buf_size) return error.InsufficientSpace;
     if (seg.len == 0 or seg.len == base.len) return;
     switch (dir) {
         .right => if (endIndex(base, seg) == base.len) return,
@@ -376,7 +374,7 @@ pub fn moveSeg(
     const seg_copy = buf[0..seg.len];
     mem.copyForwards(T, seg_copy, seg);
 
-    // swap segment with its opposite side
+    // swap segment
     switch (dir) {
         // [ [seg][seg_rhs] ] (step 0)
         // [ [seg_rhs]..... ] (step 1)
@@ -386,7 +384,6 @@ pub fn moveSeg(
             const start: usize = startIndex(base, seg);
             const end: usize = start +| seg_rhs.len;
             mem.copyForwards(T, base[start..end], seg_rhs); // step 1
-            // copy seg to the end of slice
             mem.copyForwards(T, base[base.len -| seg_copy.len..], seg_copy); // step 2
         },
         // [ [seg_lhs][seg] ] (step 0)
@@ -397,13 +394,12 @@ pub fn moveSeg(
             const end: usize = endIndex(base, seg);
             const start: usize = end -| seg_lhs.len;
             mem.copyBackwards(T, base[start..end], seg_lhs); // step 1
-            // copy seg to the beginning of the slice
             mem.copyForwards(T, base[0..seg_copy.len], seg_copy); // step 2
         },
     }
 }
 
-test moveSeg {
+test move {
     const equal = std.testing.expectEqualStrings;
     const equalErr = std.testing.expectError;
 
@@ -413,76 +409,64 @@ test moveSeg {
 
     // [.right mode]
 
-    try moveSeg(.right, 512, u8, slice, slice[0..3]);
+    try move(.right, 512, u8, slice, slice[0..3]);
     try equal("3456012", slice);
     //             ---
     buf = origin.*;
 
-    try moveSeg(.right, 512, u8, slice, slice[3..6]);
+    try move(.right, 512, u8, slice, slice[3..6]);
     try equal("0126345", slice);
     //             ---
     buf = origin.*;
 
-    try moveSeg(.right, 512, u8, slice, slice); // move is not required
+    try move(.right, 512, u8, slice, slice); // move is not required
     try equal("0123456", slice);
     buf = origin.*;
 
-    try moveSeg(.right, 512, u8, slice, slice[4..]); // move is not required
+    try move(.right, 512, u8, slice, slice[4..]); // move is not required
     try equal("0123456", slice);
     buf = origin.*;
 
-    try moveSeg(.right, 512, u8, slice, slice[7..]); // zero length segment
+    try move(.right, 512, u8, slice, slice[7..]); // zero length segment
     try equal("0123456", slice);
     buf = origin.*;
 
-    try moveSeg(.right, 512, u8, slice, slice[3..3]); // zero length segment
+    try move(.right, 512, u8, slice, slice[3..3]); // zero length segment
     try equal("0123456", slice);
     buf = origin.*;
 
-    try equalErr(MoveError.OutOfSlice, moveSeg(.right, 512, u8, slice[0..4], slice[3..6]));
-    try equalErr(MoveError.InsufficientSpace, moveSeg(.right, 1, u8, slice, slice[1..]));
+    try equalErr(error.InvalidOrigin, move(.right, 512, u8, slice[0..4], slice[3..6]));
+    try equalErr(error.InsufficientSpace, move(.right, 1, u8, slice, slice[1..]));
 
     // [.left mode]
 
-    try moveSeg(.left, 512, u8, slice, slice[1..]);
+    try move(.left, 512, u8, slice, slice[1..]);
     try equal("1234560", slice);
     //         ------
     buf = origin.*;
 
-    try moveSeg(.left, 512, u8, slice, slice[4..]);
+    try move(.left, 512, u8, slice, slice[4..]);
     try equal("4560123", slice);
     //         ---
     buf = origin.*;
 
-    try moveSeg(.left, 512, u8, slice, slice[6..]);
+    try move(.left, 512, u8, slice, slice[6..]);
     try equal("6012345", slice);
     //         -
     buf = origin.*;
 
-    try moveSeg(.left, 512, u8, slice, slice); // move is not required
+    try move(.left, 512, u8, slice, slice); // move is not required
     try equal("0123456", slice);
 
-    try moveSeg(.left, 512, u8, slice, slice[0..3]); // move is not required
+    try move(.left, 512, u8, slice, slice[0..3]); // move is not required
     try equal("0123456", slice);
 
-    try moveSeg(.left, 512, u8, slice, slice[7..]); // zero length segment
+    try move(.left, 512, u8, slice, slice[7..]); // zero length segment
     try equal("0123456", slice);
 
-    try moveSeg(.left, 512, u8, slice, slice[3..3]); // zero length segment
+    try move(.left, 512, u8, slice, slice[3..3]); // zero length segment
     try equal("0123456", slice);
 
-    try equalErr(MoveError.OutOfSlice, moveSeg(.left, 512, u8, slice[0..4], slice[3..6]));
-    try equalErr(MoveError.InsufficientSpace, moveSeg(.left, 1, u8, slice, slice[1..]));
-}
-
-/// Moves a valid segment to the beginning of the given slice. Returns an
-/// error if the segment is of different origin or its length exceeds 1024.
-pub fn moveSegLeft(T: type, base: []T, seg: []const T) MoveError!void {
-    return moveSeg(.left, 1024, T, base, seg);
-}
-
-/// Moves a valid slice segment to the end of the given slice. Returns an error
-/// if the segment is different origins or its length exceeds 1024.
-pub fn moveSegRight(T: type, base: []T, seg: []const T) MoveError!void {
-    return moveSeg(.right, 1024, T, base, seg);
+    try equalErr(error.InvalidOrigin, move(.left, 512, u8, slice[0..4], slice[3..6]));
+    try equalErr(error.InsufficientSpace, move(.left, 1, u8, slice, slice[1..]));
 }
