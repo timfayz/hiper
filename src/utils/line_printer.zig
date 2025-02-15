@@ -60,36 +60,39 @@ pub fn printLines(
     line_num: ?usize,
     comptime opt: PrintOptions,
 ) !void {
-    if (opt.buf_size == 0) return;
-    if (view_range.len() == 0) return;
-    const start, const end = if (meta.isNum(index)) .{ index, index } else num.orderPairAsc(index[0], index[1]);
-    if (start > input.len or end > input.len) return;
-    // if (input.len == 0) return; TODO?
-
-    const range_len = end - start;
+    if (opt.buf_size == 0 or view_range.len() == 0) return;
     var lines_buf: [opt.buf_size][]const u8 = undefined;
+
+    const start: usize, const end: usize = if (meta.isTuple(index)) num.orderPairAsc(index[0], index[1]) else .{ index, index };
+    const index_range = end - start +| 1;
 
     const first = try lr.readLines(&lines_buf, input, start, amount, true);
     if (first.isEmpty()) return;
 
-    var segments = stack.init(range.Range, 2);
+    var view_segs = stack.init(range.Range, 2);
 
-    // non-range
-    if (range_len == 0) {
-        const curr_line_seg = slice.truncIndices(first.curr(), .{
+    if (view_range.fits(index_range)) {
+        const curr_line_num = if (line_num) |l| l else lr.countLineNum(input, 0, start);
+        const curr_line_view = slice.truncIndices(first.curr(), .{
             first.index_pos,
             first.index_pos,
         }, view_range, opt.trunc_mode, .{});
-        segments.push(curr_line_seg) catch unreachable;
-        const curr_ln = if (line_num) |l| l else lr.countLineNum(input, 0, start);
-        return renderLines(writer, input, first, segments.slice(), range_len, curr_ln, opt);
-    }
-    // range TODO
-    else {
+        view_segs.push(curr_line_view) catch unreachable;
+        return renderLines(
+            writer,
+            input,
+            index,
+            view_segs.slice(),
+            first.lines,
+            first.curr_line_pos,
+            curr_line_num,
+            opt,
+        );
+    } else {
         // range fits first read range
         if (first.containsIndex(end, input)) {
             // range fits current line range
-            const end_pos = first.index_pos + range_len;
+            const end_pos = first.index_pos + index_range;
             if (end_pos <= first.curr().len) {
                 //
             }
@@ -103,24 +106,25 @@ pub fn printLines(
 fn renderLines(
     writer: anytype,
     input: []const u8,
-    lines: lr.ReadLines,
-    line_segs: ?[]range.Range,
-    range_len: usize,
-    line_num: usize,
+    index: usize,
+    line_view_segs: []range.Range,
+    lines: []const []const u8,
+    curr_line_pos: usize,
+    curr_line_num: usize,
     comptime opt: PrintOptions,
 ) !void {
-    const first_line_num = line_num -| lines.beforeCurr();
-    const last_line_num = line_num +| lines.afterCurr();
-    const line_num_len = if (opt.show_line_num) num.countIntLen(last_line_num) else 0;
+    const first_line_num = curr_line_num -| curr_line_pos;
+    const last_line_num = first_line_num +| lines.len;
+    const line_num_width = if (opt.show_line_num) num.countIntLen(last_line_num) else 0;
 
-    for (lines.lines, first_line_num.., 0..) |line, ln, i| {
+    for (lines, first_line_num.., 0..) |line, ln, i| {
         // render line number
         if (opt.show_line_num)
-            try writer.print("{d: <[1]}" ++ opt.line_num_sep, .{ ln, line_num_len });
+            try writer.print("{d: <[1]}" ++ opt.line_num_sep, .{ ln, line_num_width });
 
         // render line
-        if (line_segs) |segs| {
-            for (segs) |line_seg| {
+        if (line_view_segs.len > 0) {
+            for (line_view_segs) |line_seg| {
                 // render line segments
                 const seg = line_seg.sliceBounded([]const u8, line);
                 if (line_seg.start > 0 and line.len != 0) {
@@ -142,35 +146,23 @@ fn renderLines(
         try writer.writeByte('\n');
 
         // render cursor
-        if (opt.show_cursor and lines.curr_line_pos == i) {
-            const trunc_len = blk: {
-                if (line_segs) |segs| break :blk if (segs[0].start > 0) opt.trunc_sym.len else 0;
-                break :blk 0;
-            };
-            const start_pos = lines.index_pos;
-            const sep_len = if (opt.show_line_num) opt.line_num_sep.len else 0;
-            const pad = line_num_len +| sep_len +| trunc_len +| start_pos;
+        if (opt.show_cursor and i == curr_line_pos) {
+            const curr_line_start = if (line_view_segs.len > 0) line_view_segs[0].start else 0;
+            const index_pos = (index - slice.startIndex(input, line)) - curr_line_start;
+            const trunc_width = if (curr_line_start > 0) opt.trunc_sym.len else 0;
+            const sep_width = if (opt.show_line_num) opt.line_num_sep.len else 0;
+            const pad = line_num_width +| sep_width +| trunc_width +| index_pos;
 
             // head
             try writer.writeByteNTimes(' ', pad);
             try writer.writeByte(opt.cursor_head_char);
 
             // tail
-            if (range_len > 0) {
-                if (range_len == 1) { // `^^`
-                    try writer.writeByte(opt.cursor_head_char);
-                } else if (range_len > 1 and (lines.index_pos + range_len) <= lines.curr().len) { // `^~~^`
-                    try writer.writeByteNTimes(opt.cursor_body_char, range_len -| 1); // 1 excludes tail
-                    try writer.writeByte(opt.cursor_head_char);
-                } else { // `^~~`
-                    try writer.writeByteNTimes(opt.cursor_body_char, range_len -| 1); // 1 excludes newline
-                }
-            }
+            // TODO
 
             // hint
             if (opt.show_cursor_hint) {
-                const cursor_index = slice.startIndex(input, line) +| lines.index_pos;
-                const hint = getHint(input, cursor_index, opt);
+                const hint = getHint(input, index, opt);
                 if (hint.len > 0) {
                     try writer.writeAll(" (");
                     try writer.writeAll(hint);
@@ -203,34 +195,25 @@ test printLines {
         pub fn run(buffer: anytype) []const u8 {
             const str = buffer.slice();
             buffer.clear();
-            return if (str.len != 0 and str[str.len -| 1] == '\n')
-                str[0..str.len -| 1]
-            else
-                str;
+            return str;
         }
     }.run;
     var buf = std.BoundedArray(u8, 1024){};
     const w = buf.writer();
 
     // out-of-bounds read
-    try printLines(w, "hello", 100, .{ .around = 100 }, .{ .right = 1 }, 1, .{});
+    try printLinesWithCursor(w, "hello", 100, .{ .around = 100 }, .{ .right = 1 }, 1, .{});
     try equal(
         \\
     , string(&buf));
 
-    // normal read
-    try printLines(w, "hello", 1, .{ .around = 100 }, .{ .right = 1 }, 1, .{});
-    try equal(
-        \\1| hello␃
-    , string(&buf));
-
     // [.show_cursor]
     try printLines(w, "hello", 1, .{ .around = 100 }, .{ .right = 1 }, 1, .{
-        .show_cursor = true,
+        .show_cursor = false,
     });
     try equal(
         \\1| hello␃
-        \\    ^
+        \\
     , string(&buf));
 
     // [.show_eof]
@@ -240,24 +223,27 @@ test printLines {
     try equal(
         \\1| hello
         \\    ^
+        \\
     , string(&buf));
 
     // [.hint_printable_chars]
-    try printLinesWithCursor(w, "hello\nworld", 7, .{ .around = 100 }, .{ .left = 2 }, null, .{
+    try printLinesWithCursor(w, "hello\nworld", 7, .{ .around = 100 }, .{ .left = 2 }, 2, .{
         .hint_printable_chars = true,
     });
     try equal(
         \\1| hello
         \\2| world␃
         \\    ^ ('\x6f')
+        \\
     , string(&buf));
 
     // end of string hint
-    try printLinesWithCursor(w, "hello\nworld", 11, .{ .around = 100 }, .{ .left = 2 }, null, .{});
+    try printLinesWithCursor(w, "hello\nworld", 11, .{ .around = 100 }, .{ .left = 2 }, 2, .{});
     try equal(
         \\1| hello
         \\2| world␃
         \\        ^ (end of string)
+        \\
     , string(&buf));
 
     // newline hint
@@ -265,6 +251,7 @@ test printLines {
     try equal(
         \\1| hello
         \\        ^ (newline)
+        \\
     , string(&buf));
 
     // [.show_cursor_hint]
@@ -274,26 +261,38 @@ test printLines {
     try equal(
         \\1| hello
         \\        ^
+        \\
     , string(&buf));
 
     // [.show_line_num]
-    try printLines(w, "hello", 1, .{ .around = 100 }, .{ .right = 1 }, 1, .{
+    try printLinesWithCursor(w, "hello", 1, .{ .around = 100 }, .{ .right = 1 }, 1, .{
         .show_line_num = false,
     });
     try equal(
         \\hello␃
+        \\ ^
+        \\
     , string(&buf));
 
     // [.line_num_sep]
-    try printLines(w, "hello", 1, .{ .around = 100 }, .{ .right = 1 }, 1, .{
+    try printLinesWithCursor(w, "hello", 1, .{ .around = 100 }, .{ .right = 1 }, 1, .{
         .line_num_sep = "__",
     });
     try equal(
         \\1__hello␃
+        \\    ^
+        \\
     , string(&buf));
 
     // [.trunc_sym]
-    // TODO
+    try printLinesWithCursor(w, "hello world", 5, .{ .around = 5 }, .{ .right = 1 }, 1, .{
+        .trunc_sym = "--",
+    });
+    try equal(
+        \\1| --lo wor--
+        \\       ^ (space)
+        \\
+    , string(&buf));
 
     const input =
         \\First line.
@@ -311,15 +310,17 @@ test printLines {
         \\
     ;
 
-    // automatic line numbering
-    try printLines(w, input, 15, .{ .around = 100 }, .{ .right = 6 }, null, .{});
+    // automatic line numbering (null)
+    try printLinesWithCursor(w, input, 15, .{ .around = 100 }, .{ .right = 6 }, null, .{});
     try equal(
         \\2| This is the second.
+        \\      ^
         \\3| A third line is a l..
         \\4| 
         \\5| Fifth line.
         \\6| Sixth one.
         \\7| ␃
+        \\
     , string(&buf));
 
     // // [.backward] read, [.around] mode, trunc [.hard_flex]

@@ -183,6 +183,40 @@ pub fn streamLinesForward(
     return .{ written, index_pos };
 }
 
+/// Retrieves lines from `input` starting at `index`, reading backward. Returns
+/// the number of lines written into `writer` and the index's relative position
+/// on the first written line (current line). Lines are written in traversal
+/// order (reversed).
+pub fn streamLinesBackward(
+    writer: anytype,
+    input: []const u8,
+    index: usize,
+    amount: usize,
+) !struct { usize, usize } {
+    if (index > input.len or amount == 0)
+        return .{ 0, 0 };
+
+    var line_start = indexOfLineStart(input, index);
+    var line_end = indexOfLineEnd(input, index);
+    const index_pos = index - line_start;
+
+    // first line
+    var written: usize = 0;
+    written += try writer.write(input[line_start..line_end]);
+    if (line_start == 0 or written == amount) return .{ written, index_pos };
+    line_end = line_start - 1;
+
+    // rest
+    while (written < amount) {
+        line_start = indexOfLineStart(input, line_end);
+        written += try writer.write(input[line_start..line_end]);
+        if (line_start == 0) break;
+        line_end = line_start - 1;
+    }
+
+    return .{ written, index_pos };
+}
+
 /// Retrieves lines from `input` starting at `index`, reading forward.
 /// See `ReadLines` for details.
 pub fn readLinesForward(
@@ -279,40 +313,6 @@ test readLinesForward {
         , str.slice());
         str.clear();
     }
-}
-
-/// Retrieves lines from `input` starting at `index`, reading backward. Returns
-/// the number of lines written into `writer` and the index's relative position
-/// on the first written line (current line). Lines are written in traversal
-/// order (reversed).
-pub fn streamLinesBackward(
-    writer: anytype,
-    input: []const u8,
-    index: usize,
-    amount: usize,
-) !struct { usize, usize } {
-    if (index > input.len or amount == 0)
-        return .{ 0, 0 };
-
-    var line_start = indexOfLineStart(input, index);
-    var line_end = indexOfLineEnd(input, index);
-    const index_pos = index - line_start;
-
-    // first line
-    var written: usize = 0;
-    written += try writer.write(input[line_start..line_end]);
-    if (line_start == 0 or written == amount) return .{ written, index_pos };
-    line_end = line_start - 1;
-
-    // rest
-    while (written < amount) {
-        line_start = indexOfLineStart(input, line_end);
-        written += try writer.write(input[line_start..line_end]);
-        if (line_start == 0) break;
-        line_end = line_start - 1;
-    }
-
-    return .{ written, index_pos };
 }
 
 /// Retrieves lines from `input` starting at `index`, reading backward.
