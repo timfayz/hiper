@@ -71,32 +71,18 @@ pub fn printLines(
 
     var view_segs = stack.init(range.Range, 2);
 
-    if (view_range.fits(index_range)) {
-        const curr_line_num = if (line_num) |l| l else lr.countLineNum(input, 0, start);
-        const curr_line_view = slice.truncIndices(first.curr(), .{
-            first.index_pos,
-            first.index_pos,
-        }, view_range, opt.trunc_mode, .{});
+    if (index_range == 1) {
+        const curr_line_view = slice.truncIndices(first.curr(), first.index_pos, view_range, opt.trunc_mode, .{});
         view_segs.push(curr_line_view) catch unreachable;
-        return renderLines(
-            writer,
-            input,
-            index,
-            view_segs.slice(),
-            first.lines,
-            first.curr_line_pos,
-            curr_line_num,
-            opt,
-        );
-    } else {
+        const curr_line_num = if (line_num) |l| l else lr.countLineNum(input, 0, start);
+        return renderLines(writer, input, index, view_segs.slice(), first.lines, first.curr_line_pos, curr_line_num, opt);
+    } else if (view_range.fits(index_range)) {
+        // check if view_range fits current line
+        if (first.index_pos + index_range <= first.curr().len) {
+            //
+        }
         // range fits first read range
-        if (first.containsIndex(end, input)) {
-            // range fits current line range
-            const end_pos = first.index_pos + index_range;
-            if (end_pos <= first.curr().len) {
-                //
-            }
-        } else {
+        else if (first.containsIndex(end, input)) {} else {
             //
         }
     }
@@ -124,15 +110,13 @@ fn renderLines(
 
         // render line
         if (line_view_segs.len > 0) {
-            for (line_view_segs) |line_seg| {
-                // render line segments
-                const seg = line_seg.sliceBounded([]const u8, line);
-                if (line_seg.start > 0 and line.len != 0) {
-                    try writer.writeAll(opt.trunc_sym);
-                }
-                try writer.writeAll(seg);
-                if (line_seg.end < line.len) {
-                    try writer.writeAll(opt.trunc_sym);
+            for (line_view_segs) |view_seg| {
+                const seg = view_seg.sliceBounded([]const u8, line);
+                if (view_seg.start > 0 and line.len != 0)
+                    try writer.writeAll(opt.trunc_sym); // trunc ..
+                try writer.writeAll(seg); // line
+                if (view_seg.end < line.len) {
+                    try writer.writeAll(opt.trunc_sym); // trunc ..
                 } else if (opt.show_eof and slice.endIndex(input, seg) >= input.len) {
                     try writer.writeAll("␃");
                 }
@@ -147,13 +131,13 @@ fn renderLines(
 
         // render cursor
         if (opt.show_cursor and i == curr_line_pos) {
-            const curr_line_start = if (line_view_segs.len > 0) line_view_segs[0].start else 0;
-            const index_pos = (index - slice.startIndex(input, line)) - curr_line_start;
-            const trunc_width = if (curr_line_start > 0) opt.trunc_sym.len else 0;
+            const line_start_pos = if (line_view_segs.len > 0) line_view_segs[0].start else 0;
+            const index_pos = (index - slice.startIndex(input, line)) - line_start_pos;
+            const trunc_width = if (line_start_pos > 0) opt.trunc_sym.len else 0;
             const sep_width = if (opt.show_line_num) opt.line_num_sep.len else 0;
-            const pad = line_num_width +| sep_width +| trunc_width +| index_pos;
 
             // head
+            const pad = line_num_width +| sep_width +| trunc_width +| index_pos;
             try writer.writeByteNTimes(' ', pad);
             try writer.writeByte(opt.cursor_head_char);
 
@@ -289,7 +273,7 @@ test printLines {
         .trunc_sym = "--",
     });
     try equal(
-        \\1| --lo wor--
+        \\1| --lo wo--
         \\       ^ (space)
         \\
     , string(&buf));
@@ -323,18 +307,32 @@ test printLines {
         \\
     , string(&buf));
 
+    // automatic line numbering (null)
+    try printLinesWithCursor(w, input, 15, .{ .around = 100 }, .{ .right = 6 }, null, .{});
+    try equal(
+        \\2| This is the second.
+        \\      ^
+        \\3| A third line is a l..
+        \\4| 
+        \\5| Fifth line.
+        \\6| Sixth one.
+        \\7| ␃
+        \\
+    , string(&buf));
+
     // // [.backward] read, [.around] mode, trunc [.hard_flex]
-    // try printLinesWithCursor(w, input, 85, .{ .around = 5 }, .{ .right = 6 }, null, .{
-    //     .trunc_mode = .hard_flex,
-    //     .show_cursor_hint = true,
-    // });
-    // try equal(
-    //     \\1| ..line..
-    //     \\2| ..s th..
-    //     \\3| ..d li..
-    //     \\4|
-    //     \\5| ..line..
-    //     \\6| ..one.
-    //     \\         ^ (newline)
-    // , string(&buf));
+    try printLinesWithCursor(w, input, 85, .{ .around = 5 }, .{ .left = 6 }, null, .{
+        .trunc_mode = .hard_flex,
+        .show_cursor_hint = true,
+    });
+    try equal(
+        \\1| .. line..
+        \\2| ..is th..
+        \\3| ..rd li..
+        \\4| 
+        \\5| .. line..
+        \\6| .. one.
+        \\          ^ (newline)
+        \\
+    , string(&buf));
 }
