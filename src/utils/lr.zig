@@ -8,14 +8,14 @@ const range = @import("range.zig");
 const assert = std.debug.assert;
 
 pub const LineReader = struct {
-    lines: stack.Stack([]const u8, 4096),
+    lines: stack.Stack([]const u8, 4096) = .{},
     input: []const u8,
     start: usize,
     end: usize,
 
     pub fn init(input: []const u8, index: usize) LineReader {
         return .{
-            .lines = stack.init([]const u8, 4096),
+            .lines = .{},
             .input = input,
             .start = index,
             .end = index,
@@ -24,11 +24,15 @@ pub const LineReader = struct {
 
     pub fn reset(l: *LineReader, input: []const u8, index: usize) void {
         l.* = LineReader{
-            .lines = stack.init([]const u8, 4096),
+            .lines = .{},
             .input = input,
             .start = index,
             .end = index,
         };
+    }
+
+    pub fn clearPushed(l: *LineReader) void {
+        l.lines.reset();
     }
 
     pub fn setPos(l: *LineReader, index: usize) void {
@@ -46,16 +50,24 @@ pub const LineReader = struct {
         l.end = l.start;
     }
 
+    pub fn line(l: *const LineReader) []const u8 {
+        return l.input[l.start..l.end];
+    }
+
     pub fn pushLine(l: *LineReader) !void {
         try l.lines.push(l.input[l.start..l.end]);
     }
 
-    pub fn len(l: *const LineReader) usize {
+    pub fn totalPushed(l: *const LineReader) usize {
         return l.lines.len;
     }
 
-    pub fn line(l: *const LineReader) []const u8 {
-        return l.input[l.start..l.end];
+    pub fn pushed(l: *LineReader) [][]const u8 {
+        return l.lines.slice();
+    }
+
+    pub fn reversePushed(l: *LineReader) void {
+        slice.reverse(l.pushed());
     }
 
     pub fn isEmpty(l: *const LineReader) bool {
@@ -117,11 +129,6 @@ pub const LineReader = struct {
         l.seekLineEnd();
     }
 
-    pub fn seekLineAndPush(l: *LineReader) !void {
-        l.seekLine();
-        try l.pushLine();
-    }
-
     pub fn seekLineWithin(l: *LineReader, within: range.Range) void {
         assert(within.start <= l.start);
         assert(within.end >= l.end);
@@ -129,12 +136,17 @@ pub const LineReader = struct {
         l.seekLineEndUntil(within.end);
     }
 
-    pub fn seekLineWithinAndPush(l: *LineReader, within: range.Range) !void {
+    pub fn seekAndPushLine(l: *LineReader) !void {
+        l.seekLine();
+        try l.pushLine();
+    }
+
+    pub fn seekAndPushLineWithin(l: *LineReader, within: range.Range) !void {
         l.seekLineWithin(within);
         try l.pushLine();
     }
 
-    pub fn seekLinesAndPush(l: *LineReader, comptime dir: range.Dir, amt: ?usize) !void {
+    pub fn seekAndPushLines(l: *LineReader, comptime dir: range.Dir, amt: ?usize) !void {
         var left = amt orelse std.math.maxInt(usize);
         if (left == 0)
             return;
@@ -163,11 +175,12 @@ pub const LineReader = struct {
         }
     }
 
-    pub fn seekLinesWithinAndPush(
+    pub fn seekAndPushLinesWithin(
         l: *LineReader,
         comptime dir: range.Dir,
         within: range.Range,
         amt: ?usize,
+        hard_cut: bool,
     ) !void {
         assert(within.start <= l.start);
         assert(within.end >= l.end);
@@ -177,19 +190,19 @@ pub const LineReader = struct {
 
         switch (dir) {
             .right => {
-                l.seekLineStartUntil(within.start);
+                if (hard_cut) l.seekLineStartUntil(within.start) else l.seekLineStart();
                 while (true) {
-                    l.seekLineEndUntil(within.end);
+                    if (hard_cut) l.seekLineEndUntil(within.end) else l.seekLineEnd();
                     try l.pushLine();
                     left -= 1;
-                    if (l.reachedEOF() or l.end == within.end or left == 0) break;
+                    if (l.reachedEOF() or l.end >= within.end or left == 0) break;
                     l.movePosRight(1);
                 }
             },
             .left => {
-                l.seekLineEndUntil(within.end);
+                if (hard_cut) l.seekLineEndUntil(within.end) else l.seekLineEnd();
                 while (true) {
-                    l.seekLineStartUntil(within.start);
+                    if (hard_cut) l.seekLineStartUntil(within.start) else l.seekLineStart();
                     try l.pushLine();
                     left -= 1;
                     if (l.reachedZero() or l.start == within.start or left == 0) break;
@@ -199,17 +212,57 @@ pub const LineReader = struct {
         }
     }
 
-    pub fn containsIndex(l: *const LineReader, index: usize) bool {
+    pub fn seekAndPushLineRange(l: *LineReader, comptime view_range: range.View) !usize {
+        if (view_range.len() == 0) return 0;
+        const plan = view_range.toPair(.{ .rshift_uneven = false });
+
+        try l.seekAndPushLines(.left, plan.left);
+        if (l.totalPushed() > 1) l.reversePushed();
+        const curr_line_idx: usize = l.totalPushed() -| 1;
+        if (l.topLineIndexOf(.end)) |next| l.setPos(next +| 1);
+        if (l.reachedEOF()) return curr_line_idx;
+        try l.seekAndPushLines(.right, plan.right);
+        return curr_line_idx;
+    }
+
+    pub fn lineContainsIndex(l: *const LineReader, index: usize) bool {
         return index >= l.start and index <= l.end;
+    }
+
+    pub fn topLine(l: *const LineReader) ?[]const u8 {
+        return l.lines.topOrNull();
+    }
+
+    pub fn bottomLine(l: *const LineReader) ?[]const u8 {
+        return l.lines.bottomOrNull();
+    }
+
+    pub fn topLineIndexOf(l: *const LineReader, comptime edge: enum { start, end }) ?usize {
+        if (l.topLine()) |top_line| {
+            return switch (edge) {
+                .start => slice.startIndex(l.input, top_line),
+                .end => slice.endIndex(l.input, top_line),
+            };
+        } else return null;
+    }
+
+    pub fn bottomLineIndexOf(l: *const LineReader, comptime edge: enum { start, end }) ?usize {
+        if (l.bottomLine()) |bottom_line| {
+            return switch (edge) {
+                .start => slice.startIndex(l.input, bottom_line),
+                .end => slice.endIndex(l.input, bottom_line),
+            };
+        } else return null;
     }
 };
 
 test LineReader {
     const t = std.testing;
-    var lr = LineReader.init("line", 0);
+    var lr = LineReader.init("", 0);
 
     // [seekLineStart()]
     {
+        lr.reset("line", 0);
         lr.seekLineStart();
         try t.expectEqual(0, lr.start);
 
@@ -292,45 +345,45 @@ test LineReader {
         lr.seekLineEndUntil(5);
         try t.expectEqual(4, lr.end);
     }
-    // [seekLineAndPush()]
+    // [seekAndPushLine()]
     {
         lr.reset("line1\nline2\nline3", 0);
         //        ^
-        try lr.seekLineAndPush();
+        try lr.seekAndPushLine();
         try t.expectEqualStrings("line1", lr.line());
 
         lr.reset("line1\nline2\nline3", 8);
         //                 ^
-        try lr.seekLineAndPush();
+        try lr.seekAndPushLine();
         try t.expectEqualStrings("line2", lr.line());
 
         lr.reset("line1\nline2\nline3", 12);
         //                      ^
-        try lr.seekLineAndPush();
+        try lr.seekAndPushLine();
         try t.expectEqualStrings("line3", lr.line());
     }
-    // [seekLineWithinAndPush()]
+    // [seekAndPushLineWithin()]
     {
         lr.reset("line1\nline2\nline3", 8);
         //                789
-        try lr.seekLineWithinAndPush(.{ .start = 7, .end = 9 });
+        try lr.seekAndPushLineWithin(.{ .start = 7, .end = 9 });
         try t.expectEqualStrings("in", lr.line());
     }
-    // [seekLinesAndPush()]
+    // [seekAndPushLines()]
     {
         const input = "line1\nline2\nline3";
         //             ^0  ^4 ^6  ^10^11 ^15
 
         lr.reset(input, 1);
-        try lr.seekLinesAndPush(.right, 0);
-        try t.expectEqual(0, lr.len());
+        try lr.seekAndPushLines(.right, 0);
+        try t.expectEqual(0, lr.totalPushed());
 
         // [.right]
 
         lr.reset(input, 0);
-        try lr.seekLinesAndPush(.right, 2);
-        try t.expectEqual(2, lr.len());
-        for (&[_][]const u8{ "line1", "line2" }, lr.lines.slice()) |e, a| {
+        try lr.seekAndPushLines(.right, 2);
+        try t.expectEqual(2, lr.totalPushed());
+        for (&[_][]const u8{ "line1", "line2" }, lr.pushed()) |e, a| {
             try t.expectEqualStrings(e, a);
         }
         // pos is on the last read line
@@ -338,31 +391,31 @@ test LineReader {
         try t.expectEqual(11, lr.end);
 
         lr.reset(input, 0);
-        try lr.seekLinesAndPush(.right, 4);
-        try t.expectEqual(3, lr.len());
-        for (&[_][]const u8{ "line1", "line2", "line3" }, lr.lines.slice()) |e, a| {
+        try lr.seekAndPushLines(.right, 4);
+        try t.expectEqual(3, lr.totalPushed());
+        for (&[_][]const u8{ "line1", "line2", "line3" }, lr.pushed()) |e, a| {
             try t.expectEqualStrings(e, a);
         }
 
         lr.reset(input, input.len);
-        try lr.seekLinesAndPush(.right, 4);
-        try t.expectEqual(1, lr.len());
-        for (&[_][]const u8{"line3"}, lr.lines.slice()) |e, a| {
+        try lr.seekAndPushLines(.right, 4);
+        try t.expectEqual(1, lr.totalPushed());
+        for (&[_][]const u8{"line3"}, lr.pushed()) |e, a| {
             try t.expectEqualStrings(e, a);
         }
 
         // [.left]
         lr.reset(input, 0);
-        try lr.seekLinesAndPush(.left, 2);
-        try t.expectEqual(1, lr.len());
-        for (&[_][]const u8{"line1"}, lr.lines.slice()) |e, a| {
+        try lr.seekAndPushLines(.left, 2);
+        try t.expectEqual(1, lr.totalPushed());
+        for (&[_][]const u8{"line1"}, lr.pushed()) |e, a| {
             try t.expectEqualStrings(e, a);
         }
 
         lr.reset(input, input.len);
-        try lr.seekLinesAndPush(.left, 2);
-        try t.expectEqual(2, lr.len());
-        for (&[_][]const u8{ "line3", "line2" }, lr.lines.slice()) |e, a| {
+        try lr.seekAndPushLines(.left, 2);
+        try t.expectEqual(2, lr.totalPushed());
+        for (&[_][]const u8{ "line3", "line2" }, lr.pushed()) |e, a| {
             try t.expectEqualStrings(e, a);
         }
         // pos is on the last read line
@@ -370,34 +423,34 @@ test LineReader {
         try t.expectEqual(11, lr.end);
 
         lr.reset(input, input.len);
-        try lr.seekLinesAndPush(.left, 4);
-        try t.expectEqual(3, lr.len());
-        for (&[_][]const u8{ "line3", "line2", "line1" }, lr.lines.slice()) |e, a| {
+        try lr.seekAndPushLines(.left, 4);
+        try t.expectEqual(3, lr.totalPushed());
+        for (&[_][]const u8{ "line3", "line2", "line1" }, lr.pushed()) |e, a| {
             try t.expectEqualStrings(e, a);
         }
     }
-    // [seekLinesWithinAndPush()]
+    // [seekAndPushLinesWithin()]
     {
         const input = "line1\nline2\nline3";
         //             ^0  ^4 ^6  ^10^12 ^16
 
         lr.reset(input, 1);
-        try lr.seekLinesWithinAndPush(.right, .{ .start = 0, .end = 5 }, 0);
-        try t.expectEqual(0, lr.len());
+        try lr.seekAndPushLinesWithin(.right, .{ .start = 0, .end = 5 }, 0, true);
+        try t.expectEqual(0, lr.totalPushed());
 
         // [.right]
 
         lr.reset(input, 3);
-        try lr.seekLinesWithinAndPush(.right, .{ .start = 2, .end = 14 }, 2);
-        try t.expectEqual(2, lr.len());
-        for (&[_][]const u8{ "ne1", "line2" }, lr.lines.slice()) |e, a| {
+        try lr.seekAndPushLinesWithin(.right, .{ .start = 2, .end = 14 }, 2, true);
+        try t.expectEqual(2, lr.totalPushed());
+        for (&[_][]const u8{ "ne1", "line2" }, lr.pushed()) |e, a| {
             try t.expectEqualStrings(e, a);
         }
 
         lr.reset(input, 3);
-        try lr.seekLinesWithinAndPush(.right, .{ .start = 2, .end = 14 }, 4);
-        try t.expectEqual(3, lr.len());
-        for (&[_][]const u8{ "ne1", "line2", "li" }, lr.lines.slice()) |e, a| {
+        try lr.seekAndPushLinesWithin(.right, .{ .start = 2, .end = 14 }, 4, true);
+        try t.expectEqual(3, lr.totalPushed());
+        for (&[_][]const u8{ "ne1", "line2", "li" }, lr.pushed()) |e, a| {
             try t.expectEqualStrings(e, a);
         }
         // pos is on the last read line
@@ -405,25 +458,25 @@ test LineReader {
         try t.expectEqual(14, lr.end);
 
         lr.reset(input, 3); // edge: index == within.end
-        try lr.seekLinesWithinAndPush(.right, .{ .start = 2, .end = 3 }, 4);
-        try t.expectEqual(1, lr.len());
-        for (&[_][]const u8{"n"}, lr.lines.slice()) |e, a| {
+        try lr.seekAndPushLinesWithin(.right, .{ .start = 2, .end = 3 }, 4, true);
+        try t.expectEqual(1, lr.totalPushed());
+        for (&[_][]const u8{"n"}, lr.pushed()) |e, a| {
             try t.expectEqualStrings(e, a);
         }
 
         // [.left]
 
         lr.reset(input, 14);
-        try lr.seekLinesWithinAndPush(.left, .{ .start = 2, .end = 14 }, 2);
-        try t.expectEqual(2, lr.len());
-        for (&[_][]const u8{ "li", "line2" }, lr.lines.slice()) |e, a| {
+        try lr.seekAndPushLinesWithin(.left, .{ .start = 2, .end = 14 }, 2, true);
+        try t.expectEqual(2, lr.totalPushed());
+        for (&[_][]const u8{ "li", "line2" }, lr.pushed()) |e, a| {
             try t.expectEqualStrings(e, a);
         }
 
         lr.reset(input, 14);
-        try lr.seekLinesWithinAndPush(.left, .{ .start = 2, .end = 14 }, 4);
-        try t.expectEqual(3, lr.len());
-        for (&[_][]const u8{ "li", "line2", "ne1" }, lr.lines.slice()) |e, a| {
+        try lr.seekAndPushLinesWithin(.left, .{ .start = 2, .end = 14 }, 4, true);
+        try t.expectEqual(3, lr.totalPushed());
+        for (&[_][]const u8{ "li", "line2", "ne1" }, lr.pushed()) |e, a| {
             try t.expectEqualStrings(e, a);
         }
         // pos is on the last read line
@@ -431,9 +484,32 @@ test LineReader {
         try t.expectEqual(5, lr.end);
 
         lr.reset(input, 2); // edge: index == within.start
-        try lr.seekLinesWithinAndPush(.left, .{ .start = 2, .end = 3 }, 4);
-        try t.expectEqual(1, lr.len());
-        for (&[_][]const u8{"n"}, lr.lines.slice()) |e, a| {
+        try lr.seekAndPushLinesWithin(.left, .{ .start = 2, .end = 3 }, 4, true);
+        try t.expectEqual(1, lr.totalPushed());
+        for (&[_][]const u8{"n"}, lr.pushed()) |e, a| {
+            try t.expectEqualStrings(e, a);
+        }
+    }
+    // [seekAndPushLineRange()]
+    {
+        const input = "line1\nline2\nline3";
+        //             ^0  ^4 ^6  ^10^12 ^16
+
+        lr.reset(input, 17);
+        try t.expectEqual(1, try lr.seekAndPushLineRange(.{ .around = 3 }));
+        for (&[_][]const u8{ "line2", "line3" }, lr.pushed()) |e, a| {
+            try t.expectEqualStrings(e, a);
+        }
+
+        lr.reset(input, 8);
+        try t.expectEqual(1, try lr.seekAndPushLineRange(.{ .around = 3 }));
+        for (&[_][]const u8{ "line1", "line2", "line3" }, lr.pushed()) |e, a| {
+            try t.expectEqualStrings(e, a);
+        }
+
+        lr.reset(input, 0);
+        try t.expectEqual(0, try lr.seekAndPushLineRange(.{ .around = 3 }));
+        for (&[_][]const u8{ "line1", "line2" }, lr.pushed()) |e, a| {
             try t.expectEqualStrings(e, a);
         }
     }
