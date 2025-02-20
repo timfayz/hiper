@@ -37,8 +37,8 @@ fn printLinesWithCursor(
     writer: anytype,
     input: []const u8,
     index: anytype,
-    comptime mode: range.Rel,
-    comptime amount: range.Rel,
+    comptime mode: range.View,
+    comptime amount: range.View,
     line_num: ?usize,
     comptime opt: PrintOptions,
 ) !void {
@@ -55,8 +55,8 @@ pub fn printLines(
     writer: anytype,
     input: []const u8,
     index: anytype,
-    comptime view_range: range.Rel,
-    comptime amount: range.Rel,
+    comptime view_range: range.View,
+    comptime amount: range.View,
     line_num: ?usize,
     comptime opt: PrintOptions,
 ) !void {

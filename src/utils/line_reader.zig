@@ -521,7 +521,7 @@ pub fn readLines(
     buf: [][]const u8,
     input: []const u8,
     index: usize,
-    comptime amount: range.Rel,
+    comptime amount: range.View,
     comptime compensate: bool,
 ) !ReadLines {
     const plan = amount.toPair(.{});

@@ -368,20 +368,7 @@ test Range {
     try equal(DirPair{ .left = 0, .right = 2 }, Range.init(7, 9).clampReminder(within)); // case 2
 }
 
-pub const Abs = union(enum) {
-    first: ?usize,
-    last: ?usize,
-    middle: ?usize,
-    all: ?void,
-
-    pub fn len(self: Abs) usize {
-        return switch (self) {
-            inline else => |amt| amt orelse std.math.maxInt(usize),
-        };
-    }
-};
-
-pub const Rel = union(enum) {
+pub const View = union(enum) {
     left: ?usize,
     right: ?usize,
     around: ?usize,
@@ -392,12 +379,12 @@ pub const Rel = union(enum) {
         shift: ?DirVal = null,
     };
 
-    pub fn toPair(self: Rel, comptime opt: Options) DirPair {
+    pub fn toPair(self: View, comptime opt: Options) DirPair {
         return self.toPairAddExtra(0, .right, opt);
     }
 
     pub fn toPairAddExtra(
-        self: Rel,
+        self: View,
         extra: usize,
         comptime extra_dir: Dir,
         comptime opt: Options,
@@ -414,11 +401,11 @@ pub const Rel = union(enum) {
         return pair;
     }
 
-    pub fn fits(self: Rel, range: usize) bool {
+    pub fn fits(self: View, range: usize) bool {
         return self.len() >= range;
     }
 
-    pub fn len(self: Rel) usize {
+    pub fn len(self: View) usize {
         return switch (self) {
             .custom => |amt| amt.left +| amt.right,
             inline else => |amt| amt orelse std.math.maxInt(usize),
@@ -426,38 +413,38 @@ pub const Rel = union(enum) {
     }
 };
 
-test Rel {
+test View {
     const equal = std.testing.expectEqualDeep;
     const max = std.math.maxInt(usize);
 
     // [len()]
 
-    try equal(max, (Rel{ .left = null }).len());
-    try equal(max, (Rel{ .right = null }).len());
-    try equal(max, (Rel{ .around = null }).len());
-    try equal(10, (Rel{ .left = 10 }).len());
-    try equal(10, (Rel{ .right = 10 }).len());
-    try equal(10, (Rel{ .around = 10 }).len());
-    try equal(10, (Rel{ .custom = .{ .left = 4, .right = 6 } }).len());
+    try equal(max, (View{ .left = null }).len());
+    try equal(max, (View{ .right = null }).len());
+    try equal(max, (View{ .around = null }).len());
+    try equal(10, (View{ .left = 10 }).len());
+    try equal(10, (View{ .right = 10 }).len());
+    try equal(10, (View{ .around = 10 }).len());
+    try equal(10, (View{ .custom = .{ .left = 4, .right = 6 } }).len());
 
     // [toPairAddExtra()]
 
     // [.left mode]
-    try equal(DirPair{ .left = 10, .right = 0 }, (Rel{ .left = 10 }).toPairAddExtra(0, .right, .{}));
-    try equal(DirPair{ .left = 10, .right = 4 }, (Rel{ .left = 10 }).toPairAddExtra(4, .right, .{}));
-    try equal(DirPair{ .left = 14, .right = 0 }, (Rel{ .left = 10 }).toPairAddExtra(4, .left, .{}));
+    try equal(DirPair{ .left = 10, .right = 0 }, (View{ .left = 10 }).toPairAddExtra(0, .right, .{}));
+    try equal(DirPair{ .left = 10, .right = 4 }, (View{ .left = 10 }).toPairAddExtra(4, .right, .{}));
+    try equal(DirPair{ .left = 14, .right = 0 }, (View{ .left = 10 }).toPairAddExtra(4, .left, .{}));
     // [.right mode]
-    try equal(DirPair{ .left = 0, .right = 10 }, (Rel{ .right = 10 }).toPairAddExtra(0, .right, .{}));
-    try equal(DirPair{ .left = 0, .right = 14 }, (Rel{ .right = 10 }).toPairAddExtra(4, .right, .{}));
-    try equal(DirPair{ .left = 4, .right = 10 }, (Rel{ .right = 10 }).toPairAddExtra(4, .left, .{}));
+    try equal(DirPair{ .left = 0, .right = 10 }, (View{ .right = 10 }).toPairAddExtra(0, .right, .{}));
+    try equal(DirPair{ .left = 0, .right = 14 }, (View{ .right = 10 }).toPairAddExtra(4, .right, .{}));
+    try equal(DirPair{ .left = 4, .right = 10 }, (View{ .right = 10 }).toPairAddExtra(4, .left, .{}));
     // [.around mode]
-    try equal(DirPair{ .left = 4, .right = 5 }, (Rel{ .around = 9 }).toPairAddExtra(0, .right, .{}));
-    try equal(DirPair{ .left = 5, .right = 4 }, (Rel{ .around = 9 }).toPairAddExtra(0, .right, .{ .rshift_uneven = false }));
-    try equal(DirPair{ .left = 9, .right = 5 }, (Rel{ .around = 9 }).toPairAddExtra(5, .left, .{}));
-    try equal(DirPair{ .left = 4, .right = 10 }, (Rel{ .around = 9 }).toPairAddExtra(5, .right, .{}));
+    try equal(DirPair{ .left = 4, .right = 5 }, (View{ .around = 9 }).toPairAddExtra(0, .right, .{}));
+    try equal(DirPair{ .left = 5, .right = 4 }, (View{ .around = 9 }).toPairAddExtra(0, .right, .{ .rshift_uneven = false }));
+    try equal(DirPair{ .left = 9, .right = 5 }, (View{ .around = 9 }).toPairAddExtra(5, .left, .{}));
+    try equal(DirPair{ .left = 4, .right = 10 }, (View{ .around = 9 }).toPairAddExtra(5, .right, .{}));
 
     // [toPairAddExtra()]
 
-    try equal(true, (Rel{ .around = 9 }).fits(9));
-    try equal(false, (Rel{ .around = 9 }).fits(10));
+    try equal(true, (View{ .around = 9 }).fits(9));
+    try equal(false, (View{ .around = 9 }).fits(10));
 }

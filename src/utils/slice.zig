@@ -283,9 +283,9 @@ pub fn trunc(
     T: type,
     slice: T,
     index: anytype,
-    comptime view_range: range.Rel,
+    comptime view_range: range.View,
     comptime trunc_mode: range.TruncMode,
-    comptime opt: range.Rel.Options,
+    comptime opt: range.View.Options,
 ) T {
     return truncIndices(slice, index, view_range, trunc_mode, opt).slice(T, slice);
 }
@@ -316,9 +316,9 @@ test trunc {
 pub fn truncIndices(
     slice: anytype,
     index: anytype,
-    comptime view_range: range.Rel,
+    comptime view_range: range.View,
     comptime trunc_mode: range.TruncMode,
-    comptime opt: range.Rel.Options,
+    comptime opt: range.View.Options,
 ) range.Range {
     if (meta.isNum(index)) {
         var pair = view_range.toPair(opt);
