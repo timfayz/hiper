@@ -48,13 +48,22 @@ pub fn Stack(T: type, length: ?usize) type {
             }
         } else struct {};
 
-        pub fn peek(s: *Self) T {
+        pub fn top(s: *const Self) T {
             return s.arr[s.len - 1];
         }
 
-        pub fn peekOrNull(s: *Self) ?T {
+        pub fn topOrNull(s: *const Self) ?T {
             if (s.nil) return null;
             return s.arr[s.len - 1];
+        }
+
+        pub fn bottom(s: *const Self) T {
+            return s.arr[0];
+        }
+
+        pub fn bottomOrNull(s: *const Self) ?T {
+            if (s.empty()) return null;
+            return s.arr[0];
         }
 
         pub fn pop(s: *Self) T {
@@ -161,7 +170,7 @@ test Stack {
     try t.expectEqual(s_size, s.len);
     try t.expectEqual(0, s.left());
     try t.expectEqual(true, s.full());
-    try t.expectEqual(9, s.peek());
+    try t.expectEqual(9, s.top());
     try t.expectError(error.OutOfSpace, s.push(1));
 
     // pop
@@ -175,7 +184,7 @@ test Stack {
     try t.expectEqual(0, s.len);
     try t.expectEqual(s_size, s.left());
     try t.expectEqual(false, s.full());
-    try t.expectEqual(null, s.peekOrNull());
+    try t.expectEqual(null, s.topOrNull());
 
     s.makeFull();
     try t.expectEqual(true, s.full());
