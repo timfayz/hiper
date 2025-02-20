@@ -78,8 +78,7 @@ test isTupleOf {
     try equal(true, isTupleOf(.{ true, false }, bool));
     try equal(true, isTupleOf(.{ 1, 2 }, comptime_int));
     try equal(false, isTupleOf(.{ 1, @as(f32, 2) }, comptime_int));
-    try equal(true, isTupleOf(.{struct { u1 }{1}}, struct { u1 }));
-    try equal(false, isTupleOf(struct { u1 }{1}, struct { u1 }));
+    try equal(true, isTupleOf(.{struct { u1, bool }{ 1, true }}, struct { u1, bool }));
     try equal(false, isTupleOf(1, u1));
 }
 
