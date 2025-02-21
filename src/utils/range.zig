@@ -2,6 +2,7 @@
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
 //! Public API:
+//! - Side
 //! - Dir
 //! - DirVal
 //! - DirPair
@@ -13,6 +14,13 @@
 const std = @import("std");
 const num = @import("num.zig");
 const meta = @import("meta.zig");
+
+pub const Side = enum {
+    left,
+    right,
+    both,
+    none,
+};
 
 pub const Dir = enum {
     left,

@@ -1,6 +1,9 @@
 // MIT License (c) Timur Fayzrakhmanov.
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
+//! Public API:
+//! - LineReader
+
 const std = @import("std");
 const stack = @import("stack.zig");
 const slice = @import("slice.zig");
@@ -8,7 +11,7 @@ const range = @import("range.zig");
 const assert = std.debug.assert;
 
 pub const LineReader = struct {
-    lines: stack.Stack([]const u8, 4096) = .{},
+    lines: stack.Stack([]const u8, 512) = .{},
     input: []const u8,
     start: usize,
     end: usize,
@@ -40,6 +43,11 @@ pub const LineReader = struct {
         l.end = index;
     }
 
+    pub fn setRange(l: *LineReader, start: usize, end: usize) void {
+        l.start = start;
+        l.end = end;
+    }
+
     pub fn movePosRight(l: *LineReader, amt: usize) void {
         l.end +|= amt;
         l.start = l.end;
@@ -52,6 +60,25 @@ pub const LineReader = struct {
 
     pub fn line(l: *const LineReader) []const u8 {
         return l.input[l.start..l.end];
+    }
+
+    pub fn endIsLineEnd(l: *const LineReader) bool {
+        return l.end == l.input.len or l.input.len == 0 or l.input[l.end] == '\n';
+    }
+
+    pub fn startIsLineStart(l: *const LineReader) bool {
+        return l.start == 0 or l.input.len == 0 or l.input[l.start - 1] == '\n';
+    }
+
+    pub fn truncatedLineSide(l: *const LineReader) range.Side {
+        return if (l.startIsLineStart() and l.endIsLineEnd())
+            .none
+        else if (l.startIsLineStart())
+            .right
+        else if (l.endIsLineEnd())
+            .left
+        else
+            .both;
     }
 
     pub fn pushLine(l: *LineReader) !void {
@@ -212,9 +239,9 @@ pub const LineReader = struct {
         }
     }
 
-    pub fn seekAndPushLineRange(l: *LineReader, comptime view_range: range.View) !usize {
-        if (view_range.len() == 0) return 0;
-        const plan = view_range.toPair(.{ .rshift_uneven = false });
+    pub fn seekAndPushLineRange(l: *LineReader, comptime line_range: range.View) !usize {
+        if (line_range.len() == 0) return 0;
+        const plan = line_range.toPair(.{ .rshift_uneven = false });
 
         try l.seekAndPushLines(.left, plan.left);
         if (l.totalPushed() > 1) l.reversePushed();
@@ -260,6 +287,55 @@ test LineReader {
     const t = std.testing;
     var lr = LineReader.init("", 0);
 
+    // [endIsLineEnd()]
+    {
+        lr.reset("\nline\n", 3);
+        //        0 12345 6
+        try t.expectEqual(false, lr.endIsLineEnd());
+
+        lr.end = 1;
+        try t.expectEqual(false, lr.endIsLineEnd());
+
+        lr.end = 5;
+        try t.expectEqual(true, lr.endIsLineEnd());
+
+        lr.end = 6;
+        try t.expectEqual(true, lr.endIsLineEnd());
+    }
+    // [startIsLineStart()]
+    {
+        lr.reset("\nline\n", 3);
+        //        0 12345 6
+        try t.expectEqual(false, lr.startIsLineStart());
+
+        lr.start = 0;
+        try t.expectEqual(true, lr.startIsLineStart());
+
+        lr.start = 1;
+        try t.expectEqual(true, lr.startIsLineStart());
+
+        lr.start = 5;
+        try t.expectEqual(false, lr.startIsLineStart());
+
+        lr.start = 6;
+        try t.expectEqual(true, lr.startIsLineStart());
+    }
+    // [truncatedLineSide()]
+    {
+        lr.reset("\nline\n", 3);
+        //        0 12345 6
+        lr.setRange(2, 3);
+        try t.expectEqual(.both, lr.truncatedLineSide());
+
+        lr.setRange(1, 5);
+        try t.expectEqual(.none, lr.truncatedLineSide());
+
+        lr.setRange(1, 3);
+        try t.expectEqual(.right, lr.truncatedLineSide());
+
+        lr.setRange(3, 5);
+        try t.expectEqual(.left, lr.truncatedLineSide());
+    }
     // [seekLineStart()]
     {
         lr.reset("line", 0);
