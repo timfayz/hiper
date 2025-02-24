@@ -35,6 +35,12 @@ pub const Dir = enum {
 pub const DirVal = union(Dir) {
     left: usize,
     right: usize,
+
+    pub fn val(self: DirVal) usize {
+        return switch (self) {
+            inline else => |v| v,
+        };
+    }
 };
 
 pub const DirPair = struct {
@@ -432,7 +438,7 @@ pub const View = union(enum) {
         }
         pair.extend(extra_dir, extra);
 
-        if (opt.shift) |shift| pair.shift(shift, shift.amt);
+        if (opt.shift) |shift| pair.shift(shift, shift.val());
         return pair;
     }
 
@@ -462,6 +468,14 @@ test View {
     try equal(10, (View{ .around = 10 }).len());
     try equal(10, (View{ .custom = .{ .left = 4, .right = 6 } }).len());
 
+    // [toPair()]
+
+    try equal(DirPair{ .left = 2, .right = 3 }, (View{ .around = 5 }).toPair(.{}));
+    // [.shift]
+    try equal(DirPair{ .left = 1, .right = 4 }, (View{ .around = 5 }).toPair(.{ .shift = .{ .right = 1 } }));
+    // [.rshift_uneven]
+    try equal(DirPair{ .left = 3, .right = 2 }, (View{ .around = 5 }).toPair(.{ .rshift_uneven = false }));
+
     // [toPairAddExtra()]
 
     // [.left mode]
@@ -474,11 +488,10 @@ test View {
     try equal(DirPair{ .left = 4, .right = 10 }, (View{ .right = 10 }).toPairAddExtra(4, .left, .{}));
     // [.around mode]
     try equal(DirPair{ .left = 4, .right = 5 }, (View{ .around = 9 }).toPairAddExtra(0, .right, .{}));
-    try equal(DirPair{ .left = 5, .right = 4 }, (View{ .around = 9 }).toPairAddExtra(0, .right, .{ .rshift_uneven = false }));
     try equal(DirPair{ .left = 9, .right = 5 }, (View{ .around = 9 }).toPairAddExtra(5, .left, .{}));
     try equal(DirPair{ .left = 4, .right = 10 }, (View{ .around = 9 }).toPairAddExtra(5, .right, .{}));
 
-    // [toPairAddExtra()]
+    // [fits()]
 
     try equal(true, (View{ .around = 9 }).fits(9));
     try equal(false, (View{ .around = 9 }).fits(10));
