@@ -86,19 +86,19 @@ pub fn Stack(T: type, length: ?usize) type {
             s.nil = false;
         }
 
-        pub fn cap(s: *Self) usize {
+        pub fn cap(s: *const Self) usize {
             return s.arr.len;
         }
 
-        pub fn left(s: *Self) usize {
+        pub fn left(s: *const Self) usize {
             return s.arr.len - s.len;
         }
 
-        pub fn empty(s: *Self) bool {
+        pub fn empty(s: *const Self) bool {
             return s.nil == true;
         }
 
-        pub fn full(s: *Self) bool {
+        pub fn full(s: *const Self) bool {
             return s.len == s.arr.len;
         }
 
