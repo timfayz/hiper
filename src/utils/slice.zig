@@ -323,11 +323,11 @@ pub fn truncIndices(
     if (meta.isNum(index)) {
         var pair = view_range.toPair(opt);
         if (view_range == .left and pair.left > 0) pair.shift(.right, 1);
-        return pair.toRange(index, range.initFromSlice(slice), trunc_mode);
+        return pair.toRangeWithin(index, range.initFromSlice(slice), trunc_mode);
     } else if (meta.isTuple(index) and index.len == 2) {
         const start, const end = num.orderPairAsc(index[0], index[1]);
         const pair = view_range.toPairAddExtra(end - start +| 1, .right, opt);
-        return pair.toRange(start, range.initFromSlice(slice), trunc_mode);
+        return pair.toRangeWithin(start, range.initFromSlice(slice), trunc_mode);
     }
 }
 
