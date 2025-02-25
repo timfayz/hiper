@@ -7,9 +7,9 @@
 //! - DirVal
 //! - DirPair
 //! - TruncMode
+//! - Range
 //! - init
 //! - initFromSlice
-//! - Range
 //! - View
 
 const std = @import("std");
@@ -75,11 +75,11 @@ pub const DirPair = struct {
         }
     }
 
-    pub fn distribute(self: *DirPair, amt: usize, comptime rshift_uneven: bool) void {
+    pub fn distribute(self: *DirPair, amt: usize, comptime around_rshift_odd: bool) void {
         self.left = amt / 2;
         self.right = amt / 2;
         if (amt & 1 != 0) { // compensate lost item during odd division
-            if (rshift_uneven) self.right +|= 1 else self.left +|= 1;
+            if (around_rshift_odd) self.right +|= 1 else self.left +|= 1;
         }
     }
 
@@ -415,42 +415,65 @@ pub const View = union(enum) {
     custom: DirPair,
 
     pub const Options = struct {
-        rshift_uneven: bool = true,
+        around_rshift_odd: bool = true,
         shift: ?DirVal = null,
     };
-
-    pub fn toPair(self: View, comptime opt: Options) DirPair {
-        return self.toPairAddExtra(0, .right, opt);
-    }
-
-    pub fn toPairAddExtra(
-        self: View,
-        extra: usize,
-        comptime extra_dir: Dir,
-        comptime opt: Options,
-    ) DirPair {
-        var pair: DirPair = .{ .left = 0, .right = 0 };
-        switch (self) {
-            .left => pair.left = self.len(),
-            .right => pair.right = self.len(),
-            .around => pair.distribute(self.len(), opt.rshift_uneven),
-            .custom => |amt| pair = .{ .left = amt.left, .right = amt.right },
-        }
-        pair.extend(extra_dir, extra);
-
-        if (opt.shift) |shift| pair.shift(shift, shift.val());
-        return pair;
-    }
-
-    pub fn fits(self: View, range: usize) bool {
-        return self.len() >= range;
-    }
 
     pub fn len(self: View) usize {
         return switch (self) {
             .custom => |amt| amt.left +| amt.right,
             inline else => |amt| amt orelse std.math.maxInt(usize),
         };
+    }
+
+    pub fn fits(self: View, range: usize) bool {
+        return self.len() >= range;
+    }
+
+    pub fn toPair(self: View, comptime opt: Options) DirPair {
+        return self.toPairAddExtra(0, .right, opt);
+    }
+
+    pub fn toPairAddExtra(self: View, extra: usize, comptime extra_dir: Dir, comptime opt: Options) DirPair {
+        var pair: DirPair = .{ .left = 0, .right = 0 };
+        switch (self) {
+            .left => pair.left = self.len(),
+            .right => pair.right = self.len(),
+            .around => pair.distribute(self.len(), opt.around_rshift_odd),
+            .custom => |amt| pair = .{ .left = amt.left, .right = amt.right },
+        }
+        pair.extend(extra_dir, extra);
+        if (opt.shift) |shift| pair.shift(shift, shift.val());
+        return pair;
+    }
+
+    pub fn toPairFitExtra(
+        self: View,
+        extra: usize,
+        comptime extra_dir: Dir,
+        comptime fit_pad: ?DirVal,
+        comptime opt: Options,
+    ) DirPair {
+        var pair: DirPair = .{ .left = 0, .right = 0 };
+        const view_len = self.len();
+        const extra_fitted = @min(view_len, extra);
+        switch (self) {
+            .left => pair.left = self.len() - extra_fitted,
+            .right => pair.right = self.len() - extra_fitted,
+            .around => pair.distribute(self.len() - extra_fitted, opt.around_rshift_odd),
+            .custom => |amt| pair = .{ .left = amt.left, .right = amt.right },
+        }
+        pair.extend(extra_dir, extra_fitted);
+        if (fit_pad) |pad| switch (pad) {
+            .left => |fit_val| {
+                if (pair.left < fit_val) pair.shift(.left, @min(view_len, fit_val) - pair.left);
+            },
+            .right => |fit_val| {
+                if (pair.right < fit_val) pair.shift(.right, @min(view_len, fit_val) - pair.right);
+            },
+        };
+        if (opt.shift) |shift| pair.shift(shift, shift.val());
+        return pair;
     }
 };
 
@@ -468,13 +491,18 @@ test View {
     try equal(10, (View{ .around = 10 }).len());
     try equal(10, (View{ .custom = .{ .left = 4, .right = 6 } }).len());
 
+    // [fits()]
+
+    try equal(true, (View{ .around = 10 }).fits(10));
+    try equal(false, (View{ .around = 10 }).fits(11));
+
     // [toPair()]
 
     try equal(DirPair{ .left = 2, .right = 3 }, (View{ .around = 5 }).toPair(.{}));
     // [.shift]
     try equal(DirPair{ .left = 1, .right = 4 }, (View{ .around = 5 }).toPair(.{ .shift = .{ .right = 1 } }));
-    // [.rshift_uneven]
-    try equal(DirPair{ .left = 3, .right = 2 }, (View{ .around = 5 }).toPair(.{ .rshift_uneven = false }));
+    // [.around_rshift_odd]
+    try equal(DirPair{ .left = 3, .right = 2 }, (View{ .around = 5 }).toPair(.{ .around_rshift_odd = false }));
 
     // [toPairAddExtra()]
 
@@ -487,12 +515,18 @@ test View {
     try equal(DirPair{ .left = 0, .right = 14 }, (View{ .right = 10 }).toPairAddExtra(4, .right, .{}));
     try equal(DirPair{ .left = 4, .right = 10 }, (View{ .right = 10 }).toPairAddExtra(4, .left, .{}));
     // [.around mode]
-    try equal(DirPair{ .left = 4, .right = 5 }, (View{ .around = 9 }).toPairAddExtra(0, .right, .{}));
-    try equal(DirPair{ .left = 9, .right = 5 }, (View{ .around = 9 }).toPairAddExtra(5, .left, .{}));
-    try equal(DirPair{ .left = 4, .right = 10 }, (View{ .around = 9 }).toPairAddExtra(5, .right, .{}));
+    try equal(DirPair{ .left = 5, .right = 5 }, (View{ .around = 10 }).toPairAddExtra(0, .right, .{}));
+    try equal(DirPair{ .left = 10, .right = 5 }, (View{ .around = 10 }).toPairAddExtra(5, .left, .{}));
+    try equal(DirPair{ .left = 5, .right = 10 }, (View{ .around = 10 }).toPairAddExtra(5, .right, .{}));
 
-    // [fits()]
+    // [toPairFitExtra()]
 
-    try equal(true, (View{ .around = 9 }).fits(9));
-    try equal(false, (View{ .around = 9 }).fits(10));
+    try equal(DirPair{ .left = 2, .right = 8 }, (View{ .around = 10 }).toPairFitExtra(5, .right, null, .{}));
+    try equal(DirPair{ .left = 5, .right = 5 }, (View{ .around = 10 }).toPairFitExtra(5, .right, .{ .left = 5 }, .{}));
+    // excessive fitting pad
+    try equal(DirPair{ .left = 10, .right = 0 }, (View{ .around = 10 }).toPairFitExtra(5, .right, .{ .left = 11 }, .{}));
+    try equal(DirPair{ .left = 0, .right = 10 }, (View{ .around = 10 }).toPairFitExtra(5, .right, .{ .right = 11 }, .{}));
+    // excessive extra
+    try equal(DirPair{ .left = 0, .right = 10 }, (View{ .around = 10 }).toPairFitExtra(15, .right, null, .{}));
+    try equal(DirPair{ .left = 10, .right = 0 }, (View{ .around = 10 }).toPairFitExtra(15, .left, null, .{}));
 }

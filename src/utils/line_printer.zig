@@ -12,7 +12,7 @@ const slice = @import("slice.zig");
 const range = @import("range.zig");
 const num = @import("num.zig");
 const meta = @import("meta.zig");
-const lr = @import("line_reader.zig");
+const lr = @import("lr.zig");
 
 /// Line printing options.
 pub const PrintOptions = struct {
@@ -66,8 +66,8 @@ pub fn printLines(
     const start: usize, const end: usize = if (meta.isTuple(index)) num.orderPairAsc(index[0], index[1]) else .{ index, index };
     const index_range = end - start +| 1;
 
-    const first = try lr.readLines(&lines_buf, input, start, amount, true);
-    if (first.isEmpty()) return;
+    const first = try lr.readLines(&lines_buf, input, start, amount);
+    if (first.empty()) return;
 
     var view_segs = stack.init(range.Range, 2);
 
@@ -269,7 +269,7 @@ test printLines {
     , string(&buf));
 
     // [.trunc_sym]
-    try printLinesWithCursor(w, "hello world", 5, .{ .around = 5 }, .{ .right = 1 }, 1, .{
+    try printLinesWithCursor(w, "hello world", 5, .{ .around = 4 }, .{ .right = 1 }, 1, .{
         .trunc_sym = "--",
     });
     try equal(
@@ -321,7 +321,7 @@ test printLines {
     , string(&buf));
 
     // // [.backward] read, [.around] mode, trunc [.hard_flex]
-    try printLinesWithCursor(w, input, 85, .{ .around = 5 }, .{ .left = 6 }, null, .{
+    try printLinesWithCursor(w, input, 85, .{ .around = 4 }, .{ .left = 6 }, null, .{
         .trunc_mode = .hard_flex,
         .show_cursor_hint = true,
     });

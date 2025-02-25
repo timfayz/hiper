@@ -293,17 +293,21 @@ pub fn trunc(
 test trunc {
     const equal = std.testing.expectEqualStrings;
 
-    // [relative index]
-    try equal("", trunc([]const u8, "01234567", 4, .{ .around = 0 }, .hard, .{}));
-    //                                   ^
-    try equal("345", trunc([]const u8, "01234567", 4, .{ .around = 3 }, .hard, .{}));
+    // [around index]
+    try equal("", trunc([]const u8, "01234567", 8, .{ .around = 0 }, .hard, .{}));
+    //                                       ^
+    try equal("4", trunc([]const u8, "01234567", 4, .{ .around = 0 }, .hard, .{}));
+    //                                    ^
+    try equal("345", trunc([]const u8, "01234567", 4, .{ .around = 2 }, .hard, .{}));
     //                                     ~^~
-    try equal("234", trunc([]const u8, "01234567", 4, .{ .left = 3 }, .hard, .{}));
+    try equal("234", trunc([]const u8, "01234567", 4, .{ .left = 2 }, .hard, .{}));
     //                                    ~~^
-    try equal("456", trunc([]const u8, "01234567", 4, .{ .right = 3 }, .hard, .{}));
+    try equal("456", trunc([]const u8, "01234567", 4, .{ .right = 2 }, .hard, .{}));
     //                                      ^~~
 
     // [relative range]
+    try equal("3456", trunc([]const u8, "0123456789", .{ 4, 4 }, .{ .around = 3 }, .hard, .{}));
+    //                                      ~^~~
     try equal("345678", trunc([]const u8, "0123456789", .{ 4, 6 }, .{ .around = 3 }, .hard, .{}));
     //                                        ~^^^~~
     try equal("23456", trunc([]const u8, "0123456789", .{ 4, 6 }, .{ .left = 2 }, .hard, .{}));
@@ -321,8 +325,7 @@ pub fn truncIndices(
     comptime opt: range.View.Options,
 ) range.Range {
     if (meta.isNum(index)) {
-        var pair = view_range.toPair(opt);
-        if (view_range == .left and pair.left > 0) pair.shift(.right, 1);
+        var pair = view_range.toPairAddExtra(1, .right, opt);
         return pair.toRangeWithin(index, range.initFromSlice(slice), trunc_mode);
     } else if (meta.isTuple(index) and index.len == 2) {
         const start, const end = num.orderPairAsc(index[0], index[1]);
@@ -335,11 +338,11 @@ test truncIndices {
     const equal = std.testing.expectEqualDeep;
 
     // [around index]
-    try equal(range.init(3, 6), truncIndices("01234567", 4, .{ .around = 3 }, .hard, .{}));
+    try equal(range.init(3, 6), truncIndices("01234567", 4, .{ .around = 2 }, .hard, .{}));
     //                                           ~^~
-    try equal(range.init(2, 5), truncIndices("01234567", 4, .{ .left = 3 }, .hard, .{}));
+    try equal(range.init(2, 5), truncIndices("01234567", 4, .{ .left = 2 }, .hard, .{}));
     //                                          ~~^
-    try equal(range.init(4, 7), truncIndices("01234567", 4, .{ .right = 3 }, .hard, .{}));
+    try equal(range.init(4, 7), truncIndices("01234567", 4, .{ .right = 2 }, .hard, .{}));
     //                                            ^~~
 
     // [around range]

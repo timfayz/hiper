@@ -5,13 +5,23 @@
 //! - LineReader
 //! - ReadLines
 //! - readLines
+//! - readLinesWithin
+//! - ReadLine
+//! - readLineWithin
+//! - readLineAround
+//! - readLineAroundRange
+//! - countLineNum
 
 const std = @import("std");
 const stack = @import("stack.zig");
 const slice = @import("slice.zig");
 const range = @import("range.zig");
+const num = @import("num.zig");
 const assert = std.debug.assert;
+const t = std.testing;
 
+/// A line retriever that can stack-allocate its own buffer (`buf_len != null`)
+/// for retrieved lines or use an externally provided one (`buf_len == null`).
 pub fn LineReader(buf_len: ?usize) type {
     return struct {
         lines: stack.Stack([]const u8, buf_len) = .{},
@@ -260,7 +270,7 @@ pub fn LineReader(buf_len: ?usize) type {
 
         pub fn seekAndPushLineRange(l: *Self, comptime line_range: range.View) !usize {
             if (line_range.len() == 0) return 0;
-            const plan = line_range.toPair(.{ .rshift_uneven = false });
+            const plan = line_range.toPair(.{ .around_rshift_odd = false });
 
             try l.seekAndPushLines(.left, plan.left);
             if (l.totalPushed() > 1) l.reversePushed();
@@ -278,7 +288,7 @@ pub fn LineReader(buf_len: ?usize) type {
             hard_cut: bool,
         ) !usize {
             if (line_range.len() == 0) return 0;
-            const plan = line_range.toPair(.{ .rshift_uneven = false });
+            const plan = line_range.toPair(.{ .around_rshift_odd = false });
 
             try l.seekAndPushLinesWithin(.left, plan.left, within, hard_cut);
             if (l.totalPushed() > 1) l.reversePushed();
@@ -322,7 +332,6 @@ pub fn LineReader(buf_len: ?usize) type {
 }
 
 test LineReader {
-    const t = std.testing;
     var lr = LineReader(512).init("", 0);
 
     // [endIsLineEnd()]
@@ -648,6 +657,7 @@ test LineReader {
     }
 }
 
+/// The result of a multiline read.
 pub const ReadLines = struct {
     lines: []const []const u8,
     /// Position of the current line where the index was located.
@@ -685,6 +695,7 @@ pub const ReadLines = struct {
     }
 };
 
+/// Retrieves a specified number of lines starting from the given index.
 pub fn readLines(
     buf: [][]const u8,
     input: []const u8,
@@ -694,17 +705,11 @@ pub fn readLines(
     var lr = LineReader(null).init(buf, input, index);
     const curr_line_pos = try lr.seekAndPushLineRange(line_range);
     const start_idx = if (!lr.isEmpty()) slice.startIndex(input, lr.pushed()[curr_line_pos]) else 0;
-    return ReadLines{
-        .curr_line_pos = curr_line_pos,
-        .index_pos = index - start_idx,
-        .lines = lr.pushed(),
-    };
+    return .{ .curr_line_pos = curr_line_pos, .index_pos = index - start_idx, .lines = lr.pushed() };
 }
 
 test readLines {
-    const t = std.testing;
-
-    var buf: [3][]const u8 = undefined;
+    var buf: [2][]const u8 = undefined;
     const res = try readLines(&buf, "hello\nworld", 7, .{ .around = 3 });
     //                                       ^
     try t.expectEqual(2, res.total());
@@ -712,4 +717,134 @@ test readLines {
     try t.expectEqualStrings("hello", res.first());
     try t.expectEqual(1, res.curr_line_pos);
     try t.expectEqual(1, res.index_pos);
+}
+
+/// Retrieves the number of lines within the specified index range.
+pub fn readLinesWithin(
+    buf: [][]const u8,
+    input: []const u8,
+    index: usize,
+    comptime line_range: range.View,
+    within: range.Range,
+) !ReadLines {
+    var lr = LineReader(null).init(buf, input, index);
+    const curr_line_pos = try lr.seekAndPushLineRangeWithin(line_range, within);
+    const start_idx = if (!lr.isEmpty()) slice.startIndex(input, lr.pushed()[curr_line_pos]) else 0;
+    return .{ .curr_line_pos = curr_line_pos, .index_pos = index - start_idx, .lines = lr.pushed() };
+}
+
+/// The result of single line read: the line and its relative index position.
+pub const ReadLine = struct { []const u8, usize };
+
+pub fn readLineWithin(input: []const u8, index: usize, within: range.Range) ReadLine {
+    var lr = LineReader(0).init(input, index);
+    lr.seekLineWithin(within);
+    return .{ lr.line(), index - lr.start };
+}
+
+test readLineWithin {
+    const line, const index_pos = readLineWithin("hello world", 5, .{ .start = 3, .end = 8 });
+    //                                                 ^
+    try t.expectEqualStrings("lo wo", line);
+    try t.expectEqual(2, index_pos);
+}
+
+pub const ReadLineOptions = struct {
+    trunc_mode: range.TruncMode = .hard,
+    view_opt: range.View.Options = .{},
+    fit_pad: ?range.DirVal = null,
+    extra_dir: range.Dir = .right,
+};
+
+/// Retrieve a line span around the given index.
+pub fn readLineAround(
+    input: []const u8,
+    index: usize,
+    comptime view: range.View,
+    comptime opt: ReadLineOptions,
+) ReadLine {
+    const within = view
+        .toPairAddExtra(1, .right, .{})
+        .toRangeWithin(index, range.initFromSlice(input), opt.trunc_mode);
+    return readLineWithin(input, index, within);
+}
+
+test readLineAround {
+    const line, const index_pos = readLineAround("hello world", 5, .{ .around = 4 }, .{});
+    //                                                     ^
+    try t.expectEqualStrings("lo wo", line);
+    try t.expectEqual(2, index_pos);
+}
+
+/// Retrieve a line span around the given index with an additional extra range.
+pub fn readLineAroundRange(
+    input: []const u8,
+    index: usize,
+    extra: usize,
+    comptime view: range.View,
+    comptime opt: ReadLineOptions,
+) ReadLine {
+    const pair = if (opt.fit_pad != null)
+        view.toPairFitExtra(extra, opt.extra_dir, opt.fit_pad, .{})
+    else
+        view.toPairAddExtra(extra, opt.extra_dir, .{});
+    const within = pair.toRangeWithin(index, range.initFromSlice(input), opt.trunc_mode);
+    return readLineWithin(input, index, within);
+}
+
+test readLineAroundRange {
+    const line, const index_pos =
+        readLineAroundRange("var x = 'string';", 8, 8, .{ .around = 10 }, .{ .fit_pad = .{ .left = 2 } });
+    //                               ^
+    try t.expectEqualStrings("= 'string'", line);
+    try t.expectEqual(2, index_pos);
+}
+
+/// Counts the number of lines in input between start and end indices.
+/// If `start > end`, their values are automatically swapped. Returns 1 if
+/// `start == end`. Line numbering starts from 1.
+pub fn countLineNum(input: []const u8, start: usize, end: usize) usize {
+    var from: usize, var until = num.orderPairAsc(start, end);
+    if (until >= input.len) until = input.len; // normalize
+
+    var line_num: usize = 1;
+    while (from < until) : (from += 1) {
+        if (input[from] == '\n') line_num += 1;
+    }
+    return line_num;
+}
+
+test countLineNum {
+    try t.expectEqual(1, countLineNum("", 0, 0));
+    try t.expectEqual(1, countLineNum("", 100, 100));
+    try t.expectEqual(2, countLineNum("\n", 0, 1));
+    //                                 ^ ^
+    try t.expectEqual(2, countLineNum("\n", 0, 100));
+    //                                 ^   ^
+    try t.expectEqual(2, countLineNum("\n", 100, 0));
+    //                                 ^   ^
+    try t.expectEqual(2, countLineNum("\n\n", 0, 1));
+    //                                 ^ ^
+    try t.expectEqual(3, countLineNum("\n\n", 0, 2));
+    //                                 ^   ^
+    try t.expectEqual(2, countLineNum("\n\n", 1, 2));
+    //                                   ^ ^
+    try t.expectEqual(2, countLineNum("\n\n", 2, 1));
+    //                                   ^ ^
+    try t.expectEqual(1, countLineNum("\n\n", 3, 4));
+    //                                      ^^
+    try t.expectEqual(1, countLineNum("l1\nl2\nl3", 0, 0));
+    //                                 ^
+    try t.expectEqual(2, countLineNum("l1\nl2\nl3", 0, 3));
+    //                                 ^   ^
+    try t.expectEqual(3, countLineNum("l1\nl2\nl3", 0, 6));
+    //                                 ^       ^
+    try t.expectEqual(3, countLineNum("l1\nl2\nl3", 0, 7));
+    //                                 ^        ^
+    try t.expectEqual(3, countLineNum("l1\nl2\nl3", 7, 0));
+    //                                 ^        ^
+    try t.expectEqual(3, countLineNum("l1\nl2\nl3", 2, 6));
+    //                                   ^     ^
+    try t.expectEqual(3, countLineNum("l1\nl2\nl3", 6, 2));
+    //                                   ^     ^
 }
