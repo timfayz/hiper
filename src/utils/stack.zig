@@ -16,7 +16,6 @@ const IntFittingRange = std.math.IntFittingRange;
 /// `length` is null, the stack is slice-based and must be initialized from a
 /// slice using `initFull`, `initEmpty`, or `initFilled`.
 pub fn Stack(T: type, length: ?usize) type {
-    if (length) |l| if (l == 0) @compileError("stack length cannot be zero");
     return struct {
         arr: if (length) |l| [l]T else []T = undefined,
         len: if (length) |l| IntFittingRange(0, l) else usize = 0,
