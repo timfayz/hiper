@@ -9,14 +9,15 @@
 const std = @import("std");
 const stack = @import("stack.zig");
 const slice = @import("slice.zig");
-const range = @import("range.zig");
+const Range = @import("span.zig").Range;
+const Dir = @import("span.zig").Dir;
 const num = @import("num.zig");
 const meta = @import("meta.zig");
 const lr = @import("lr.zig");
 
 /// Line printing options.
 pub const PrintOptions = struct {
-    trunc_mode: range.TruncMode = .hard_flex,
+    trunc_mode: Range.TruncMode = .hard_flex,
     trunc_sym: []const u8 = "..",
     show_line_num: bool = true,
     line_num_sep: []const u8 = "| ",
@@ -37,8 +38,8 @@ fn printLinesWithCursor(
     writer: anytype,
     input: []const u8,
     index: anytype,
-    comptime mode: range.View,
-    comptime amount: range.View,
+    comptime mode: Range.View,
+    comptime amount: Range.View,
     line_num: ?usize,
     comptime opt: PrintOptions,
 ) !void {
@@ -55,8 +56,8 @@ pub fn printLines(
     writer: anytype,
     input: []const u8,
     index: anytype,
-    comptime view_range: range.View,
-    comptime amount: range.View,
+    comptime view_range: Range.View,
+    comptime amount: Range.View,
     line_num: ?usize,
     comptime opt: PrintOptions,
 ) !void {
@@ -69,7 +70,7 @@ pub fn printLines(
     const first = try lr.readLines(&lines_buf, input, start, amount);
     if (first.empty()) return;
 
-    var view_segs = stack.init(range.Range, 2);
+    var view_segs = stack.init(Range, 2);
 
     if (index_range == 1) {
         const curr_line_view = slice.truncIndices(first.curr(), first.index_pos, view_range, opt.trunc_mode, .{});
@@ -93,7 +94,7 @@ fn renderLines(
     writer: anytype,
     input: []const u8,
     index: usize,
-    line_view_segs: []range.Range,
+    line_view_segs: []Range,
     lines: []const []const u8,
     curr_line_pos: usize,
     curr_line_num: usize,

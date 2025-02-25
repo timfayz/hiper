@@ -22,7 +22,8 @@
 
 const std = @import("std");
 const num = @import("num.zig");
-const range = @import("range.zig");
+const Range = @import("span.zig").Range;
+const Dir = @import("span.zig").Dir;
 const err = @import("err.zig");
 const meta = @import("meta.zig");
 const mem = std.mem;
@@ -170,7 +171,7 @@ test contains {
 }
 
 /// Extends slice to the right or left by the given size (no safety checks).
-pub fn extend(comptime dir: range.Dir, T: type, slice: T, size: usize) T {
+pub fn extend(comptime dir: Dir, T: type, slice: T, size: usize) T {
     return if (dir == .right)
         slice.ptr[0 .. slice.len + size]
     else
@@ -200,7 +201,7 @@ test joint {
 }
 
 /// Extends slice to the right or left by the elements of extension (no safety checks).
-pub fn join(comptime dir: range.Dir, T: type, base: T, extension: T) err.InvalidLayout!T {
+pub fn join(comptime dir: Dir, T: type, base: T, extension: T) err.InvalidLayout!T {
     if (dir == .right) {
         if (!joint(base, extension)) return error.InvalidLayout;
         return base.ptr[0 .. base.len + extension.len];
@@ -294,9 +295,9 @@ pub fn trunc(
     T: type,
     slice: T,
     index: anytype,
-    comptime view_range: range.View,
-    comptime trunc_mode: range.TruncMode,
-    comptime opt: range.View.Options,
+    comptime view_range: Range.View,
+    comptime trunc_mode: Range.TruncMode,
+    comptime opt: Range.View.Options,
 ) T {
     return truncIndices(slice, index, view_range, trunc_mode, opt).slice(T, slice);
 }
@@ -329,42 +330,42 @@ test trunc {
 pub fn truncIndices(
     slice: anytype,
     index: anytype,
-    comptime view_range: range.View,
-    comptime trunc_mode: range.TruncMode,
-    comptime opt: range.View.Options,
-) range.Range {
+    comptime view_range: Range.View,
+    comptime trunc_mode: Range.TruncMode,
+    comptime opt: Range.View.Options,
+) Range {
     if (meta.isNum(index)) {
         var pair = view_range.toPairAddExtra(1, .right, opt);
-        return pair.toRangeWithin(index, range.initFromSlice(slice), trunc_mode);
+        return pair.toRangeWithin(index, Range.initFromSlice(slice), trunc_mode);
     } else if (meta.isTuple(index) and index.len == 2) {
         const start, const end = num.orderPairAsc(index[0], index[1]);
         const pair = view_range.toPairAddExtra(end - start +| 1, .right, opt);
-        return pair.toRangeWithin(start, range.initFromSlice(slice), trunc_mode);
+        return pair.toRangeWithin(start, Range.initFromSlice(slice), trunc_mode);
     }
 }
 
 test truncIndices {
     // [around index]
-    try t.expectEqualDeep(range.init(3, 6), truncIndices("01234567", 4, .{ .around = 2 }, .hard, .{}));
+    try t.expectEqualDeep(Range.init(3, 6), truncIndices("01234567", 4, .{ .around = 2 }, .hard, .{}));
     //                                                       ~^~
-    try t.expectEqualDeep(range.init(2, 5), truncIndices("01234567", 4, .{ .left = 2 }, .hard, .{}));
+    try t.expectEqualDeep(Range.init(2, 5), truncIndices("01234567", 4, .{ .left = 2 }, .hard, .{}));
     //                                                      ~~^
-    try t.expectEqualDeep(range.init(4, 7), truncIndices("01234567", 4, .{ .right = 2 }, .hard, .{}));
+    try t.expectEqualDeep(Range.init(4, 7), truncIndices("01234567", 4, .{ .right = 2 }, .hard, .{}));
     //                                                        ^~~
 
     // [around range]
-    try t.expectEqualDeep(range.init(3, 9), truncIndices("0123456789", .{ 4, 6 }, .{ .around = 3 }, .hard, .{}));
+    try t.expectEqualDeep(Range.init(3, 9), truncIndices("0123456789", .{ 4, 6 }, .{ .around = 3 }, .hard, .{}));
     //                                                       ~^^^~~
-    try t.expectEqualDeep(range.init(2, 7), truncIndices("0123456789", .{ 4, 6 }, .{ .left = 2 }, .hard, .{}));
+    try t.expectEqualDeep(Range.init(2, 7), truncIndices("0123456789", .{ 4, 6 }, .{ .left = 2 }, .hard, .{}));
     //                                                      ~~^^^
-    try t.expectEqualDeep(range.init(4, 9), truncIndices("0123456789", .{ 4, 6 }, .{ .right = 2 }, .hard, .{}));
+    try t.expectEqualDeep(Range.init(4, 9), truncIndices("0123456789", .{ 4, 6 }, .{ .right = 2 }, .hard, .{}));
     //                                                        ^^^~~
 }
 
 /// Moves a valid segment to the start or end of the slice, returning an error
 /// if it’s from a different origin or exceeds `buf_size`.
 pub fn move(
-    comptime dir: range.Dir,
+    comptime dir: Dir,
     comptime buf_size: usize,
     T: type,
     base: []T,

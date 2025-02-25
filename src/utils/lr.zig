@@ -15,7 +15,8 @@
 const std = @import("std");
 const stack = @import("stack.zig");
 const slice = @import("slice.zig");
-const range = @import("range.zig");
+const Range = @import("span.zig").Range;
+const Dir = @import("span.zig").Dir;
 const num = @import("num.zig");
 const assert = std.debug.assert;
 const t = std.testing;
@@ -72,7 +73,7 @@ pub fn LineReader(buf_len: ?usize) type {
             l.end = end;
         }
 
-        pub fn setPosFromRange(l: *Self, rng: range.Range) void {
+        pub fn setPosFromRange(l: *Self, rng: Range) void {
             l.start = rng.start;
             l.end = rng.end;
         }
@@ -99,9 +100,9 @@ pub fn LineReader(buf_len: ?usize) type {
             return l.start == 0 or l.input.len == 0 or l.input[l.start - 1] == '\n';
         }
 
-        pub fn truncatedLineSide(l: *const Self) range.Side {
+        pub fn truncatedLineSide(l: *const Self) ?Dir.Side {
             return if (l.startIsLineStart() and l.endIsLineEnd())
-                .none
+                null
             else if (l.startIsLineStart())
                 .right
             else if (l.endIsLineEnd())
@@ -185,7 +186,7 @@ pub fn LineReader(buf_len: ?usize) type {
             l.seekLineEnd();
         }
 
-        pub fn seekLineWithin(l: *Self, within: range.Range) void {
+        pub fn seekLineWithin(l: *Self, within: Range) void {
             assert(within.start <= l.start);
             assert(within.end >= l.end);
             l.seekLineStartUntil(within.start);
@@ -197,12 +198,12 @@ pub fn LineReader(buf_len: ?usize) type {
             try l.pushLine();
         }
 
-        pub fn seekAndPushLineWithin(l: *Self, within: range.Range) !void {
+        pub fn seekAndPushLineWithin(l: *Self, within: Range) !void {
             l.seekLineWithin(within);
             try l.pushLine();
         }
 
-        pub fn seekAndPushLines(l: *Self, comptime dir: range.Dir, amt: ?usize) !void {
+        pub fn seekAndPushLines(l: *Self, comptime dir: Dir, amt: ?usize) !void {
             var left = amt orelse std.math.maxInt(usize);
             if (left == 0)
                 return;
@@ -233,9 +234,9 @@ pub fn LineReader(buf_len: ?usize) type {
 
         pub fn seekAndPushLinesWithin(
             l: *Self,
-            comptime dir: range.Dir,
+            comptime dir: Dir,
             amt: ?usize,
-            within: range.Range,
+            within: Range,
             hard_cut: bool,
         ) !void {
             assert(within.start <= l.start);
@@ -268,7 +269,7 @@ pub fn LineReader(buf_len: ?usize) type {
             }
         }
 
-        pub fn seekAndPushLineRange(l: *Self, comptime line_range: range.View) !usize {
+        pub fn seekAndPushLineRange(l: *Self, comptime line_range: Range.View) !usize {
             if (line_range.len() == 0) return 0;
             const plan = line_range.toPair(.{ .around_rshift_odd = false });
 
@@ -283,8 +284,8 @@ pub fn LineReader(buf_len: ?usize) type {
 
         pub fn seekAndPushLineRangeWithin(
             l: *Self,
-            comptime line_range: range.View,
-            within: range.Range,
+            comptime line_range: Range.View,
+            within: Range,
             hard_cut: bool,
         ) !usize {
             if (line_range.len() == 0) return 0;
@@ -375,7 +376,7 @@ test LineReader {
         try t.expectEqual(.both, lr.truncatedLineSide());
 
         lr.setStartEndPos(1, 5);
-        try t.expectEqual(.none, lr.truncatedLineSide());
+        try t.expectEqual(null, lr.truncatedLineSide());
 
         lr.setStartEndPos(1, 3);
         try t.expectEqual(.right, lr.truncatedLineSide());
@@ -700,7 +701,7 @@ pub fn readLines(
     buf: [][]const u8,
     input: []const u8,
     index: usize,
-    comptime line_range: range.View,
+    comptime line_range: Range.View,
 ) !ReadLines {
     var lr = LineReader(null).init(buf, input, index);
     const curr_line_pos = try lr.seekAndPushLineRange(line_range);
@@ -724,8 +725,8 @@ pub fn readLinesWithin(
     buf: [][]const u8,
     input: []const u8,
     index: usize,
-    comptime line_range: range.View,
-    within: range.Range,
+    comptime line_range: Range.View,
+    within: Range,
 ) !ReadLines {
     var lr = LineReader(null).init(buf, input, index);
     const curr_line_pos = try lr.seekAndPushLineRangeWithin(line_range, within);
@@ -736,7 +737,7 @@ pub fn readLinesWithin(
 /// The result of single line read: the line and its relative index position.
 pub const ReadLine = struct { []const u8, usize };
 
-pub fn readLineWithin(input: []const u8, index: usize, within: range.Range) ReadLine {
+pub fn readLineWithin(input: []const u8, index: usize, within: Range) ReadLine {
     var lr = LineReader(0).init(input, index);
     lr.seekLineWithin(within);
     return .{ lr.line(), index - lr.start };
@@ -750,22 +751,22 @@ test readLineWithin {
 }
 
 pub const ReadLineOptions = struct {
-    trunc_mode: range.TruncMode = .hard,
-    view_opt: range.View.Options = .{},
-    fit_pad: ?range.DirVal = null,
-    extra_dir: range.Dir = .right,
+    trunc_mode: Range.TruncMode = .hard,
+    view_opt: Range.View.Options = .{},
+    fit_pad: ?Dir.One = null,
+    extra_dir: Dir = .right,
 };
 
 /// Retrieve a line span around the given index.
 pub fn readLineAround(
     input: []const u8,
     index: usize,
-    comptime view: range.View,
+    comptime view: Range.View,
     comptime opt: ReadLineOptions,
 ) ReadLine {
     const within = view
         .toPairAddExtra(1, .right, .{})
-        .toRangeWithin(index, range.initFromSlice(input), opt.trunc_mode);
+        .toRangeWithin(index, Range.initFromSlice(input), opt.trunc_mode);
     return readLineWithin(input, index, within);
 }
 
@@ -781,14 +782,14 @@ pub fn readLineAroundRange(
     input: []const u8,
     index: usize,
     extra: usize,
-    comptime view: range.View,
+    comptime view: Range.View,
     comptime opt: ReadLineOptions,
 ) ReadLine {
     const pair = if (opt.fit_pad != null)
         view.toPairFitExtra(extra, opt.extra_dir, opt.fit_pad, .{})
     else
         view.toPairAddExtra(extra, opt.extra_dir, .{});
-    const within = pair.toRangeWithin(index, range.initFromSlice(input), opt.trunc_mode);
+    const within = pair.toRangeWithin(index, Range.initFromSlice(input), opt.trunc_mode);
     return readLineWithin(input, index, within);
 }
 
