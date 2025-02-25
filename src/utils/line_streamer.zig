@@ -20,10 +20,9 @@ pub const LineStreamerOptions = struct {
     lock_stderr_on_flush: bool = false,
 };
 
-/// A writer that streams the buffer line by line. If a line exceeds the buffer,
-/// it splits it by the buffer size. To render lines correctly, lines should not
-/// exceed `buffer_size - 1`. After writing is complete, use `flush()` to write
-/// out the remaining buffered data.
+/// A writer that streams the buffer line by line. For correct rendering, lines
+/// should not exceed `buffer_size - 1`. After writing is complete, use `flush()`
+/// to write out the remaining data.
 pub fn LineStreamer(WriterType: type, buffer_size: usize, opt: LineStreamerOptions) type {
     if (buffer_size < 1) @compileError("buffer_size cannot be less than 1");
     return struct {
