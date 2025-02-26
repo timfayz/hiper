@@ -100,17 +100,6 @@ pub fn LineReader(buf_len: ?usize) type {
             return l.start == 0 or l.input.len == 0 or l.input[l.start - 1] == '\n';
         }
 
-        pub fn truncatedLineSide(l: *const Self) ?Dir.Side {
-            return if (l.startIsLineStart() and l.endIsLineEnd())
-                null
-            else if (l.startIsLineStart())
-                .right
-            else if (l.endIsLineEnd())
-                .left
-            else
-                .both;
-        }
-
         pub fn pushLine(l: *Self) !void {
             try l.lines.push(l.input[l.start..l.end]);
         }
@@ -367,22 +356,6 @@ test LineReader {
 
         lr.start = 6;
         try t.expectEqual(true, lr.startIsLineStart());
-    }
-    // [truncatedLineSide()]
-    {
-        lr.reset("\nline\n", 3);
-        //        0 12345 6
-        lr.setStartEndPos(2, 3);
-        try t.expectEqual(.both, lr.truncatedLineSide());
-
-        lr.setStartEndPos(1, 5);
-        try t.expectEqual(null, lr.truncatedLineSide());
-
-        lr.setStartEndPos(1, 3);
-        try t.expectEqual(.right, lr.truncatedLineSide());
-
-        lr.setStartEndPos(3, 5);
-        try t.expectEqual(.left, lr.truncatedLineSide());
     }
     // [seekLineStart()]
     {
@@ -799,6 +772,36 @@ test readLineAroundRange {
     //                               ^
     try t.expectEqualStrings("= 'string'", line);
     try t.expectEqual(2, index_pos);
+}
+
+/// Checks if the line is truncated at the start.
+pub fn truncatedStart(input: []const u8, line: []const u8) bool {
+    const start = slice.startIndex(input, line);
+    return start != 0 and input.len != 0 and input[start - 1] != '\n';
+}
+
+test truncatedStart {
+    const input = "line\nline";
+    //             01234 56789
+    try t.expectEqual(false, truncatedStart(input, input[0..]));
+    try t.expectEqual(true, truncatedStart(input, input[1..]));
+    try t.expectEqual(false, truncatedStart(input, input[5..]));
+    try t.expectEqual(true, truncatedStart(input, input[9..]));
+}
+
+/// Checks if the line is truncated at the end.
+pub fn truncatedEnd(input: []const u8, line: []const u8) bool {
+    const end = slice.endIndex(input, line);
+    return end != input.len and input.len != 0 and input[end] != '\n';
+}
+
+test truncatedEnd {
+    const input = "line\nline";
+    //             01234 56789
+    try t.expectEqual(true, truncatedEnd(input, input[0..3]));
+    try t.expectEqual(false, truncatedEnd(input, input[0..4]));
+    try t.expectEqual(true, truncatedEnd(input, input[0..5]));
+    try t.expectEqual(false, truncatedEnd(input, input[0..9]));
 }
 
 /// Counts the number of lines in input between start and end indices.
