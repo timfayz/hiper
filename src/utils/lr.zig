@@ -745,7 +745,7 @@ pub fn readLineAround(
 
 test readLineAround {
     const line, const index_pos = readLineAround("hello world", 5, .{ .around = 4 }, .{});
-    //                                                     ^
+    //                                                 ^
     try t.expectEqualStrings("lo wo", line);
     try t.expectEqual(2, index_pos);
 }
@@ -754,24 +754,33 @@ test readLineAround {
 pub fn readLineAroundRange(
     input: []const u8,
     index: usize,
-    extra: usize,
+    range_len: usize,
     comptime view: Range.View,
     comptime opt: ReadLineOptions,
 ) ReadLine {
     const pair = if (opt.fit_pad != null)
-        view.toPairFitExtra(extra, opt.extra_dir, opt.fit_pad, .{})
+        view.toPairFitExtra(range_len, opt.extra_dir, opt.fit_pad, .{})
     else
-        view.toPairAddExtra(extra, opt.extra_dir, .{});
+        view.toPairAddExtra(range_len, opt.extra_dir, .{});
     const within = pair.toRangeWithin(index, Range.initFromSlice(input), opt.trunc_mode);
     return readLineWithin(input, index, within);
 }
 
 test readLineAroundRange {
-    const line, const index_pos =
-        readLineAroundRange("var x = 'string';", 8, 8, .{ .around = 10 }, .{ .fit_pad = .{ .left = 2 } });
-    //                               ^
-    try t.expectEqualStrings("= 'string'", line);
-    try t.expectEqual(2, index_pos);
+    {
+        const line, const index_pos =
+            readLineAroundRange("var x = 'string';", 8, 8, .{ .around = 10 }, .{ .fit_pad = .{ .left = 2 } });
+        //                               ^
+        try t.expectEqualStrings("= 'string'", line);
+        try t.expectEqual(2, index_pos);
+    }
+    {
+        const line, const index_pos =
+            readLineAroundRange("var x = 'string';", 6, 1, .{ .around = 2 }, .{});
+        //                            -^-
+        try t.expectEqualStrings(" = ", line);
+        try t.expectEqual(1, index_pos);
+    }
 }
 
 /// Checks if the line is truncated at the start.
