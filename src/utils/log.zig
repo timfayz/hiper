@@ -9,9 +9,13 @@
 //! - writer()
 //! - writeFn()
 //! - flush()
+//! - LineStreamer
+//! - lineStreamer()
+//! - streamByLines()
 
 const std = @import("std");
 const builtin = @import("builtin");
+const t = std.testing;
 
 /// Default log options.
 pub const defaults = struct {
@@ -60,22 +64,15 @@ pub fn scopeActive(tag: @TypeOf(.Enum)) bool {
     return false;
 }
 
-/// Initializes print and writer interface functions under the `tag` scope. Thin
-/// wrapper around PerLineWriter, meaning it writes line by line adding pre/postfix
-/// around. If `opt.Writer` type is not specified, the `defaults.log_writer` is used.
-/// Ensure the tag is present in `.log_scopes` for the scope to function.
+/// Initializes a print and writer interface under the specified `tag` scope.
+/// Thin wrapper around LineStreamer.
 ///
-/// Use cases:
 /// ```
-/// // New scope with `defaults.log_writer`
-/// var my_scope = scope(.scope_name, .{}){}; // no need to use .init()
-/// try my_scope.print("hello world!", .{}); // `scope_name: hello world!`
+/// // new scope with custom prefix
+/// var my_scope = scope(.scope_name, .{.prefix = "sn: "}){};
+/// try my_scope.print("hello world!", .{}); // `sn: hello world!`
 ///
-/// // New scope with custom prefix
-/// var my_scope = scope(.scope_name, .{.prefix = "p -> "}){};
-/// try my_scope.print("hello world!", .{}); // `p -> hello world!`
-///
-/// // New scope with custom writer
+/// // new scope with custom writer
 /// const my_writer = std.io.getStdOut().writer();
 /// var my_scope = scope(.scope_name, .{.Writer = @TypeOf(my_writer)}).init(my_writer);
 /// try my_scope.print("hello world!", .{});
@@ -83,15 +80,15 @@ pub fn scopeActive(tag: @TypeOf(.Enum)) bool {
 pub fn scope(
     tag: @TypeOf(.Enum),
     opt: struct {
+        WriterType: ?type = null,
+        buffer_size: usize = defaults.log_buffer_size,
         prefix: []const u8 = @tagName(tag) ++ ": ",
         postfix: []const u8 = "",
-        buffer_size: usize = defaults.log_buffer_size,
         lock_stderr_on_flush: bool = defaults.log_lock_stderr_on_flush,
-        WriterType: ?type = null,
     },
 ) type {
     const UnderlyingWriter = if (opt.WriterType) |T| T else @TypeOf(defaults.log_writer);
-    const WrappingWriter = @import("line_streamer.zig").LineStreamer(UnderlyingWriter, opt.buffer_size, .{
+    const WrappingWriter = LineStreamer(UnderlyingWriter, opt.buffer_size, .{
         .prefix = defaults.log_prefix_all_scopes ++ opt.prefix,
         .postfix = opt.postfix,
         .lock_stderr_on_flush = opt.lock_stderr_on_flush,
@@ -124,9 +121,8 @@ pub fn scope(
             return s.underlying_writer.write(bytes);
         }
 
-        /// Flushes the entire buffer to the writer. Use this to ensure the
-        /// buffer is written out after multiple writes via the `writer`
-        /// interface or `write` function directly.
+        /// Flushes the entire buffer to the writer. Use this to
+        /// ensure all writes are committed.
         pub fn flush(s: *Self) Error!void {
             if (!builtin.is_test and !scopeActive(tag)) return;
             return s.underlying_writer.flush();
@@ -141,43 +137,29 @@ pub fn scope(
 /// Default scope.
 var defaultScope = scope(.log, .{ .prefix = defaults.log_prefix_default_scope }){};
 
-/// Prints a formatted string within the default `.log` scope using
-/// `defaults.log_writer`. Use `scope(..)` to initialize your own scope.
+/// Prints a formatted string within the default `.log` scope; use `scope(..)`
+/// for defining custom scopes.
 pub const print = defaultScope.print;
 
-/// Returns writer interface within the default `.log` scope. If the scope is
-/// inactive, it becomes a "null writer".
+/// Returns writer interface within the default `.log` scope, falling back to
+/// a "null writer" if the scope is inactive.
 pub const writer = defaultScope.writer;
 
 /// Write primitive within the default `.log` scope.
 pub const writeFn = defaultScope.write;
 
 /// Flushes the entire buffer within the default `.log` scope. Use this to
-/// ensure the buffer is written out after multiple writes via the `writer`
-/// interface or `writeFn` directly.
+/// ensure all writes are committed.
 pub const flush = defaultScope.flush;
 
 test scope {
-    const t = std.testing;
     var out = std.BoundedArray(u8, 512){};
     const out_writer = out.writer();
 
-    var phony_scope = scope(.not_exist, .{
-        .WriterType = @TypeOf(out_writer),
-    }).init(out_writer);
+    if (scopeActive(.non_active)) // `.non_active` tag isn't in `defaults.log_scopes`
+        return error.UnexpectedScopeIsActive;
 
-    if (scopeActive(.not_exist))
-        try phony_scope.print("hello", .{});
-
-    if (scopeActive(.log))
-        try phony_scope.print("world", .{});
-
-    try t.expectEqualStrings(
-        \\not_exist: world
-        \\
-    , out.slice());
-    out.clear();
-
+    // normal usage
     var sc = scope(.tag, .{
         .buffer_size = 10,
         .WriterType = @TypeOf(out_writer),
@@ -185,7 +167,6 @@ test scope {
 
     try sc.print("long print", .{});
     try sc.print("very long print", .{});
-
     try t.expectEqualStrings(
         \\tag: long print
         \\tag: very long 
@@ -206,4 +187,263 @@ test scope {
         \\tag: print
         \\
     , out.slice());
+}
+
+pub const LineStreamerOptions = struct {
+    /// Prefix added to each line.
+    prefix: []const u8 = "",
+    /// Postfix added before '\n' on each line.
+    postfix: []const u8 = "",
+    /// Skip last empty line when `flush()` is called.
+    skip_last_empty_line: bool = true,
+    /// Use `std.debug.lockStdErr()` while writing to the underlying writer.
+    lock_stderr_on_flush: bool = false,
+};
+
+/// A writer that streams the buffer line by line. For correct rendering, lines
+/// should not exceed `buffer_size - 1`. After writing is complete, use `flush()`
+/// to write out the remaining data.
+pub fn LineStreamer(WriterType: type, buffer_size: usize, opt: LineStreamerOptions) type {
+    if (buffer_size < 1) @compileError("buffer_size cannot be less than 1");
+    return struct {
+        underlying_writer: WriterType,
+        buf: [buffer_size]u8 = undefined,
+        index: usize = 0,
+
+        const Self = @This();
+        pub const Error = WriterType.Error;
+        pub const Writer = std.io.Writer(*Self, Error, write);
+
+        pub fn init(underlying_writer: WriterType) Self {
+            return Self{ .underlying_writer = underlying_writer };
+        }
+
+        /// Returns the filled portion of the buffer as a slice.
+        pub fn slice(s: *Self) []u8 {
+            return s.buf[0..s.index];
+        }
+
+        /// Writes bytes to the internal buffer, flushing stored bytes first
+        /// except the last line.
+        pub fn write(s: *Self, bytes: []const u8) Error!usize {
+            // bytes do not fit, flush stored bytes first
+            if (s.index + bytes.len > s.buf.len) {
+                try s.flushExceptLastLine();
+            }
+
+            // store bytes into the remaining buffer space
+            const n = @min(s.buf.len - s.index, bytes.len);
+            @memcpy(s.buf[s.index..][0..n], bytes[0..n]);
+            s.index += n;
+
+            return n;
+        }
+
+        pub fn writer(s: *Self) Writer {
+            return .{ .context = s };
+        }
+
+        /// A shortcut for printing with `.writer().print(format, args)`
+        /// followed by a `.flush()`.
+        pub fn print(s: *Self, comptime format: []const u8, args: anytype) Error!void {
+            try s.writer().print(format, args);
+            try s.flush();
+        }
+
+        /// Flushes the entire buffer line by line, regardless of line
+        /// completeness. Should be called after the writing process is complete.
+        pub fn flush(s: *Self) Error!void {
+            if (s.index == 0) return;
+
+            if (opt.lock_stderr_on_flush) std.debug.lockStdErr();
+            defer if (opt.lock_stderr_on_flush) std.debug.unlockStdErr();
+
+            var iter = std.mem.splitScalar(u8, s.slice(), '\n');
+            while (iter.next()) |line| {
+                if (opt.skip_last_empty_line and iter.index == null and line.len == 0)
+                    break;
+                try s.writeLine(line);
+            }
+            s.index = 0;
+        }
+
+        /// Flushes the entire stream buffer line by line up to the last
+        /// complete line. The last line is always assumed incomplete and
+        /// is moved to the beginning of the buffer to allow continuation.
+        fn flushExceptLastLine(s: *Self) Error!void {
+            if (s.index == 0) return;
+
+            if (opt.lock_stderr_on_flush) std.debug.lockStdErr();
+            defer if (opt.lock_stderr_on_flush) std.debug.unlockStdErr();
+
+            var iter = std.mem.splitScalar(u8, s.slice(), '\n');
+            while (iter.next()) |line| {
+                if (iter.index == null) { // reached the end
+                    if (line.len == s.buf.len) { // the entire buffer was a single line (no '\n's)
+                        s.index = 0; // reset buffer and write the line "as is", without splitting
+                    } else { // otherwise, move the line to the buffer start
+                        for (line, 0..) |byte, i| s.buf[i] = byte;
+                        s.index = line.len;
+                        break;
+                    }
+                }
+                try s.writeLine(line);
+            }
+        }
+
+        /// A direct write of a line with a configured prefix and postfix.
+        pub fn writeLine(s: *Self, line: []const u8) Error!void {
+            try s.underlying_writer.writeAll(opt.prefix);
+            try s.underlying_writer.writeAll(line);
+            try s.underlying_writer.writeAll(opt.postfix ++ "\n");
+        }
+    };
+}
+
+test LineStreamer {
+    var out = std.BoundedArray(u8, 512){};
+    const OutWriter = @TypeOf(out.writer());
+
+    // shortcuts
+    try streamByLine(out.writer(), "hello world", 6, .{ .prefix = "pre: " });
+    try t.expectEqualStrings(
+        \\pre: hello 
+        \\pre: world
+        \\
+    , out.slice());
+    out.clear();
+
+    var s0 = lineStreamer(out.writer(), .{ .prefix = "pre: " });
+    try s0.print("hello world", .{});
+    try t.expectEqualStrings(
+        \\pre: hello world
+        \\
+    , out.slice());
+    out.clear();
+
+    // stream empty string
+    var s1 = LineStreamer(OutWriter, 4, .{ .prefix = "pre: " }).init(out.writer());
+    try s1.print("", .{});
+    try t.expectEqualStrings(
+        \\
+    , out.slice());
+    out.clear();
+
+    // stream empty newline
+    try s1.print("\n", .{});
+    try t.expectEqualStrings(
+        \\pre: 
+        \\
+    , out.slice());
+    out.clear();
+
+    // stream lines that do not exceed internal buffer
+    try s1.print("111\n222\n", .{});
+    try t.expectEqualStrings(
+        \\pre: 111
+        \\pre: 222
+        \\
+    , out.slice());
+    out.clear();
+
+    // stream lines that exceed internal buffer
+    try s1.print("1111x\n2222y\n", .{});
+    try t.expectEqualStrings(
+        \\pre: 1111
+        \\pre: x
+        \\pre: 2222
+        \\pre: y
+        \\
+    , out.slice());
+    out.clear();
+
+    // [.skip_last_empty_line]
+    var s2 = LineStreamer(OutWriter, 4, .{
+        .prefix = "pre: ",
+        .skip_last_empty_line = false,
+    }).init(out.writer());
+
+    try s2.print("111\n222\n", .{});
+    try t.expectEqualStrings(
+        \\pre: 111
+        \\pre: 222
+        \\pre: 
+        \\
+    , out.slice());
+    out.clear();
+
+    // [.postfix]
+    var s3 = LineStreamer(OutWriter, 4, .{
+        .postfix = " :post",
+    }).init(out.writer());
+
+    try s3.print("11112222", .{});
+    try t.expectEqualStrings(
+        \\1111 :post
+        \\2222 :post
+        \\
+    , out.slice());
+    out.clear();
+
+    // test internals
+    {
+        var ls = LineStreamer(OutWriter, 4, .{ .prefix = "pre: " }).init(out.writer());
+
+        try ls.writer().writeAll("11\n22");
+        //                         ^^^-^ (first pass)
+        //                              ^ (second pass)
+        try t.expectEqual(2, ls.slice().len); // (!) assert the merge of last incomplete line was successful
+        try t.expectEqualStrings("22", ls.slice());
+        try t.expectEqualStrings( // (!) assert the first line was already written
+            \\pre: 11
+            \\
+        , out.slice());
+
+        // (!) assert the flushExceptLastLine doesn't write the last line
+        out.clear();
+        try ls.flushExceptLastLine();
+        try t.expectEqualStrings("", out.slice()); // nothing was written
+        try t.expectEqualStrings("22", ls.slice()); // the last line stays
+
+        out.clear();
+        try ls.flushExceptLastLine();
+        try t.expectEqualStrings("", out.slice()); // nothing was written
+        try t.expectEqualStrings("22", ls.slice()); // the last line stays
+
+        // (!) assert the flush writes the remaining lines
+        try ls.flush();
+        try t.expectEqualStrings(
+            \\pre: 22
+            \\
+        , out.slice());
+
+        // (!) assert the flush doesn't write twice
+        try ls.flush();
+        try t.expectEqualStrings(
+            \\pre: 22
+            \\
+        , out.slice());
+
+        out.clear();
+    }
+}
+
+/// Shortcut for `LineStreamer(@TypeOf(writer), 4096, opt).init(writer)`.
+pub fn lineStreamer(
+    underlying_writer: anytype,
+    comptime opt: LineStreamerOptions,
+) LineStreamer(@TypeOf(underlying_writer), 4096, opt) {
+    return .{ .underlying_writer = underlying_writer };
+}
+
+/// Shortcut for creating `LineStreamer`, writing bytes to it, and flushing.
+pub fn streamByLine(
+    underlying_writer: anytype,
+    bytes: []const u8,
+    comptime buffer_size: usize,
+    comptime opt: LineStreamerOptions,
+) @TypeOf(underlying_writer).Error!void {
+    var ls = LineStreamer(@TypeOf(underlying_writer), buffer_size, opt).init(underlying_writer);
+    try ls.writer().writeAll(bytes);
+    try ls.flush();
 }

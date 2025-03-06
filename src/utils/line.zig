@@ -2,28 +2,34 @@
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
 //! Public API:
-//! - LineReader
+//! - Reader
 //! - ReadLines
-//! - readLines
-//! - readLinesWithin
+//! - readMulti()
 //! - ReadLine
-//! - readLineWithin
-//! - readLineAround
-//! - readLineAroundRange
-//! - countLineNum
+//! - readWithin()
+//! - ReadAroundOptions
+//! - readAround()
+//! - readAroundRange()
+//! - readAroundRangeFit()
+//! - truncatedStart()
+//! - truncatedEnd()
+//! - count()
+//! - PrinterOptions
+//! - Printer
+//! - printWithCursor()
 
 const std = @import("std");
-const stack = @import("stack.zig");
-const slice = @import("slice.zig");
-const Range = @import("span.zig").Range;
-const Dir = @import("span.zig").Dir;
 const num = @import("num.zig");
+const slice = @import("slice.zig");
+const stack = @import("stack.zig");
+const Dir = @import("span.zig").Dir;
+const Range = @import("span.zig").Range;
 const assert = std.debug.assert;
 const t = std.testing;
 
 /// A line retriever that can stack-allocate its own buffer (`buf_len != null`)
 /// for retrieved lines or use an externally provided one (`buf_len == null`).
-pub fn LineReader(buf_len: ?usize) type {
+pub fn Reader(buf_len: ?usize) type {
     return struct {
         lines: stack.Stack([]const u8, buf_len) = .{},
         input: []const u8,
@@ -321,8 +327,8 @@ pub fn LineReader(buf_len: ?usize) type {
     };
 }
 
-test LineReader {
-    var lr = LineReader(512).init("", 0);
+test Reader {
+    var lr = Reader(512).init("", 0);
 
     // [endIsLineEnd()]
     {
@@ -670,21 +676,21 @@ pub const ReadLines = struct {
 };
 
 /// Retrieves a specified number of lines starting from the given index.
-pub fn readLines(
+pub fn readMulti(
     buf: [][]const u8,
     input: []const u8,
     index: usize,
     comptime line_range: Range.View,
 ) !ReadLines {
-    var lr = LineReader(null).init(buf, input, index);
+    var lr = Reader(null).init(buf, input, index);
     const curr_line_pos = try lr.seekAndPushLineRange(line_range);
     const start_idx = if (!lr.isEmpty()) slice.startIndex(input, lr.pushed()[curr_line_pos]) else 0;
     return .{ .curr_line_pos = curr_line_pos, .index_pos = index - start_idx, .lines = lr.pushed() };
 }
 
-test readLines {
+test readMulti {
     var buf: [2][]const u8 = undefined;
-    const res = try readLines(&buf, "hello\nworld", 7, .{ .around = 3 });
+    const res = try readMulti(&buf, "hello\nworld", 7, .{ .around = 3 });
     //                                       ^
     try t.expectEqual(2, res.total());
     try t.expectEqualStrings("world", res.curr());
@@ -701,7 +707,7 @@ pub fn readLinesWithin(
     comptime line_range: Range.View,
     within: Range,
 ) !ReadLines {
-    var lr = LineReader(null).init(buf, input, index);
+    var lr = Reader(null).init(buf, input, index);
     const curr_line_pos = try lr.seekAndPushLineRangeWithin(line_range, within);
     const start_idx = if (!lr.isEmpty()) slice.startIndex(input, lr.pushed()[curr_line_pos]) else 0;
     return .{ .curr_line_pos = curr_line_pos, .index_pos = index - start_idx, .lines = lr.pushed() };
@@ -710,77 +716,92 @@ pub fn readLinesWithin(
 /// The result of single line read: the line and its relative index position.
 pub const ReadLine = struct { []const u8, usize };
 
-pub fn readLineWithin(input: []const u8, index: usize, within: Range) ReadLine {
-    var lr = LineReader(0).init(input, index);
+pub fn readWithin(input: []const u8, index: usize, within: Range) ReadLine {
+    var lr = Reader(0).init(input, index);
     lr.seekLineWithin(within);
     return .{ lr.line(), index - lr.start };
 }
 
-test readLineWithin {
-    const line, const index_pos = readLineWithin("hello world", 5, .{ .start = 3, .end = 8 });
+test readWithin {
+    const line, const index_pos = readWithin("hello world", 5, .{ .start = 3, .end = 8 });
     //                                                 ^
     try t.expectEqualStrings("lo wo", line);
     try t.expectEqual(2, index_pos);
 }
 
-pub const ReadLineOptions = struct {
-    trunc_mode: Range.TruncMode = .hard,
+pub const ReadAroundOptions = struct {
+    compensate: bool = true,
     view_opt: Range.View.Options = .{},
-    fit_pad: ?Dir.One = null,
-    extra_dir: Dir = .right,
+    // for range reads only
+    range_dir: Dir = .right,
 };
 
 /// Retrieve a line span around the given index.
-pub fn readLineAround(
+pub fn readAround(
     input: []const u8,
     index: usize,
     comptime view: Range.View,
-    comptime opt: ReadLineOptions,
+    comptime opt: ReadAroundOptions,
 ) ReadLine {
     const within = view
         .toPairAddExtra(1, .right, .{})
-        .toRangeWithin(index, Range.initFromSlice(input), opt.trunc_mode);
-    return readLineWithin(input, index, within);
+        .toRangeWithin(index, Range.initFromSlice(input), if (opt.compensate) .hard_flex else .hard);
+    return readWithin(input, index, within);
 }
 
-test readLineAround {
-    const line, const index_pos = readLineAround("hello world", 5, .{ .around = 4 }, .{});
+test readAround {
+    const line, const index_pos = readAround("hello world", 5, .{ .around = 4 }, .{});
     //                                                 ^
     try t.expectEqualStrings("lo wo", line);
     try t.expectEqual(2, index_pos);
 }
 
-/// Retrieve a line span around the given index with an additional extra range.
-pub fn readLineAroundRange(
+/// Retrieves a line span around the given index, including an additional range.
+pub fn readAroundRange(
     input: []const u8,
-    index: usize,
-    range_len: usize,
+    arg: struct {
+        index: usize,
+        range: usize,
+    },
     comptime view: Range.View,
-    comptime opt: ReadLineOptions,
+    comptime opt: ReadAroundOptions,
 ) ReadLine {
-    const pair = if (opt.fit_pad != null)
-        view.toPairFitExtra(range_len, opt.extra_dir, opt.fit_pad, .{})
-    else
-        view.toPairAddExtra(range_len, opt.extra_dir, .{});
-    const within = pair.toRangeWithin(index, Range.initFromSlice(input), opt.trunc_mode);
-    return readLineWithin(input, index, within);
+    const pair = view.toPairAddExtra(arg.range, opt.range_dir, .{});
+    const within = pair.toRangeWithin(arg.index, Range.initFromSlice(input), if (opt.compensate) .hard_flex else .hard);
+    return readWithin(input, arg.index, within);
 }
 
-test readLineAroundRange {
-    {
-        const line, const index_pos =
-            readLineAroundRange("var x = 'string';", 8, 8, .{ .around = 10 }, .{ .fit_pad = .{ .left = 2 } });
-        //                               ^
-        try t.expectEqualStrings("= 'string'", line);
-        try t.expectEqual(2, index_pos);
-    }
-    {
-        const line, const index_pos =
-            readLineAroundRange("var x = 'string';", 6, 1, .{ .around = 2 }, .{});
-        //                            -^-
-        try t.expectEqualStrings(" = ", line);
-        try t.expectEqual(1, index_pos);
-    }
+test readAroundRange {
+    const line, const index_pos =
+        readAroundRange("var x = 'string';", .{ .index = 6, .range = 1 }, .{ .around = 2 }, .{});
+    //                        -^-
+    try t.expectEqualStrings(" = ", line);
+    try t.expectEqual(1, index_pos);
+}
+
+/// Retrieves a line span around the given index, fitting the specified range
+/// into view.
+pub fn readAroundRangeFit(
+    input: []const u8,
+    arg: struct {
+        index: usize,
+        range: usize,
+    },
+    comptime min_pad: ?Dir.One,
+    comptime view: Range.View,
+    comptime opt: ReadAroundOptions,
+) ReadLine {
+    const pair = view.toPairFitExtra(arg.range, opt.range_dir, min_pad, .{});
+    const within = pair.toRangeWithin(arg.index, Range.initFromSlice(input), if (opt.compensate) .hard_flex else .hard);
+    return readWithin(input, arg.index, within);
+}
+
+test readAroundRangeFit {
+    const line, const index_pos =
+        readAroundRangeFit("var x = 'string';", .{ .index = 8, .range = 8 }, .{ .left = 2 }, .{ .around = 10 }, .{});
+    //                              ^-------
+    try t.expectEqualStrings("= 'string'", line);
+    try t.expectEqual(2, index_pos);
 }
 
 /// Checks if the line is truncated at the start.
@@ -816,7 +837,7 @@ test truncatedEnd {
 /// Counts the number of lines in input between start and end indices.
 /// If `start > end`, their values are automatically swapped. Returns 1 if
 /// `start == end`. Line numbering starts from 1.
-pub fn countLineNum(input: []const u8, start: usize, end: usize) usize {
+pub fn count(input: []const u8, start: usize, end: usize) usize {
     var from: usize, var until = num.orderPairAsc(start, end);
     if (until >= input.len) until = input.len; // normalize
 
@@ -827,37 +848,204 @@ pub fn countLineNum(input: []const u8, start: usize, end: usize) usize {
     return line_num;
 }
 
-test countLineNum {
-    try t.expectEqual(1, countLineNum("", 0, 0));
-    try t.expectEqual(1, countLineNum("", 100, 100));
-    try t.expectEqual(2, countLineNum("\n", 0, 1));
+test count {
+    try t.expectEqual(1, count("", 0, 0));
+    try t.expectEqual(1, count("", 100, 100));
+    try t.expectEqual(2, count("\n", 0, 1));
     //                                 ^ ^
-    try t.expectEqual(2, countLineNum("\n", 0, 100));
+    try t.expectEqual(2, count("\n", 0, 100));
     //                                 ^   ^
-    try t.expectEqual(2, countLineNum("\n", 100, 0));
+    try t.expectEqual(2, count("\n", 100, 0));
     //                                 ^   ^
-    try t.expectEqual(2, countLineNum("\n\n", 0, 1));
+    try t.expectEqual(2, count("\n\n", 0, 1));
     //                                 ^ ^
-    try t.expectEqual(3, countLineNum("\n\n", 0, 2));
+    try t.expectEqual(3, count("\n\n", 0, 2));
     //                                 ^   ^
-    try t.expectEqual(2, countLineNum("\n\n", 1, 2));
+    try t.expectEqual(2, count("\n\n", 1, 2));
     //                                   ^ ^
-    try t.expectEqual(2, countLineNum("\n\n", 2, 1));
+    try t.expectEqual(2, count("\n\n", 2, 1));
     //                                   ^ ^
-    try t.expectEqual(1, countLineNum("\n\n", 3, 4));
+    try t.expectEqual(1, count("\n\n", 3, 4));
     //                                      ^^
-    try t.expectEqual(1, countLineNum("l1\nl2\nl3", 0, 0));
+    try t.expectEqual(1, count("l1\nl2\nl3", 0, 0));
     //                                 ^
-    try t.expectEqual(2, countLineNum("l1\nl2\nl3", 0, 3));
+    try t.expectEqual(2, count("l1\nl2\nl3", 0, 3));
     //                                 ^   ^
-    try t.expectEqual(3, countLineNum("l1\nl2\nl3", 0, 6));
+    try t.expectEqual(3, count("l1\nl2\nl3", 0, 6));
     //                                 ^       ^
-    try t.expectEqual(3, countLineNum("l1\nl2\nl3", 0, 7));
+    try t.expectEqual(3, count("l1\nl2\nl3", 0, 7));
     //                                 ^        ^
-    try t.expectEqual(3, countLineNum("l1\nl2\nl3", 7, 0));
+    try t.expectEqual(3, count("l1\nl2\nl3", 7, 0));
     //                                 ^        ^
-    try t.expectEqual(3, countLineNum("l1\nl2\nl3", 2, 6));
+    try t.expectEqual(3, count("l1\nl2\nl3", 2, 6));
     //                                   ^     ^
-    try t.expectEqual(3, countLineNum("l1\nl2\nl3", 6, 2));
+    try t.expectEqual(3, count("l1\nl2\nl3", 6, 2));
     //                                   ^     ^
+}
+
+pub const PrinterOptions = struct {
+    trunc_sym: []const u8 = "..",
+    show_line_num: bool = true,
+    line_num_sep: []const u8 = "| ",
+    show_eof: bool = true,
+
+    // Cursor related options.
+    show_cursor: bool = false,
+    show_cursor_hint: bool = true,
+    hint_printable_chars: bool = false,
+    cursor_head_char: u8 = '^',
+    cursor_body_char: u8 = '~',
+};
+
+pub fn Printer(WriterType: type, opt: PrinterOptions) type {
+    return struct {
+        input: []const u8,
+        writer: WriterType,
+        num_col_width: usize,
+        start_is_trunc: bool = false,
+
+        const Self = @This();
+
+        pub fn init(writer: WriterType, input: []const u8, num_col_width: usize) Self {
+            return .{ .input = input, .writer = writer, .num_col_width = num_col_width };
+        }
+
+        pub fn printRaw(p: *const Self, comptime format: []const u8, args: anytype) !void {
+            try p.writer.print(format, args);
+        }
+
+        pub fn printLineNum(p: *const Self, n: usize) !void {
+            if (opt.show_line_num)
+                try p.writer.print("{d: <[1]}" ++ opt.line_num_sep, .{ n, p.num_col_width });
+        }
+
+        pub fn printLineSeg(p: *Self, trunc_side: Dir.Side, line: []const u8) !void {
+            if (trunc_side == .both or trunc_side == .left) p.printTruncPre();
+            try p.writer.writeAll(line);
+            if (trunc_side == .both or trunc_side == .right) p.printTruncPost();
+            try p.printEOL(line);
+        }
+
+        pub fn printLineSegAuto(p: *Self, line: []const u8) !void {
+            if (truncatedStart(p.input, line)) try p.printTruncPre();
+            try p.writer.writeAll(line);
+            if (truncatedEnd(p.input, line)) try p.printTruncPost();
+            try p.printEOL(line);
+        }
+
+        pub fn printLine(p: *const Self, line: []const u8) !void {
+            try p.writer.writeAll(line);
+            try p.printEOL(line);
+        }
+
+        pub fn printNL(p: *Self) !void {
+            try p.writer.writeByte('\n');
+        }
+
+        pub fn printNLAndReset(p: *Self) !void {
+            try p.writer.writeByte('\n');
+            p.start_is_trunc = false;
+        }
+
+        pub fn printTruncPre(p: *Self) !void {
+            try p.writer.writeAll(opt.trunc_sym);
+            p.start_is_trunc = true;
+        }
+
+        pub fn printTruncPost(p: *Self) !void {
+            try p.writer.writeAll(opt.trunc_sym);
+        }
+
+        pub fn printEOL(p: *const Self, line: []const u8) !void {
+            if (opt.show_eof and slice.endIndex(p.input, line) >= p.input.len)
+                try p.writer.writeAll("␃");
+        }
+
+        pub fn printSpace(p: *const Self, size: usize) !void {
+            try p.writer.writeByteNTimes(' ', size);
+        }
+
+        pub fn printCursorPad(p: *const Self, size: usize) !void {
+            if (opt.show_cursor) {
+                const trunc_pad = if (p.start_is_trunc) opt.trunc_sym.len else 0;
+                try p.writer.writeByteNTimes(' ', opt.line_num_sep.len +| p.num_col_width +| trunc_pad +| size);
+            }
+        }
+
+        pub fn printCursorHead(p: *const Self, size: usize) !void {
+            if (opt.show_cursor)
+                try p.writer.writeByteNTimes(opt.cursor_head_char, size);
+        }
+
+        pub fn printCursorBody(p: *const Self, size: usize) !void {
+            if (opt.show_cursor)
+                try p.writer.writeByteNTimes(opt.cursor_body_char, size);
+        }
+
+        pub fn printCursorHint(p: *const Self, index: usize) !void {
+            if (opt.show_cursor_hint) {
+                const hint = p.getCursorHint(index);
+                if (hint.len > 0) {
+                    try p.writer.writeAll("(");
+                    try p.writer.writeAll(hint);
+                    try p.writer.writeAll(")");
+                }
+            }
+        }
+
+        fn getCursorHint(p: *const Self, index: usize) []const u8 {
+            return if (index >= p.input.len)
+                "end of string"
+            else switch (p.input[index]) {
+                '\n' => "newline",
+                ' ' => "space",
+                inline '!'...'~',
+                => |char| if (opt.hint_printable_chars)
+                    std.fmt.comptimePrint("'\\x{x}'", .{char})
+                else
+                    "",
+                else => "",
+            };
+        }
+    };
+}
+
+/// Prints a line span around the given index, including an additional range,
+/// and automatically detects the line number if not specified.
+pub fn printWithCursor(
+    writer: anytype,
+    input: []const u8,
+    arg: struct {
+        index: usize,
+        range: usize,
+        line_num: ?usize,
+    },
+    comptime view: Range.View,
+    comptime opt: ReadAroundOptions,
+) !void {
+    var lp = Printer(@TypeOf(writer), .{ .show_cursor = true }).init(writer, input, 1);
+    const line, const index_pos = readAroundRange(input, .{ .index = arg.index, .range = arg.range }, view, opt);
+    const line_num = if (arg.line_num) |ln| ln else count(input, 0, arg.index);
+
+    try lp.printLineNum(line_num);
+    try lp.printLineSegAuto(line);
+    try lp.printNL();
+    try lp.printCursorPad(index_pos);
+    try lp.printCursorHead(1); // rest = line.len -| index_pos -| range_len
+    try lp.printSpace(1);
+    try lp.printCursorHint(arg.index);
+    try lp.printNL();
+}
+
+test Printer {
+    var str = std.BoundedArray(u8, 512){};
+    const input = "hello\nworld";
+    //             012345 6789ABCDE
+
+    try printWithCursor(str.writer(), input, .{ .index = 5, .range = 1, .line_num = 2 }, .{ .around = 6 }, .{});
+    try t.expectEqualStrings(
+        \\2| ..llo
+        \\        ^ (newline)
+        \\
+    , str.slice());
 }

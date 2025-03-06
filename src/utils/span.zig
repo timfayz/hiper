@@ -478,14 +478,18 @@ pub const Range = struct {
 
         // [toPairFitExtra()]
 
+        // normal flow
         try equal(Dir.Pair{ .left = 2, .right = 8 }, (View{ .around = 10 }).toPairFitExtra(5, .right, null, .{}));
         try equal(Dir.Pair{ .left = 5, .right = 5 }, (View{ .around = 10 }).toPairFitExtra(5, .right, .{ .left = 5 }, .{}));
-        // excessive fitting pad
+        // excessive padding
         try equal(Dir.Pair{ .left = 10, .right = 0 }, (View{ .around = 10 }).toPairFitExtra(5, .right, .{ .left = 11 }, .{}));
         try equal(Dir.Pair{ .left = 0, .right = 10 }, (View{ .around = 10 }).toPairFitExtra(5, .right, .{ .right = 11 }, .{}));
-        // excessive extra
-        try equal(Dir.Pair{ .left = 0, .right = 10 }, (View{ .around = 10 }).toPairFitExtra(15, .right, null, .{}));
-        try equal(Dir.Pair{ .left = 10, .right = 0 }, (View{ .around = 10 }).toPairFitExtra(15, .left, null, .{}));
+        // excessive extra range
+        try equal(Dir.Pair{ .left = 0, .right = 10 }, (View{ .around = 10 }).toPairFitExtra(11, .right, null, .{}));
+        try equal(Dir.Pair{ .left = 10, .right = 0 }, (View{ .around = 10 }).toPairFitExtra(11, .left, null, .{}));
+        // excessive extra range & padding
+        try equal(Dir.Pair{ .left = 10, .right = 0 }, (View{ .around = 10 }).toPairFitExtra(11, .right, .{ .left = 11 }, .{}));
+        try equal(Dir.Pair{ .left = 0, .right = 10 }, (View{ .around = 10 }).toPairFitExtra(11, .left, .{ .right = 11 }, .{}));
     }
 };
 
