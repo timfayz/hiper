@@ -1,7 +1,13 @@
 // MIT License (c) Timur Fayzrakhmanov.
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
+//! Public API:
+//! - Token
+//! - TokenizerOptions
+//! - Tokenizer
+
 const std = @import("std");
+const t = std.testing;
 const ThisFile = @This();
 
 pub const Token = struct {
@@ -219,7 +225,7 @@ pub const Token = struct {
 };
 
 /// Tokenizer options.
-const TokenizerOptions = struct {
+pub const TokenizerOptions = struct {
     /// Enable strict recognition of tokens:
     /// * `true` - Consume only valid tokens (this is useful if you want to
     ///    terminate tokenization as soon as the first invalid token is
@@ -368,7 +374,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             }
         };
 
-        /// Defines the number base recognition primitives.
+        /// Defines primitives for the number base recognition.
         pub const Base = enum(u8) {
             hex = 16,
             decimal = 10,
@@ -1082,33 +1088,25 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
         fn logState(s: *const Self) void {
             if (!log.scopeActive) return;
             if (opt.track_location)
-                log.scope.print("[read state .{s} " ++
-                    log.color.ctEscape(.{.faint}, "{d}:{d}:{d}") ++
-                    "]\n", .{
-                    @tagName(s.state),
-                    s.getLine(),
-                    s.getCol(),
-                    s.index,
-                }) catch {};
+                log.scope.print(
+                    "[state .{s} " ++ log.color.ctEscape(.{.faint}, "{d}:{d}:{d}") ++ "]\n",
+                    .{ @tagName(s.state), s.getLine(), s.getCol(), s.index },
+                ) catch {};
         }
 
         fn logToken(token: Token) void {
             if (!log.scopeActive) return;
-            log.scope.print("[retn token " ++
-                log.color.ctEscape(.{.bold}, ".{s}") ++
-                ":{d}:{d}]\n", .{
-                @tagName(token.tag),
-                token.loc.start,
-                token.loc.end,
-            }) catch {};
+            log.scope.print(
+                "[token " ++ log.color.ctEscape(.{.bold}, ".{s}") ++ ":{d}:{d}]\n",
+                .{ @tagName(token.tag), token.loc.start, token.loc.end },
+            ) catch {};
         }
     };
 }
 
-// const log_in_tests = true;
+const log_in_tests = false;
 
-test "test Tokenizer" {
-    const t = std.testing;
+test Tokenizer {
     @setEvalBranchQuota(2000);
 
     // Test correct location tracking.
@@ -1154,33 +1152,29 @@ test "test Tokenizer" {
         // Note, in this test set, all complete valid tokens end with a space to
         // avoid tokenizing only the correct beginning and leaving the invalid end.
 
-        const case = struct {
-            const T = Tokenizer(.{
-                .strict_mode = true,
-                .track_location = true,
-                .tokenize_spaces = true,
-                .tokenize_indents = false,
-            });
+        const T = Tokenizer(.{
+            .strict_mode = true,
+            .track_location = true,
+            .tokenize_spaces = true,
+            .tokenize_indents = false,
+        });
 
+        const case = struct {
             pub fn run(input: [:0]const u8, expect_tag: Token.Tag, expect_state: T.State) !void {
                 var scan = T.init(input);
                 const token = scan.next();
 
-                try assert(input, token, expect_tag, scan.state, expect_state);
-            }
-
-            fn assert(input: [:0]const u8, token: Token, expect_tag: Token.Tag, state: T.State, expect_state: T.State) !void {
                 // states match
-                try t.expectEqual(expect_state, state);
+                try t.expectEqual(expect_state, scan.state);
 
-                // complete valid token end with a space
+                // a complete valid token ends with a space
                 if (expect_tag != .space and expect_state == .complete)
                     try t.expectEqual(' ', input[token.len()]);
 
                 // tags match
                 try t.expectEqual(expect_tag, token.tag);
 
-                // invalid token includes the first invalid char
+                // an invalid token includes the first invalid char
                 if (expect_tag == .invalid)
                     try t.expectEqual(input[input.len - 1], input[token.loc.end - 1]);
             }
@@ -1230,7 +1224,7 @@ test "test Tokenizer" {
 
         // numbers
         // -------------------------------
-        // ints:
+        // [integers]
         // base 10
         try case("1 ", .number, .complete);
         try case("1", .number, .number_post_first_nonzero);
@@ -1276,7 +1270,7 @@ test "test Tokenizer" {
         try case("0x ", .invalid, .number_post_base_hex);
         try case("0x", .incomplete, .number_post_base_hex);
 
-        // floats dot:
+        // [floats]
         // base 10
         try case("0.0 ", .number, .complete);
         try case("0.0", .number, .number_post_dot_first_digit_decimal);
@@ -1303,7 +1297,7 @@ test "test Tokenizer" {
         try case("0x0.", .incomplete, .number_post_dot_hex);
         try case("0x09.", .incomplete, .number_post_dot_hex);
 
-        // floats exponent:
+        // [float exponents]
         // base 10
         try case("0e0 ", .number, .complete);
         try case("0e0", .number, .number_post_exp_first_digit);
@@ -1333,7 +1327,7 @@ test "test Tokenizer" {
         try case("0x0.0p0", .number, .number_post_exp_first_digit); // valid, incomplete
         try case("0x0.0p0a", .invalid, .number_post_exp_first_digit); // invalid
 
-        // floats exponent sign:
+        // [float exponents sign]
         // base 10
         try case("0e+0 ", .number, .complete); // valid
         try case("0e+09 ", .number, .complete); // valid
@@ -1352,7 +1346,7 @@ test "test Tokenizer" {
         try case("0x0p+ ", .invalid, .number_post_exp_sign); // invalid
         try case("0x0p+", .incomplete, .number_post_exp_sign); // incomplete
 
-        // random:
+        // [mixed]
         // TODO add _
         try case("98222 ", .number, .complete); // decimal_int
         try case("0xff ", .number, .complete); // hex_int
@@ -1385,7 +1379,7 @@ test "test Tokenizer" {
         try case("\"\n", .invalid, .string_post_double_quote);
         try case("\" !#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\" ", .string, .complete);
 
-        // option: .tokenize_spaces
+        // [.tokenize_spaces]
         // -------------------------------
         {
             var scan = Tokenizer(.{ .tokenize_spaces = false }).init("  1");
@@ -1401,7 +1395,7 @@ test "test Tokenizer" {
             try t.expectEqual(.eof, scan.next().tag);
         }
 
-        // option: .tokenize_indents
+        // [.tokenize_indents]
         // -------------------------------
         {
             var scan = Tokenizer(.{ .tokenize_indents = false }).init("\n");
@@ -1434,28 +1428,22 @@ test "test Tokenizer" {
         {
             var scan = Tokenizer(.{ .tokenize_indents = true }).init(
                 \\
-                //^^ the first newline is necessary to recognize the indent
+                //^ the first newline is necessary to recognize the indent
                 \\   hello
                 \\  
-                //^^ '  \n' an empty line with two spaces
+                //^ '  \n' recognize indent with extra leading spaces
                 \\   world
             );
             var token = scan.next();
             try t.expectEqual(.indent, token.tag);
             try t.expectEqual(3, token.len());
-
-            // hello
-            try t.expectEqual(.identifier, scan.next().tag);
-
-            token = scan.next();
-            try t.expectEqual(.indent, token.tag);
+            try t.expectEqual(.identifier, scan.next().tag); // hello
+            try t.expectEqual(.indent, scan.next().tag);
             try t.expectEqual(3, token.len());
-
-            // world
-            try t.expectEqual(.identifier, scan.next().tag);
+            try t.expectEqual(.identifier, scan.next().tag); // world
         }
 
-        // special case: nextFrom(.indent)
+        // [nextFrom(.indent)]
         // -------------------------------
         {
             var scan = Tokenizer(.{ .tokenize_indents = false }).init("  !");
@@ -1466,7 +1454,7 @@ test "test Tokenizer" {
             try t.expectEqual('!', scan.input[token.loc.end]);
         }
 
-        // random
+        // mixed
         // -------------------------------
         {
             var scan = Tokenizer(.{
@@ -1480,15 +1468,12 @@ test "test Tokenizer" {
             var token = scan.next();
             try t.expectEqual(.space, token.tag);
             try t.expectEqual(2, token.len());
-
             try t.expectEqual(.identifier, scan.next().tag);
             try t.expectEqual(true, scan.nextIs(.exclamation));
             try t.expectEqual(.exclamation, scan.next().tag);
-
             token = scan.next();
             try t.expectEqual(.indent, token.tag);
             try t.expectEqual(2, token.len());
-
             try t.expectEqual(.left_curly, scan.next().tag);
             try t.expectEqual(.number, scan.next().tag);
             try t.expectEqual(.comma, scan.next().tag);
