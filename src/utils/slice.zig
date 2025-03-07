@@ -10,6 +10,7 @@
 //! - contains()
 //! - extend()
 //! - joint()
+//! - JoinError
 //! - join()
 //! - startIndex()
 //! - endIndex()
@@ -18,13 +19,14 @@
 //! - last()
 //! - trunc()
 //! - truncIndices()
+//! - MoveError
 //! - move()
+//! - swap()
 
 const std = @import("std");
 const num = @import("num.zig");
 const Range = @import("span.zig").Range;
 const Dir = @import("span.zig").Dir;
-const err = @import("err.zig");
 const meta = @import("meta.zig");
 const mem = std.mem;
 const t = std.testing;
@@ -200,8 +202,10 @@ test joint {
     try t.expectEqual(false, joint(input[3..6], input[0..3]));
 }
 
+pub const JoinError = error{InvalidLayout};
+
 /// Extends slice to the right or left by the elements of extension (no safety checks).
-pub fn join(comptime dir: Dir, T: type, base: T, extension: T) err.InvalidLayout!T {
+pub fn join(comptime dir: Dir, T: type, base: T, extension: T) JoinError!T {
     if (dir == .right) {
         if (!joint(base, extension)) return error.InvalidLayout;
         return base.ptr[0 .. base.len + extension.len];
@@ -362,6 +366,8 @@ test truncIndices {
     //                                                        ^^^~~
 }
 
+pub const MoveError = error{ InsufficientSpace, InvalidOrigin };
+
 /// Moves a valid segment to the start or end of the slice, returning an error
 /// if it’s from a different origin or exceeds `buf_size`.
 pub fn move(
@@ -370,7 +376,7 @@ pub fn move(
     T: type,
     base: []T,
     seg: []const T,
-) (err.InsufficientSpace || err.InvalidOrigin)!void {
+) MoveError!void {
     if (!contains(base, seg)) return error.InvalidOrigin;
     if (seg.len > buf_size) return error.InsufficientSpace;
     if (seg.len == 0 or seg.len == base.len) return;

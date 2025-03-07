@@ -2,6 +2,7 @@
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
 //! Public API:
+//! - Error
 //! - Stack
 //! - init()
 //! - initFromSlice()
@@ -9,8 +10,7 @@
 //! - initFromSliceFilled()
 
 const std = @import("std");
-const err = @import("err.zig");
-const IntFittingRange = std.math.IntFittingRange;
+pub const Error = error{OutOfSpace};
 
 /// A generic stack implementation. Can be either fixed-array or slice-based. If
 /// `length` is null, the stack is slice-based and must be initialized from a
@@ -18,11 +18,10 @@ const IntFittingRange = std.math.IntFittingRange;
 pub fn Stack(T: type, length: ?usize) type {
     return struct {
         arr: if (length) |l| [l]T else []T = undefined,
-        len: if (length) |l| IntFittingRange(0, l) else usize = 0,
+        len: if (length) |l| std.math.IntFittingRange(0, l) else usize = 0,
         nil: bool = true,
 
         const Self = @This();
-        pub const Error = err.OutOfSpace;
         pub const Writer = std.io.Writer(*Self, Error, write);
 
         pub usingnamespace if (length == null) struct {
