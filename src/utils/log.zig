@@ -15,15 +15,16 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const tty = std.io.tty;
 const t = std.testing;
 
 /// Default log options.
 pub const defaults = struct {
-    pub const options_identifier = "hi_options";
+    pub const options_identifier = "hiper_options";
     /// Default's log_writer. If not set, it will default to `std.io.getStdErr().writer()`.
     pub const log_writer = if (rootHas("log_writer")) rootGet("log_writer") else std.io.getStdErr().writer();
-    /// Buffer size for the log writer. If the buffer is full, it will be
-    /// flushed, meaning that the max line size is `log_buffer_size - 1`.
+    /// Buffer size for the log writer. If buffer is flushed when full,
+    /// limiting the max line size to `log_buffer_size - 1`.
     pub const log_buffer_size = if (rootHas("log_buffer_size")) rootGet("log_buffer_size") else 4096;
     /// Does `std.debug.un/lockStdErr()` on buffer flushes.
     pub const log_lock_stderr_on_flush = if (rootHas("log_lock_stderr_on_flush")) rootGet("log_lock_stderr_on_flush") else true;
@@ -34,10 +35,9 @@ pub const defaults = struct {
     /// Active log scopes. If not set, it will default to `.log`.
     pub const log_scopes = if (rootHas("log_scopes")) blk: {
         const scopes = rootGet("log_scopes");
-        if (@typeInfo(@TypeOf(scopes)) != .Struct)
-            @compileError("log_scopes must be a tuple");
+        if (@typeInfo(@TypeOf(scopes)) != .Struct) @compileError("log_scopes must be a tuple");
         break :blk scopes;
-    } else .{.log}; // default scope
+    } else .{.log};
 
     const root = @import("root");
 
@@ -77,13 +77,14 @@ pub fn scopeActive(tag: @TypeOf(.Enum)) bool {
 /// var my_scope = scope(.scope_name, .{.Writer = @TypeOf(my_writer)}).init(my_writer);
 /// try my_scope.print("hello world!", .{});
 /// ```
-pub fn scope(
+pub fn Scope(
     tag: @TypeOf(.Enum),
     opt: struct {
         WriterType: ?type = null,
         buffer_size: usize = defaults.log_buffer_size,
         prefix: []const u8 = @tagName(tag) ++ ": ",
         postfix: []const u8 = "",
+        allow_colors: bool = true,
         lock_stderr_on_flush: bool = defaults.log_lock_stderr_on_flush,
     },
 ) type {
@@ -95,21 +96,38 @@ pub fn scope(
     });
 
     return struct {
-        underlying_writer: WrappingWriter =
-            WrappingWriter.init(if (opt.WriterType) |_| undefined else defaults.log_writer),
+        underlying_writer: WrappingWriter = if (opt.WriterType == null) WrappingWriter.init(defaults.log_writer) else undefined,
 
         const Self = @This();
         const Error = WrappingWriter.Error;
         const Writer = std.io.Writer(*Self, Error, write);
 
         pub fn init(underlying_writer: anytype) Self {
-            if (opt.WriterType == null) @compileError("provide opt.WriterType when initializing scope(...){}");
-            return Self{ .underlying_writer = WrappingWriter.init(underlying_writer) };
+            return .{ .underlying_writer = WrappingWriter.init(underlying_writer) };
+        }
+
+        /// Writes an ANSI color code to the writer.
+        pub fn setAnsiColor(s: *Self, color: tty.Color) Error!void {
+            if (!opt.allow_colors) return;
+            const ansi_tty = tty.Config{ .escape_codes = {} };
+            try ansi_tty.setColor(s.writer(), color);
+        }
+
+        /// Writes a color code to the writer using the provided tty configuration.
+        pub fn setColor(s: *Self, config: tty.Config, color: tty.Color) Error!void {
+            if (!opt.allow_colors) return;
+            try config.setColor(s.writer(), color);
+        }
+
+        /// Prints a formatted string within the specified `tag` scope.
+        pub fn print(s: *Self, comptime format: []const u8, args: anytype) Error!void {
+            if (!builtin.is_test and !scopeActive(tag)) return;
+            try s.underlying_writer.writer().print(format, args);
         }
 
         /// Prints a formatted string within the specified `tag` scope using
         /// `defaults.log_writer` and flushes automatically.
-        pub fn print(s: *Self, comptime format: []const u8, args: anytype) Error!void {
+        pub fn printAndFlush(s: *Self, comptime format: []const u8, args: anytype) Error!void {
             if (!builtin.is_test and !scopeActive(tag)) return;
             try s.underlying_writer.writer().print(format, args);
             try s.underlying_writer.flush();
@@ -135,11 +153,11 @@ pub fn scope(
 }
 
 /// Default scope.
-var defaultScope = scope(.log, .{ .prefix = defaults.log_prefix_default_scope }){};
+var defaultScope = Scope(.log, .{ .prefix = defaults.log_prefix_default_scope }){};
 
 /// Prints a formatted string within the default `.log` scope; use `scope(..)`
 /// for defining custom scopes.
-pub const print = defaultScope.print;
+pub const print = defaultScope.printAndFlush;
 
 /// Returns writer interface within the default `.log` scope, falling back to
 /// a "null writer" if the scope is inactive.
@@ -152,7 +170,7 @@ pub const writeFn = defaultScope.write;
 /// ensure all writes are committed.
 pub const flush = defaultScope.flush;
 
-test scope {
+test Scope {
     var out = std.BoundedArray(u8, 512){};
     const out_writer = out.writer();
 
@@ -160,13 +178,14 @@ test scope {
         return error.UnexpectedScopeIsActive;
 
     // normal usage
-    var sc = scope(.tag, .{
+    var sc = Scope(.tag, .{
         .buffer_size = 10,
         .WriterType = @TypeOf(out_writer),
     }).init(out_writer);
 
     try sc.print("long print", .{});
-    try sc.print("very long print", .{});
+    try t.expectEqualStrings("", out.slice());
+    try sc.printAndFlush("very long print", .{});
     try t.expectEqualStrings(
         \\tag: long print
         \\tag: very long 

@@ -9,6 +9,7 @@
 const std = @import("std");
 const t = std.testing;
 const ThisFile = @This();
+const log_in_tests = false;
 
 pub const Token = struct {
     tag: Tag,
@@ -211,11 +212,11 @@ pub const Token = struct {
         return Token{ .tag = tag, .loc = .{ .start = start, .end = end } };
     }
 
-    pub inline fn len(self: *const Token) usize {
+    pub fn len(self: *const Token) usize {
         return self.loc.end - self.loc.start;
     }
 
-    pub inline fn sliceFrom(self: *const Token, input: []const u8) []const u8 {
+    pub fn sliceFrom(self: *const Token, input: []const u8) []const u8 {
         return input[self.loc.start..self.loc.end];
     }
 
@@ -396,7 +397,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             };
 
             /// Applicable only for digits within '0'..'9'
-            pub inline fn hasDigit(base: @This(), digit: u8) bool {
+            pub fn hasDigit(base: @This(), digit: u8) bool {
                 return digit_value[digit] < @intFromEnum(base);
             }
 
@@ -422,14 +423,14 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
         }
 
         /// Returns the current line number the tokenizer is at. Starts at 1.
-        pub inline fn getLine(s: *const Self) usize {
+        pub fn getLine(s: *const Self) usize {
             if (!opt.track_location) @compileError("enable opt.track_location to use this function");
             return s.loc.line_number;
         }
 
         /// Returns the column number at the current line the tokenizer is at.
         /// Starts at 1.
-        pub inline fn getCol(s: *const Self) usize {
+        pub fn getCol(s: *const Self) usize {
             if (!opt.track_location) @compileError("enable opt.track_location to use this function");
             return s.index -% s.loc.line_start;
         }
@@ -442,7 +443,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
 
         /// Similar to `next()`, but starts with a specific state.
         /// Used to continue tokenization for streamed input.
-        pub inline fn nextFrom(s: *Self, from: State) Token {
+        pub fn nextFrom(s: *Self, from: State) Token {
             var token = Token{
                 .tag = .eof,
                 .loc = .{
@@ -1055,15 +1056,15 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             unreachable;
         }
 
-        pub inline fn skip(self: *Self) void {
+        pub fn skip(self: *Self) void {
             _ = self.next();
         }
 
-        pub inline fn rewind(s: *const Self, token: Token) void {
+        pub fn rewind(s: *const Self, token: Token) void {
             s.index = token.loc.start;
         }
 
-        pub inline fn rewindTo(s: *const Self, index: usize) void {
+        pub fn rewindTo(s: *const Self, index: usize) void {
             s.index = index;
         }
 
@@ -1079,32 +1080,35 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
         }
 
         const log = struct {
-            const _log = @import("utils/log.zig");
-            const color = @import("utils/ansi_colors.zig");
-            var scope = _log.scope(.tokenizer, .{}){};
-            const scopeActive = if (@hasDecl(ThisFile, "log_in_tests")) true else _log.scopeActive(.tokenizer);
+            const l = @import("utils/log.zig");
+            var scope = l.Scope(.tokenizer, .{}){};
+            const scopeActive = if (log_in_tests) true else l.scopeActive(.tokenizer);
         };
 
         fn logState(s: *const Self) void {
-            if (!log.scopeActive) return;
-            if (opt.track_location)
-                log.scope.print(
-                    "[state .{s} " ++ log.color.ctEscape(.{.faint}, "{d}:{d}:{d}") ++ "]\n",
-                    .{ @tagName(s.state), s.getLine(), s.getCol(), s.index },
-                ) catch {};
+            if (log.scopeActive) {
+                log.scope.print("[state .{s} ", .{@tagName(s.state)}) catch {};
+                log.scope.setAnsiColor(.dim) catch {};
+                if (opt.track_location) {
+                    log.scope.print("{d}:{d}:", .{ s.getLine(), s.getCol() }) catch {};
+                }
+                log.scope.print("{d}", .{s.index}) catch {};
+                log.scope.setAnsiColor(.reset) catch {};
+                log.scope.printAndFlush("]\n", .{}) catch {};
+            }
         }
 
         fn logToken(token: Token) void {
-            if (!log.scopeActive) return;
-            log.scope.print(
-                "[token " ++ log.color.ctEscape(.{.bold}, ".{s}") ++ ":{d}:{d}]\n",
-                .{ @tagName(token.tag), token.loc.start, token.loc.end },
-            ) catch {};
+            if (log.scopeActive) {
+                log.scope.print("[token ", .{}) catch {};
+                log.scope.setAnsiColor(.bold) catch {};
+                log.scope.print(".{s}", .{@tagName(token.tag)}) catch {};
+                log.scope.setAnsiColor(.reset) catch {};
+                log.scope.printAndFlush(":{d}:{d}]\n", .{ token.loc.start, token.loc.end }) catch {};
+            }
         }
     };
 }
-
-const log_in_tests = false;
 
 test Tokenizer {
     @setEvalBranchQuota(2000);

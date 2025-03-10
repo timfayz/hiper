@@ -112,11 +112,11 @@ pub const Node = struct {
         /// associativity means that the operator on the right is applied first.
         /// Right associative: `1 + 2 + 3` –› `(1 + (2 + 3))`.
         /// Left associative: `1 + 2 + 3` –› `((1 + 2) + 3)`.
-        pub inline fn isRightAssociative(node_tag: Tag) bool {
-            return if (node_tag.precedence() == 0 or node_tag == .arith_exp) true else false;
+        pub fn isRightAssociative(node_tag: Tag) bool {
+            return node_tag.precedence() == 0 or node_tag == .arith_exp;
         }
 
-        pub inline fn precedence(node_tag: Tag) std.meta.Tag(Tag) {
+        pub fn precedence(node_tag: Tag) std.meta.Tag(Tag) {
             return precedence_table[@intFromEnum(node_tag)];
         }
 
@@ -156,12 +156,10 @@ pub const Node = struct {
 };
 
 const Token = @import("tokenizer.zig").Token;
-const Tokenizer = @import("tokenizer.zig").Tokenizer(
-    .{
-        .tokenize_spaces = false,
-        .tokenize_indents = true,
-    },
-);
+const Tokenizer = @import("tokenizer.zig").Tokenizer(.{
+    .tokenize_spaces = false,
+    .tokenize_indents = true,
+});
 
 pub const Parser = struct {
     tokenizer: Tokenizer, // input
@@ -267,7 +265,7 @@ pub const Parser = struct {
 
         pub inline fn resolveAllUntilIncluding(s: *Pending, alloc: std.mem.Allocator, op_tag: Node.Tag) Error!void {
             log.action(@src().fn_name, @tagName(op_tag));
-            while (s.operators.popOrNull()) |operator| {
+            while (s.operators.pop()) |operator| {
                 try s.resolveAs(alloc, operator);
                 if (operator == op_tag) break;
             }
@@ -278,20 +276,20 @@ pub const Parser = struct {
             while (s.operators.getLastOrNull()) |operator| {
                 if (operator == op_tag) break;
                 const op = s.operators.pop();
-                try s.resolveAs(alloc, op);
+                try s.resolveAs(alloc, op.?);
             }
         }
 
         pub inline fn resolveAll(s: *Pending, alloc: std.mem.Allocator) Error!void {
             log.action(@src().fn_name, "");
-            while (s.operators.popOrNull()) |operator| {
+            while (s.operators.pop()) |operator| {
                 try s.resolveAs(alloc, operator);
             }
         }
 
         pub fn resolveOnce(s: *Pending, alloc: std.mem.Allocator) Error!void {
             log.action(@src().fn_name, "");
-            if (s.operators.popOrNull()) |op_tag| {
+            if (s.operators.pop()) |op_tag| {
                 try s.resolveAs(alloc, op_tag);
             }
         }
@@ -309,7 +307,7 @@ pub const Parser = struct {
                     if (s.operands.items.len < 1) return Error.InvalidOperandStack1;
 
                     var node = try Node.init(alloc, op_tag);
-                    node.data.single = s.operands.pop();
+                    node.data.single = s.operands.pop().?;
                     try s.operands.append(alloc, node);
                 },
 
@@ -323,8 +321,8 @@ pub const Parser = struct {
                     if (s.operands.items.len < 2) return Error.InvalidOperandStack2;
 
                     var node = try Node.init(alloc, op_tag);
-                    node.data.pair.right = s.operands.pop();
-                    node.data.pair.left = s.operands.pop();
+                    node.data.pair.right = s.operands.pop().?;
+                    node.data.pair.left = s.operands.pop().?;
                     try s.operands.append(alloc, node);
                 },
 
@@ -334,8 +332,8 @@ pub const Parser = struct {
                 => {
                     if (s.operands.items.len < 2) return Error.InvalidOperandStack2;
 
-                    const right = s.operands.pop();
-                    const left = s.operands.pop();
+                    const right = s.operands.pop().?;
+                    const left = s.operands.pop().?;
                     if (left.data == .list) {
                         try left.data.list.append(alloc, right);
                         try s.operands.append(alloc, left);
@@ -357,7 +355,7 @@ pub const Parser = struct {
                 => |key| {
                     if (s.operands.items.len < 2) return Error.InvalidOperandStack2;
 
-                    const val = s.operands.pop();
+                    const val = s.operands.pop().?;
                     const node = s.operands.getLast();
                     try node.data.map.put(alloc, key.keyName(), val);
                 },
@@ -493,7 +491,7 @@ pub const Parser = struct {
                         .right_paren,
                         .right_curly,
                         => |bracket| {
-                            if (p.pending.scopes.popOrNull()) |scope| {
+                            if (p.pending.scopes.pop()) |scope| {
                                 if (scope.closing_token != bracket) {
                                     return Error.UnbalancedClosingBracket;
                                 }
@@ -578,7 +576,7 @@ pub const Parser = struct {
         try p.pending.resolveAll(alloc);
         log.end();
 
-        if (p.pending.operands.popOrNull()) |node| {
+        if (p.pending.operands.pop()) |node| {
             return node;
         } else {
             if (p.token.tag != .eof)
@@ -636,8 +634,7 @@ pub const Parser = struct {
 
 const log = struct {
     const _log = @import("utils/log.zig");
-    const color = @import("utils/ansi_colors.zig");
-    var scope = _log.scope(.parser, .{}){};
+    var scope = _log.Scope(.parser, .{}){};
     const scopeActive = if (@hasDecl(ThisFile, "log_in_tests")) true else _log.scopeActive(.parser);
 
     pub fn stacks(p: *Parser) void {
@@ -690,7 +687,7 @@ const log = struct {
 
     pub fn cursor(p: *Parser) void {
         if (!scopeActive) return;
-        scope.print("[state:  " ++ color.ctEscape(.{.bold}, "{s}") ++ " at .{s}]\n", .{ @tagName(p.state), @tagName(p.token.tag) }) catch return;
+        scope.print("[state:  {s} at .{s}]\n", .{ @tagName(p.state), @tagName(p.token.tag) }) catch return;
     }
 
     pub fn action(name: []const u8, arg: []const u8) void {
