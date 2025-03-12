@@ -106,6 +106,12 @@ pub fn Scope(
             return .{ .underlying_writer = WrappingWriter.init(underlying_writer) };
         }
 
+        /// Checks if the current scope is active.
+        pub fn active(s: *Self) bool {
+            _ = s; // autofix
+            return scopeActive(tag);
+        }
+
         /// Writes an ANSI color code to the writer.
         pub fn setAnsiColor(s: *Self, color: tty.Color) Error!void {
             if (!opt.allow_colors) return;
