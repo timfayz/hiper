@@ -107,7 +107,7 @@ pub fn Scope(
         }
 
         /// Checks if the current scope is active.
-        pub fn active(s: *Self) bool {
+        pub fn active(s: *const Self) bool {
             _ = s; // autofix
             return scopeActive(tag);
         }

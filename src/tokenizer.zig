@@ -9,6 +9,7 @@
 const std = @import("std");
 const t = std.testing;
 const ThisFile = @This();
+var log = @import("utils/log.zig").Scope(.tokenizer, .{}){};
 const log_in_tests = false;
 
 pub const Token = struct {
@@ -218,10 +219,6 @@ pub const Token = struct {
 
     pub fn sliceFrom(self: *const Token, input: []const u8) []const u8 {
         return input[self.loc.start..self.loc.end];
-    }
-
-    pub fn print(self: *const Token) void {
-        std.debug.print("tag: {s}, len: {any}, state: {s}\n", .{ @tagName(self.tag), self.len(), @tagName(self.state) });
     }
 };
 
@@ -1079,32 +1076,26 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             return if (s.index < s.input.len) s.input[s.index] else 0;
         }
 
-        const log = struct {
-            const l = @import("utils/log.zig");
-            var scope = l.Scope(.tokenizer, .{}){};
-            const scopeActive = if (log_in_tests) true else l.scopeActive(.tokenizer);
-        };
-
         fn logState(s: *const Self) void {
-            if (log.scopeActive) {
-                log.scope.print("[state .{s} ", .{@tagName(s.state)}) catch {};
-                log.scope.setAnsiColor(.dim) catch {};
+            if (comptime log.active() or log_in_tests) {
+                log.print("[state .{s} ", .{@tagName(s.state)}) catch {};
+                log.setAnsiColor(.dim) catch {};
                 if (opt.track_location) {
-                    log.scope.print("{d}:{d}:", .{ s.getLine(), s.getCol() }) catch {};
+                    log.print("{d}:{d}:", .{ s.getLine(), s.getCol() }) catch {};
                 }
-                log.scope.print("{d}", .{s.index}) catch {};
-                log.scope.setAnsiColor(.reset) catch {};
-                log.scope.printAndFlush("]\n", .{}) catch {};
+                log.print("{d}", .{s.index}) catch {};
+                log.setAnsiColor(.reset) catch {};
+                log.printAndFlush("]\n", .{}) catch {};
             }
         }
 
         fn logToken(token: Token) void {
-            if (log.scopeActive) {
-                log.scope.print("[token ", .{}) catch {};
-                log.scope.setAnsiColor(.bold) catch {};
-                log.scope.print(".{s}", .{@tagName(token.tag)}) catch {};
-                log.scope.setAnsiColor(.reset) catch {};
-                log.scope.printAndFlush(":{d}:{d}]\n", .{ token.loc.start, token.loc.end }) catch {};
+            if (comptime log.active() or log_in_tests) {
+                log.print("[token ", .{}) catch {};
+                log.setAnsiColor(.bold) catch {};
+                log.print(".{s}", .{@tagName(token.tag)}) catch {};
+                log.setAnsiColor(.reset) catch {};
+                log.printAndFlush(":{d}:{d}]\n", .{ token.loc.start, token.loc.end }) catch {};
             }
         }
     };
