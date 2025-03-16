@@ -1031,7 +1031,7 @@ pub fn printWithCursor(
     try lp.printLineSegAuto(line);
     try lp.printNL();
     try lp.printCursorPad(index_pos);
-    try lp.printCursorHead(1); // rest = line.len -| index_pos -| range_len
+    try lp.printCursorHead(arg.range); // rest = line.len -| index_pos -| range_len
     try lp.printSpace(1);
     try lp.printCursorHint(arg.index);
     try lp.printNL();
