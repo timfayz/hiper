@@ -1,12 +1,25 @@
 // MIT License (c) Timur Fayzrakhmanov.
 // tim.fayzrakhmanov@gmail.com (github.com/timfayz)
 
+//! Public API:
+//! - Node
+//! - Error
+//! - ParserOptions
+//! - Parser
+
 const std = @import("std");
+const t = std.testing;
 const ThisFile = @This();
+const slice = @import("utils/slice.zig");
+const line = @import("utils/line.zig");
 pub const List = std.ArrayListUnmanaged;
 pub const Map = std.StringHashMapUnmanaged;
-var log = @import("utils/log.zig").Scope(.parser, .{}){};
-const t = std.testing;
+pub const Token = @import("tokenizer.zig").Token;
+pub const Tokenizer = @import("tokenizer.zig").Tokenizer(.{
+    .tokenize_spaces = false,
+    .tokenize_indents = true,
+});
+var logger = @import("utils/log.zig").Scope(.parser, .{}){};
 
 pub const Node = struct {
     tag: Tag,
@@ -29,8 +42,8 @@ pub const Node = struct {
         literal_identifier,
 
         // aggregation
-        op_enum_and,
-        op_enum_or,
+        list_and,
+        list_or,
 
         // arithmetics
         op_arith_add,
@@ -61,8 +74,8 @@ pub const Node = struct {
                 .op_arith_exp,
                 => .pair,
 
-                .op_enum_and,
-                .op_enum_or,
+                .list_and,
+                .list_or,
                 => .list,
 
                 .node_def,
@@ -79,12 +92,14 @@ pub const Node = struct {
         const precedence_table = blk: {
             const tags_len = std.meta.fields(Tag).len;
             var table = [1]std.meta.Tag(Tag){0} ** tags_len; // 0 for all, except:
-            table[@intFromEnum(Tag.op_arith_add)] = 1;
-            table[@intFromEnum(Tag.op_arith_sub)] = 1;
-            table[@intFromEnum(Tag.op_arith_mul)] = 2;
-            table[@intFromEnum(Tag.op_arith_div)] = 2;
-            table[@intFromEnum(Tag.op_arith_exp)] = 3;
-            table[@intFromEnum(Tag.op_arith_neg)] = 7;
+            table[@intFromEnum(Tag.list_and)] = 1;
+            table[@intFromEnum(Tag.list_or)] = 2;
+            table[@intFromEnum(Tag.op_arith_add)] = 3;
+            table[@intFromEnum(Tag.op_arith_sub)] = 3;
+            table[@intFromEnum(Tag.op_arith_mul)] = 4;
+            table[@intFromEnum(Tag.op_arith_div)] = 4;
+            table[@intFromEnum(Tag.op_arith_exp)] = 5;
+            table[@intFromEnum(Tag.op_arith_neg)] = 5;
             break :blk table;
         };
 
@@ -108,16 +123,22 @@ pub const Node = struct {
         pub fn isRightAssociative(tag: Tag) bool {
             return tag.precedence() == 0 or tag == .op_arith_exp;
         }
+
+        pub fn isHigherPrecedenceThan(left: Tag, right: Tag) bool {
+            return left.precedence() > right.precedence() or
+                (left.precedence() == right.precedence() and left.isRightAssociative());
+        }
     };
 
-    pub fn init(alloc: std.mem.Allocator, tag: Tag, token: Token) !*Node {
+    pub fn init(alloc: std.mem.Allocator, comptime tag: Tag, token: Token) !*Node {
         const node = try alloc.create(Node);
         node.tag = tag;
         node.token = token;
+        node.data = @unionInit(Data, @tagName(tag.dataTag()), undefined);
         return node;
     }
 
-    pub fn debug(node: *const Node, writer: anytype, input: []const u8, lvl: usize) !void {
+    pub fn dumpTree(node: *const Node, writer: anytype, input: []const u8, lvl: usize) !void {
         const tok = node.token.sliceFrom(input);
         try writer.writeByteNTimes(' ', lvl * 2);
         try writer.print(".{s} '{s}'\n", .{
@@ -128,30 +149,24 @@ pub const Node = struct {
         switch (node.tag.dataTag()) {
             .void => {},
             .pair => {
-                try node.data.pair.left.debug(writer, input, lvl +| 1);
-                try node.data.pair.right.debug(writer, input, lvl +| 1);
+                try node.data.pair.left.dumpTree(writer, input, lvl +| 1);
+                try node.data.pair.right.dumpTree(writer, input, lvl +| 1);
             },
             .list => {
                 for (node.data.list.items) |item| {
-                    try item.debug(writer, input, lvl +| 1);
+                    try item.dumpTree(writer, input, lvl +| 1);
                 }
             },
             else => unreachable,
         }
     }
 
-    pub fn debugString(node: *const Node, alloc: std.mem.Allocator, input: []const u8) ![]u8 {
+    pub fn dumpTreeString(node: *const Node, alloc: std.mem.Allocator, input: []const u8) ![]u8 {
         var str = std.ArrayListUnmanaged(u8){};
-        try node.debug(str.writer(alloc), input, 0);
+        try node.dumpTree(str.writer(alloc), input, 0);
         return try str.toOwnedSlice(alloc);
     }
 };
-
-const Token = @import("tokenizer.zig").Token;
-const Tokenizer = @import("tokenizer.zig").Tokenizer(.{
-    .tokenize_spaces = false,
-    .tokenize_indents = true,
-});
 
 pub const Error = error{
     OutOfMemory,
@@ -161,138 +176,260 @@ pub const Error = error{
     UnexpectedToken,
 };
 
-pub const Parser = struct {
-    alloc: std.mem.Allocator,
-    tokenizer: Tokenizer,
-    token: Token = undefined,
-    indent: Indent = .{},
-    pending_nodes: List(*Node) = .{},
-    parsed_nodes: List(*Node) = .{},
-    state: enum {
-        parse_prime,
-        parse_post_prime,
-    } = .parse_prime,
+pub const ParserOptions = struct {
+    log: bool = false,
+};
 
-    pub const Indent = struct {
-        trim_size: usize = 0,
-        size: usize = 0,
-        level: usize = 0,
-    };
+pub fn Parser(opt: ParserOptions) type {
+    return struct {
+        alloc: std.mem.Allocator,
+        tokenizer: Tokenizer,
+        token: Token = undefined,
+        indent: Indent = .{},
+        pending_nodes: List(*Node) = .{},
+        parsed_nodes: List(*Node) = .{},
+        scope: List(*Node) = .{},
+        pending_states: std.BoundedArray(State, 32) = .{},
+        state: State = .exp_prime,
 
-    pub fn parse(p: *Parser) Error!?*Node {
-        p.token = p.tokenizer.nextFrom(.space);
-        while (true) {
-            switch (p.state) {
-                .parse_prime => {
-                    switch (p.token.tag) {
-                        .space => { // can run only once
-                            p.indent.trim_size = 1;
-                        },
-                        .number => {
-                            const n = try Node.init(p.alloc, .literal_number, p.token);
-                            try p.parsed_nodes.append(p.alloc, n);
-                            p.state = .parse_post_prime;
-                        },
-                        .eof => break,
-                        else => return error.UnexpectedToken,
-                    }
-                },
+        const Self = @This();
 
-                // operators
-                .parse_post_prime => {
-                    switch (p.token.tag) {
-                        inline .minus, .plus, .asterisk, .slash => |tok_tag| {
-                            const node_tag = Node.Tag.fromTokenTag(tok_tag);
-                            // resolve
-                            for (p.pending_nodes.items) |pending| {
-                                if (pending.tag.precedence() >= node_tag.precedence() or
-                                    pending.tag.isRightAssociative())
-                                {
-                                    // resolve
-                                }
-                            }
-                            const node = try Node.init(p.alloc, node_tag, p.token);
-                            try p.pending_nodes.append(p.alloc, node);
-                            p.state = .parse_prime;
-                        },
-                        .eof => break,
-                        else => unreachable,
-                    }
-                },
-            }
-            p.token = p.tokenizer.next();
+        pub const State = enum {
+            exp_prime,
+            exp_post_prime,
+            exp_right_paren,
+            //
+            end,
+        };
+
+        pub const Indent = struct {
+            trim_size: usize = 0,
+            size: usize = 0,
+            level: usize = 0,
+        };
+
+        pub fn init(alloc: std.mem.Allocator, input: [:0]const u8) Self {
+            return .{ .tokenizer = .init(input), .alloc = alloc };
         }
-        while (p.pending_nodes.pop()) |pending| {
-            switch (pending.tag) {
-                .op_arith_add, .op_arith_mul => {
-                    pending.data.pair.right = p.parsed_nodes.pop().?;
-                    pending.data.pair.left = p.parsed_nodes.pop().?;
-                    try p.parsed_nodes.append(p.alloc, pending);
+
+        pub fn parseInput(alloc: std.mem.Allocator, input: [:0]const u8) Error!?*Node {
+            var p = Self.init(alloc, input);
+            return p.parse();
+        }
+
+        pub fn firstRun(p: *Self) void {
+            p.token = p.tokenizer.nextFrom(.space);
+            switch (p.token.tag) {
+                .space => p.indent.trim_size = p.token.len(),
+                else => {},
+            }
+        }
+
+        pub fn parse(p: *Self) Error!?*Node {
+            p.firstRun();
+            p.pending_states.append(.end) catch return error.OutOfMemory;
+            while (true) {
+                p.token = p.tokenizer.next();
+                p.log(logger.writer(), .token, false);
+                p.log(logger.writer(), .pending_nodes, false);
+                p.log(logger.writer(), .parsed_nodes, false);
+                p.log(logger.writer(), .state, true);
+                switch (p.state) {
+                    // empty | a.. | if.. | true.. | ..
+                    .exp_prime => {
+                        switch (p.token.tag) {
+                            .number => {
+                                const n = try Node.init(p.alloc, .literal_number, p.token);
+                                try p.parsed_nodes.append(p.alloc, n);
+                                p.state = .exp_post_prime;
+                            },
+                            // .left_paren => {
+                            //     p.pending_states = .exp_right_paren;
+                            // },
+                            else => {
+                                p.state = p.pending_states.pop().?;
+                            },
+                        }
+                    },
+
+                    // a+.. | a,..
+                    .exp_post_prime => {
+                        switch (p.token.tag) {
+                            inline .minus, .plus, .asterisk, .slash => |tag| {
+                                const node_tag = comptime Node.Tag.fromTokenTag(tag);
+                                while (p.pending_nodes.getLastOrNull()) |last| {
+                                    if (last.tag.isHigherPrecedenceThan(node_tag)) {
+                                        try p.resolveNode(last);
+                                        _ = p.pending_nodes.pop();
+                                    } else break;
+                                }
+                                const node = try Node.init(p.alloc, node_tag, p.token);
+                                try p.pending_nodes.append(p.alloc, node);
+                                p.state = .exp_prime;
+                            },
+                            .comma => {
+                                while (p.pending_nodes.pop()) |n| try p.resolveNode(n);
+                                const node = try Node.init(p.alloc, .list_and, p.token);
+                                try p.pending_nodes.append(p.alloc, node);
+                                p.state = .exp_prime;
+                            },
+                            else => {
+                                p.state = p.pending_states.pop().?;
+                            },
+                        }
+                    },
+
+                    .end => {
+                        switch (p.token.tag) {
+                            .eof => {
+                                while (p.pending_nodes.pop()) |n| try p.resolveNode(n);
+                                break;
+                            },
+                            else => return error.UnexpectedToken,
+                        }
+                    },
+
+                    else => unreachable,
+                }
+            }
+            p.log(logger.writer(), .all, true);
+
+            return p.parsed_nodes.pop();
+        }
+
+        pub fn resolveNode(p: *Self, node: *Node) !void {
+            switch (node.tag) {
+                .op_arith_add,
+                .op_arith_mul,
+                => {
+                    node.data.pair.right = p.parsed_nodes.pop().?;
+                    node.data.pair.left = p.parsed_nodes.pop().?;
+                    try p.parsed_nodes.append(p.alloc, node);
+                },
+                .list_and,
+                => {
+                    const tail = p.parsed_nodes.pop().?;
+                    const head = p.parsed_nodes.getLast();
+                    if (head.tag == .list_and) {
+                        try head.data.list.append(p.alloc, tail);
+                    } else {
+                        const list = try Node.init(p.alloc, .list_and, p.token);
+                        try list.data.list.append(p.alloc, p.parsed_nodes.pop().?); // head
+                        try list.data.list.append(p.alloc, tail);
+                        try p.parsed_nodes.append(p.alloc, list);
+                    }
                 },
                 else => unreachable,
             }
         }
-        // p.logSelf(.pending_nodes, false);
-        // p.logSelf(.parsed_nodes, false);
-        return p.parsed_nodes.pop();
-    }
 
-    pub fn logSelf(
-        p: *Parser,
-        comptime lvl: enum { all, indent, pending_nodes, parsed_nodes, token },
-        comptime extra_nl: bool,
-    ) void {
-        if (lvl == .all or lvl == .token) {
-            log.print("token.tag: {s}\n", .{@tagName(p.token.tag)}) catch {};
-        }
-        if (lvl == .all or lvl == .indent) {
-            log.print("indent.size: {d}\n", .{p.indent.size}) catch {};
-            log.print("indent.level: {d}\n", .{p.indent.level}) catch {};
-            log.print("indent.trim_size: {d}\n", .{p.indent.trim_size}) catch {};
-        }
-        if (lvl == .all or lvl == .pending_nodes) {
-            log.print("pending_nodes:\n", .{}) catch {};
-            var i: usize = p.pending_nodes.items.len;
-            while (i > 0) {
-                i -= 1;
-                const token = p.pending_nodes.items[i];
-                log.print("  .{s}\n", .{@tagName(token.tag)}) catch {};
+        pub fn log(
+            p: *const Self,
+            writer: anytype,
+            comptime part: enum {
+                all,
+                indent,
+                pending_nodes,
+                parsed_nodes,
+                token,
+                state,
+                cursor,
+            },
+            comptime extra_nl: bool,
+        ) void {
+            if (!opt.log) return;
+            switch (part) {
+                .token => {
+                    writer.print("token: .{s} '{s}'\n", .{ @tagName(p.token.tag), slice.first([]const u8, p.token.sliceFrom(p.tokenizer.input), 10) }) catch {};
+                },
+                .state => {
+                    writer.print("state: .{s}\n", .{@tagName(p.state)}) catch {};
+                },
+                .indent => {
+                    writer.print("indent.size: {d}\n", .{p.indent.size}) catch {};
+                    writer.print("indent.level: {d}\n", .{p.indent.level}) catch {};
+                    writer.print("indent.trim_size: {d}\n", .{p.indent.trim_size}) catch {};
+                },
+                .pending_nodes => {
+                    writer.print("pending_nodes:\n", .{}) catch {};
+                    var i: usize = p.pending_nodes.items.len;
+                    while (i > 0) {
+                        i -= 1;
+                        const node = p.pending_nodes.items[i];
+                        writer.print("  .{s} '{s}'\n", .{
+                            @tagName(node.tag),
+                            slice.first([]const u8, node.token.sliceFrom(p.tokenizer.input), 10),
+                        }) catch {};
+                    }
+                },
+                .parsed_nodes => {
+                    writer.print("parsed_nodes:\n", .{}) catch {};
+                    var i: usize = p.parsed_nodes.items.len;
+                    while (i > 0) {
+                        i -= 1;
+                        const node = p.parsed_nodes.items[i];
+                        writer.print("  .{s} '{s}'\n", .{
+                            @tagName(node.tag),
+                            slice.first([]const u8, node.token.sliceFrom(p.tokenizer.input), 10),
+                        }) catch {};
+                    }
+                },
+                .cursor => {
+                    line.printWithCursor(writer, p.tokenizer.input, .{
+                        .index = p.token.loc.start,
+                        .range = @max(p.token.len(), 1),
+                        .line_num = p.tokenizer.loc.line_number,
+                    }, .{ .around = 15 }, .{}) catch {};
+                },
+                .all => {
+                    log(p, writer, .token, false);
+                    log(p, writer, .state, false);
+                    log(p, writer, .indent, false);
+                    log(p, writer, .pending_nodes, false);
+                    log(p, writer, .parsed_nodes, false);
+                    log(p, writer, .cursor, false);
+                },
             }
+            if (extra_nl) writer.print("\n", .{}) catch {};
         }
-        if (lvl == .all or lvl == .parsed_nodes) {
-            log.print("parsed_nodes:\n", .{}) catch {};
-            var i: usize = p.parsed_nodes.items.len;
-            while (i > 0) {
-                i -= 1;
-                const node = p.parsed_nodes.items[i];
-                log.print("  .{s}\n", .{@tagName(node.tag)}) catch {};
-            }
-        }
-        if (extra_nl) log.print("\n", .{}) catch {};
-        log.flush() catch {};
-    }
-};
+    };
+}
 
 test Parser {
-    const input =
-        \\ 1 + 2 * 3
-    ;
-
-    var p = Parser{
-        .tokenizer = .init(input),
-        .alloc = std.heap.c_allocator,
-    };
-
-    const node = try p.parse();
-
-    if (node) |n| {
-        try t.expectEqualStrings(
-            \\.op_arith_add '+'
-            \\  .literal_number '1'
-            \\  .op_arith_mul '*'
-            \\    .literal_number '2'
-            \\    .literal_number '3'
-            \\
-        , try n.debugString(std.heap.c_allocator, input));
+    const alloc = std.heap.c_allocator;
+    defer logger.flush() catch {};
+    {
+        const input =
+            \\ 1 + 2 * 3
+        ;
+        var p = Parser(.{}).init(alloc, input);
+        const node = try p.parse();
+        if (node) |n| {
+            try t.expectEqualStrings(
+                \\.op_arith_add '+'
+                \\  .literal_number '1'
+                \\  .op_arith_mul '*'
+                \\    .literal_number '2'
+                \\    .literal_number '3'
+                \\
+            , try n.dumpTreeString(alloc, input));
+        } else return error.UnexpectedNull;
+    }
+    {
+        const input =
+            \\ 1, 2, 3
+        ;
+        var p = Parser(.{ .log = true }).init(alloc, input);
+        errdefer p.log(logger.writer(), .cursor, true);
+        const node = try p.parse();
+        if (node) |n| {
+            try t.expectEqualStrings(
+                \\.list_and ','
+                \\  .literal_number '1'
+                \\  .literal_number '2'
+                \\  .literal_number '3'
+                \\
+            , try n.dumpTreeString(alloc, input));
+        } else return error.UnexpectedNull;
     }
 }
