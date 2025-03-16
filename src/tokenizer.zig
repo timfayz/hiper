@@ -9,7 +9,7 @@
 const std = @import("std");
 const t = std.testing;
 const ThisFile = @This();
-var log = @import("utils/log.zig").Scope(.tokenizer, .{}){};
+var logger = @import("utils/log.zig").Scope(.tokenizer, .{}){};
 const log_in_tests = false;
 
 pub const Token = struct {
@@ -26,6 +26,7 @@ pub const Token = struct {
         incomplete, // invalid but potentially recoverable (if stream continues on the current token's state)
         invalid, // non-recoverable (even if stream continues)
         eof, // end of stream
+        empty, // can be used as non-initialized token
 
         // symbol tokens
         // whitespace
@@ -434,7 +435,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
 
         /// Returns the next recognized token. Read the Tokenizer doc comment
         /// for more details.
-        pub inline fn next(self: *Self) Token {
+        pub fn next(self: *Self) Token {
             return self.nextFrom(.complete);
         }
 
@@ -449,8 +450,8 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                 },
             };
             s.state = from;
-            s.logState();
             while (true) {
+                s.logState();
                 const c = s.input[s.index];
                 switch (s.state) {
                     // root state for others; equivalent to '.start' and '.end' states
@@ -1032,7 +1033,6 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                     else => break,
                 }
                 s.index +%= 1;
-                s.logState();
             }
             token.loc.end = s.index;
             s.logState();
@@ -1077,33 +1077,31 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
         }
 
         fn logState(s: *const Self) void {
-            if (comptime log.active() or log_in_tests) {
-                log.print("[state .{s} ", .{@tagName(s.state)}) catch {};
-                log.setAnsiColor(.dim) catch {};
+            if (comptime logger.active() or log_in_tests) {
+                logger.print("[state .{s} ", .{@tagName(s.state)}) catch {};
+                logger.setAnsiColor(.dim) catch {};
                 if (opt.track_location) {
-                    log.print("{d}:{d}:", .{ s.getLine(), s.getCol() }) catch {};
+                    logger.print("{d}:{d}:", .{ s.getLine(), s.getCol() }) catch {};
                 }
-                log.print("{d}", .{s.index}) catch {};
-                log.setAnsiColor(.reset) catch {};
-                log.printAndFlush("]\n", .{}) catch {};
+                logger.print("{d}", .{s.index}) catch {};
+                logger.setAnsiColor(.reset) catch {};
+                logger.printAndFlush("]\n", .{}) catch {};
             }
         }
 
         fn logToken(token: Token) void {
-            if (comptime log.active() or log_in_tests) {
-                log.print("[token ", .{}) catch {};
-                log.setAnsiColor(.bold) catch {};
-                log.print(".{s}", .{@tagName(token.tag)}) catch {};
-                log.setAnsiColor(.reset) catch {};
-                log.printAndFlush(":{d}:{d}]\n", .{ token.loc.start, token.loc.end }) catch {};
+            if (comptime logger.active() or log_in_tests) {
+                logger.print("[token ", .{}) catch {};
+                logger.setAnsiColor(.bold) catch {};
+                logger.print(".{s}", .{@tagName(token.tag)}) catch {};
+                logger.setAnsiColor(.reset) catch {};
+                logger.printAndFlush(":{d}:{d}]\n", .{ token.loc.start, token.loc.end }) catch {};
             }
         }
     };
 }
 
 test Tokenizer {
-    @setEvalBranchQuota(2000);
-
     // Test correct location tracking.
     {
         var scan = Tokenizer(.{ .track_location = true }).init("\nfoo!\n\n");
