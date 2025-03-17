@@ -23,7 +23,7 @@ var logger = @import("utils/log.zig").Scope(.parser, .{}){};
 
 pub const Node = struct {
     tag: Tag,
-    token: Token,
+    token: ?Token,
     data: Data,
 
     pub const Data = union {
@@ -36,6 +36,8 @@ pub const Node = struct {
     };
 
     pub const Tag = enum {
+        root,
+
         // primitives
         literal_number,
         literal_string,
@@ -78,6 +80,7 @@ pub const Node = struct {
                 .list_or,
                 => .list,
 
+                .root,
                 .node_def,
                 .node_ref,
                 .ctrl_for,
@@ -103,17 +106,6 @@ pub const Node = struct {
             break :blk table;
         };
 
-        pub fn fromTokenTag(comptime tok_tag: Token.Tag) Tag {
-            return switch (tok_tag) {
-                .minus => .op_arith_sub,
-                .plus => .op_arith_add,
-                .asterisk => .op_arith_mul,
-                .slash => .op_arith_div,
-                .caret => .op_arith_exp,
-                else => unreachable,
-            };
-        }
-
         pub fn precedence(tag: Tag) std.meta.Tag(Tag) {
             return precedence_table[@intFromEnum(tag)];
         }
@@ -130,7 +122,7 @@ pub const Node = struct {
         }
     };
 
-    pub fn init(alloc: std.mem.Allocator, comptime tag: Tag, token: Token) !*Node {
+    pub fn init(alloc: std.mem.Allocator, comptime tag: Tag, token: ?Token) !*Node {
         const node = try alloc.create(Node);
         node.tag = tag;
         node.token = token;
@@ -138,13 +130,17 @@ pub const Node = struct {
         return node;
     }
 
+    pub fn tokenString(node: *const Node, input: []const u8) []const u8 {
+        if (node.token) |tok| {
+            const str = tok.sliceFrom(input);
+            return if (str.len > 10) str[0..10] else str;
+        }
+        return "?";
+    }
+
     pub fn dumpTree(node: *const Node, writer: anytype, input: []const u8, lvl: usize) !void {
-        const tok = node.token.sliceFrom(input);
         try writer.writeByteNTimes(' ', lvl * 2);
-        try writer.print(".{s} '{s}'\n", .{
-            @tagName(node.tag),
-            if (tok.len > 10) tok[0..10] ++ ".." else tok,
-        });
+        try writer.print(".{s} '{s}'\n", .{ @tagName(node.tag), node.tokenString(input) });
         if (lvl > 16) return;
         switch (node.tag.dataTag()) {
             .void => {},
@@ -171,7 +167,7 @@ pub const Node = struct {
 pub const Error = error{
     OutOfMemory,
     InvalidToken,
-    UnalignedIndentSize,
+    UnalignedIndent,
     IndentationTooDeep,
     UnexpectedToken,
 };
@@ -186,9 +182,9 @@ pub fn Parser(opt: ParserOptions) type {
         tokenizer: Tokenizer,
         token: Token = undefined,
         indent: Indent = .{},
-        pending_nodes: List(*Node) = .{},
-        parsed_nodes: List(*Node) = .{},
-        scope: List(*Node) = .{},
+        unparsed: List(*Node) = .{},
+        parsed: List(*Node) = .{},
+        inline_scope: bool = false,
         pending_states: std.BoundedArray(State, 32) = .{},
         state: State = .exp_prime,
 
@@ -198,7 +194,6 @@ pub fn Parser(opt: ParserOptions) type {
             exp_prime,
             exp_post_prime,
             exp_right_paren,
-            //
             end,
         };
 
@@ -206,18 +201,27 @@ pub fn Parser(opt: ParserOptions) type {
             trim_size: usize = 0,
             size: usize = 0,
             level: usize = 0,
+
+            fn getLevel(self: *Indent, curr_size: usize) !usize {
+                if (curr_size == self.trim_size) return 0;
+                if (curr_size < self.trim_size) return error.UnalignedIndent;
+
+                if (self.size == 0 and curr_size > 0) { // init indent
+                    self.size = curr_size;
+                    return 1;
+                }
+
+                const size = curr_size - self.trim_size;
+                if (size % self.size != 0) return error.UnalignedIndent;
+                return size / self.size;
+            }
         };
 
         pub fn init(alloc: std.mem.Allocator, input: [:0]const u8) Self {
             return .{ .tokenizer = .init(input), .alloc = alloc };
         }
 
-        pub fn parseInput(alloc: std.mem.Allocator, input: [:0]const u8) Error!?*Node {
-            var p = Self.init(alloc, input);
-            return p.parse();
-        }
-
-        pub fn firstRun(p: *Self) void {
+        pub fn initTrimSize(p: *Self) void {
             p.token = p.tokenizer.nextFrom(.space);
             switch (p.token.tag) {
                 .space => p.indent.trim_size = p.token.len(),
@@ -226,25 +230,20 @@ pub fn Parser(opt: ParserOptions) type {
         }
 
         pub fn parse(p: *Self) Error!?*Node {
-            p.firstRun();
+            p.initTrimSize();
             p.pending_states.append(.end) catch return error.OutOfMemory;
             while (true) {
                 p.token = p.tokenizer.next();
-                p.log(logger.writer(), .token, false);
-                p.log(logger.writer(), .pending_nodes, false);
-                p.log(logger.writer(), .parsed_nodes, false);
-                p.log(logger.writer(), .state, true);
                 switch (p.state) {
-                    // empty | a.. | if.. | true.. | ..
+                    // empty | a.. | if.. | true.. | (..
                     .exp_prime => {
                         switch (p.token.tag) {
                             .number => {
-                                const n = try Node.init(p.alloc, .literal_number, p.token);
-                                try p.parsed_nodes.append(p.alloc, n);
+                                try p.parsed.append(p.alloc, try Node.init(p.alloc, .literal_number, p.token));
                                 p.state = .exp_post_prime;
                             },
                             // .left_paren => {
-                            //     p.pending_states = .exp_right_paren;
+                            //     try p.pending_states.append(.exp_right_paren);
                             // },
                             else => {
                                 p.state = p.pending_states.pop().?;
@@ -255,23 +254,36 @@ pub fn Parser(opt: ParserOptions) type {
                     // a+.. | a,..
                     .exp_post_prime => {
                         switch (p.token.tag) {
-                            inline .minus, .plus, .asterisk, .slash => |tag| {
-                                const node_tag = comptime Node.Tag.fromTokenTag(tag);
-                                while (p.pending_nodes.getLastOrNull()) |last| {
-                                    if (last.tag.isHigherPrecedenceThan(node_tag)) {
-                                        try p.resolveNode(last);
-                                        _ = p.pending_nodes.pop();
-                                    } else break;
-                                }
-                                const node = try Node.init(p.alloc, node_tag, p.token);
-                                try p.pending_nodes.append(p.alloc, node);
+                            inline .minus,
+                            .plus,
+                            .asterisk,
+                            .slash,
+                            => |tag| {
+                                const node_tag = switch (tag) {
+                                    .minus => .op_arith_sub,
+                                    .plus => .op_arith_add,
+                                    .asterisk => .op_arith_mul,
+                                    .slash => .op_arith_div,
+                                    .caret => .op_arith_exp,
+                                    else => unreachable,
+                                };
+                                try p.resolveUnparsedWhileHigherPre(node_tag);
+                                try p.unparsed.append(p.alloc, try Node.init(p.alloc, node_tag, p.token));
+                                p.inline_scope = true;
                                 p.state = .exp_prime;
                             },
                             .comma => {
-                                while (p.pending_nodes.pop()) |n| try p.resolveNode(n);
-                                const node = try Node.init(p.alloc, .list_and, p.token);
-                                try p.pending_nodes.append(p.alloc, node);
+                                try p.resolveUnparsed();
+                                try p.unparsed.append(p.alloc, try Node.init(p.alloc, .list_and, p.token));
                                 p.state = .exp_prime;
+                            },
+                            .indent => {
+                                if (try p.indent.getLevel(p.token.len()) == 0) {
+                                    try p.resolveUnparsed();
+                                    p.state = .exp_prime;
+                                } else {
+                                    p.state = p.pending_states.pop().?;
+                                }
                             },
                             else => {
                                 p.state = p.pending_states.pop().?;
@@ -282,7 +294,7 @@ pub fn Parser(opt: ParserOptions) type {
                     .end => {
                         switch (p.token.tag) {
                             .eof => {
-                                while (p.pending_nodes.pop()) |n| try p.resolveNode(n);
+                                try p.resolveUnparsed();
                                 break;
                             },
                             else => return error.UnexpectedToken,
@@ -291,36 +303,65 @@ pub fn Parser(opt: ParserOptions) type {
 
                     else => unreachable,
                 }
+                p.log(logger.writer(), .token, false);
+                p.log(logger.writer(), .unparsed, false);
+                p.log(logger.writer(), .parsed, false);
+                p.log(logger.writer(), .state, true);
             }
             p.log(logger.writer(), .all, true);
 
-            return p.parsed_nodes.pop();
+            return p.root();
         }
 
-        pub fn resolveNode(p: *Self, node: *Node) !void {
+        pub fn root(p: *Self) !*Node {
+            const node = try Node.init(p.alloc, .root, null);
+            node.data.list = p.parsed;
+            return node;
+        }
+
+        pub fn resolveUnparsedWhileHigherPre(p: *Self, tag: Node.Tag) !void {
+            while (p.unparsed.getLastOrNull()) |last| {
+                if (last.tag.isHigherPrecedenceThan(tag)) {
+                    try p.resolve(last);
+                    _ = p.unparsed.pop();
+                } else break;
+            }
+        }
+
+        pub fn resolveUnparsed(p: *Self) !void {
+            while (p.unparsed.pop()) |n|
+                try p.resolve(n);
+        }
+
+        pub fn resolve(p: *Self, node: *Node) !void {
             switch (node.tag) {
                 .op_arith_add,
                 .op_arith_mul,
                 => {
-                    node.data.pair.right = p.parsed_nodes.pop().?;
-                    node.data.pair.left = p.parsed_nodes.pop().?;
-                    try p.parsed_nodes.append(p.alloc, node);
+                    node.data.pair.right = p.parsed.pop().?;
+                    node.data.pair.left = p.parsed.pop().?;
+                    try p.parsed.append(p.alloc, node);
                 },
-                .list_and,
-                => {
-                    const tail = p.parsed_nodes.pop().?;
-                    const head = p.parsed_nodes.getLast();
-                    if (head.tag == .list_and) {
+                inline .list_and,
+                .list_or,
+                => |tag| {
+                    const tail = p.parsed.pop().?;
+                    const head = p.parsed.getLast();
+                    if (head.tag == tag) { // continue pushing
                         try head.data.list.append(p.alloc, tail);
                     } else {
-                        const list = try Node.init(p.alloc, .list_and, p.token);
-                        try list.data.list.append(p.alloc, p.parsed_nodes.pop().?); // head
-                        try list.data.list.append(p.alloc, tail);
-                        try p.parsed_nodes.append(p.alloc, list);
+                        try node.data.list.append(p.alloc, p.parsed.pop().?); // head
+                        try node.data.list.append(p.alloc, tail);
+                        try p.parsed.append(p.alloc, node);
                     }
                 },
                 else => unreachable,
             }
+        }
+
+        pub fn parseInput(alloc: std.mem.Allocator, input: [:0]const u8) Error!?*Node {
+            var p = Self.init(alloc, input);
+            return p.parse();
         }
 
         pub fn log(
@@ -329,8 +370,8 @@ pub fn Parser(opt: ParserOptions) type {
             comptime part: enum {
                 all,
                 indent,
-                pending_nodes,
-                parsed_nodes,
+                unparsed,
+                parsed,
                 token,
                 state,
                 cursor,
@@ -340,7 +381,10 @@ pub fn Parser(opt: ParserOptions) type {
             if (!opt.log) return;
             switch (part) {
                 .token => {
-                    writer.print("token: .{s} '{s}'\n", .{ @tagName(p.token.tag), slice.first([]const u8, p.token.sliceFrom(p.tokenizer.input), 10) }) catch {};
+                    writer.print("token: .{s} '{s}'\n", .{
+                        @tagName(p.token.tag),
+                        slice.first([]const u8, p.token.sliceFrom(p.tokenizer.input), 10),
+                    }) catch {};
                 },
                 .state => {
                     writer.print("state: .{s}\n", .{@tagName(p.state)}) catch {};
@@ -350,27 +394,27 @@ pub fn Parser(opt: ParserOptions) type {
                     writer.print("indent.level: {d}\n", .{p.indent.level}) catch {};
                     writer.print("indent.trim_size: {d}\n", .{p.indent.trim_size}) catch {};
                 },
-                .pending_nodes => {
-                    writer.print("pending_nodes:\n", .{}) catch {};
-                    var i: usize = p.pending_nodes.items.len;
+                .unparsed => {
+                    writer.print("unparsed:\n", .{}) catch {};
+                    var i: usize = p.unparsed.items.len;
                     while (i > 0) {
                         i -= 1;
-                        const node = p.pending_nodes.items[i];
+                        const node = p.unparsed.items[i];
                         writer.print("  .{s} '{s}'\n", .{
                             @tagName(node.tag),
-                            slice.first([]const u8, node.token.sliceFrom(p.tokenizer.input), 10),
+                            node.tokenString(p.tokenizer.input),
                         }) catch {};
                     }
                 },
-                .parsed_nodes => {
-                    writer.print("parsed_nodes:\n", .{}) catch {};
-                    var i: usize = p.parsed_nodes.items.len;
+                .parsed => {
+                    writer.print("parsed:\n", .{}) catch {};
+                    var i: usize = p.parsed.items.len;
                     while (i > 0) {
                         i -= 1;
-                        const node = p.parsed_nodes.items[i];
+                        const node = p.parsed.items[i];
                         writer.print("  .{s} '{s}'\n", .{
                             @tagName(node.tag),
-                            slice.first([]const u8, node.token.sliceFrom(p.tokenizer.input), 10),
+                            node.tokenString(p.tokenizer.input),
                         }) catch {};
                     }
                 },
@@ -385,12 +429,12 @@ pub fn Parser(opt: ParserOptions) type {
                     log(p, writer, .token, false);
                     log(p, writer, .state, false);
                     log(p, writer, .indent, false);
-                    log(p, writer, .pending_nodes, false);
-                    log(p, writer, .parsed_nodes, false);
+                    log(p, writer, .unparsed, false);
+                    log(p, writer, .parsed, false);
                     log(p, writer, .cursor, false);
                 },
             }
-            if (extra_nl) writer.print("\n", .{}) catch {};
+            if (extra_nl) writer.print("---\n", .{}) catch {};
         }
     };
 }
@@ -406,11 +450,12 @@ test Parser {
         const node = try p.parse();
         if (node) |n| {
             try t.expectEqualStrings(
-                \\.op_arith_add '+'
-                \\  .literal_number '1'
-                \\  .op_arith_mul '*'
-                \\    .literal_number '2'
-                \\    .literal_number '3'
+                \\.root '?'
+                \\  .op_arith_add '+'
+                \\    .literal_number '1'
+                \\    .op_arith_mul '*'
+                \\      .literal_number '2'
+                \\      .literal_number '3'
                 \\
             , try n.dumpTreeString(alloc, input));
         } else return error.UnexpectedNull;
@@ -418,16 +463,33 @@ test Parser {
     {
         const input =
             \\ 1, 2, 3
+            \\ 4
+            \\ 5
         ;
-        var p = Parser(.{ .log = true }).init(alloc, input);
-        errdefer p.log(logger.writer(), .cursor, true);
+        var p = Parser(.{}).init(alloc, input);
         const node = try p.parse();
         if (node) |n| {
             try t.expectEqualStrings(
-                \\.list_and ','
-                \\  .literal_number '1'
-                \\  .literal_number '2'
-                \\  .literal_number '3'
+                \\.root '?'
+                \\  .list_and ','
+                \\    .literal_number '1'
+                \\    .literal_number '2'
+                \\    .literal_number '3'
+                \\  .literal_number '4'
+                \\  .literal_number '5'
+                \\
+            , try n.dumpTreeString(alloc, input));
+        } else return error.UnexpectedNull;
+    }
+    {
+        const input =
+            \\
+        ;
+        var p = Parser(.{ .log = false }).init(alloc, input);
+        const node = try p.parse();
+        if (node) |n| {
+            try t.expectEqualStrings(
+                \\.root '?'
                 \\
             , try n.dumpTreeString(alloc, input));
         } else return error.UnexpectedNull;
