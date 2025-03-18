@@ -10,7 +10,7 @@
 //! - initFromSliceFilled()
 
 const std = @import("std");
-pub const Error = error{OutOfSpace};
+pub const Error = error{OutOfMemory};
 
 /// A generic stack implementation. Can be either fixed-array or slice-based. If
 /// `length` is null, the stack is slice-based and must be initialized from a
@@ -78,7 +78,7 @@ pub fn Stack(T: type, length: ?usize) type {
         }
 
         pub fn push(s: *Self, item: T) Error!void {
-            if (s.len >= s.arr.len) return Error.OutOfSpace;
+            if (s.len >= s.arr.len) return Error.OutOfMemory;
             s.arr[s.len] = item;
             s.len +|= 1;
             s.nil = false;
@@ -111,6 +111,10 @@ pub fn Stack(T: type, length: ?usize) type {
         }
 
         pub fn slice(s: *Self) []T {
+            return s.arr[0..s.len];
+        }
+
+        pub fn constSlice(s: *const Self) []const T {
             return s.arr[0..s.len];
         }
 
@@ -169,7 +173,7 @@ test Stack {
     try t.expectEqual(0, s.left());
     try t.expectEqual(true, s.full());
     try t.expectEqual(9, s.top());
-    try t.expectError(error.OutOfSpace, s.push(1));
+    try t.expectError(error.OutOfMemory, s.push(1));
 
     // pop
     var i: usize = s.len; // 10

@@ -12,6 +12,7 @@ const t = std.testing;
 const ThisFile = @This();
 const slice = @import("utils/slice.zig");
 const line = @import("utils/line.zig");
+const stack = @import("utils/stack.zig");
 pub const List = std.ArrayListUnmanaged;
 pub const Map = std.StringHashMapUnmanaged;
 pub const Token = @import("tokenizer.zig").Token;
@@ -46,6 +47,7 @@ pub const Node = struct {
         // aggregation
         list_and,
         list_or,
+        parens,
 
         // arithmetics
         op_arith_add,
@@ -66,6 +68,7 @@ pub const Node = struct {
 
         pub fn dataTag(tag: Tag) Data.Tag {
             return switch (tag) {
+                .parens,
                 .op_arith_neg,
                 => .single,
 
@@ -95,6 +98,7 @@ pub const Node = struct {
         const precedence_table = blk: {
             const tags_len = std.meta.fields(Tag).len;
             var table = [1]std.meta.Tag(Tag){0} ** tags_len; // 0 for all, except:
+            table[@intFromEnum(Tag.parens)] = 0;
             table[@intFromEnum(Tag.list_and)] = 1;
             table[@intFromEnum(Tag.list_or)] = 2;
             table[@intFromEnum(Tag.op_arith_add)] = 3;
@@ -118,7 +122,7 @@ pub const Node = struct {
 
         pub fn isHigherPrecedenceThan(left: Tag, right: Tag) bool {
             return left.precedence() > right.precedence() or
-                (left.precedence() == right.precedence() and left.isRightAssociative());
+                (left.precedence() == right.precedence() and !left.isRightAssociative());
         }
     };
 
@@ -144,6 +148,9 @@ pub const Node = struct {
         if (lvl > 16) return;
         switch (node.tag.dataTag()) {
             .void => {},
+            .single => {
+                try node.data.single.dumpTree(writer, input, lvl +| 1);
+            },
             .pair => {
                 try node.data.pair.left.dumpTree(writer, input, lvl +| 1);
                 try node.data.pair.right.dumpTree(writer, input, lvl +| 1);
@@ -153,7 +160,6 @@ pub const Node = struct {
                     try item.dumpTree(writer, input, lvl +| 1);
                 }
             },
-            else => unreachable,
         }
     }
 
@@ -170,6 +176,7 @@ pub const Error = error{
     UnalignedIndent,
     IndentationTooDeep,
     UnexpectedToken,
+    UnmatchedBracket,
 };
 
 pub const ParserOptions = struct {
@@ -185,16 +192,20 @@ pub fn Parser(opt: ParserOptions) type {
         unparsed: List(*Node) = .{},
         parsed: List(*Node) = .{},
         inline_scope: bool = false,
-        pending_states: std.BoundedArray(State, 32) = .{},
-        state: State = .exp_prime,
+        pending_states: stack.Stack(State, 32) = .{},
+        state: State = .parse_prime,
 
         const Self = @This();
 
         pub const State = enum {
-            exp_prime,
-            exp_post_prime,
-            exp_right_paren,
-            end,
+            parse_prime,
+            parse_post_prime,
+
+            parse_post_left_paren,
+            parse_end_right_paren,
+
+            phony,
+            parse_end,
         };
 
         pub const Indent = struct {
@@ -224,40 +235,73 @@ pub fn Parser(opt: ParserOptions) type {
         pub fn initTrimSize(p: *Self) void {
             p.token = p.tokenizer.nextFrom(.space);
             switch (p.token.tag) {
-                .space => p.indent.trim_size = p.token.len(),
+                .space => {
+                    p.indent.trim_size = p.token.len();
+                    p.token = p.tokenizer.next();
+                },
                 else => {},
             }
         }
 
         pub fn parse(p: *Self) Error!?*Node {
             p.initTrimSize();
-            p.pending_states.append(.end) catch return error.OutOfMemory;
+            try p.pending_states.push(.parse_end);
             while (true) {
-                p.token = p.tokenizer.next();
+                p.log(logger.writer(), .token, false);
+                p.log(logger.writer(), .unparsed, false);
+                p.log(logger.writer(), .parsed, false);
+                p.log(logger.writer(), .pending_states, false);
+                p.log(logger.writer(), .state, true);
                 switch (p.state) {
                     // empty | a.. | if.. | true.. | (..
-                    .exp_prime => {
+                    .parse_prime => {
                         switch (p.token.tag) {
                             .number => {
                                 try p.parsed.append(p.alloc, try Node.init(p.alloc, .literal_number, p.token));
-                                p.state = .exp_post_prime;
+                                p.token = p.tokenizer.next();
+                                p.state = .parse_post_prime;
                             },
-                            // .left_paren => {
-                            //     try p.pending_states.append(.exp_right_paren);
-                            // },
+                            .left_paren => {
+                                try p.unparsed.append(p.alloc, try Node.init(p.alloc, .parens, p.token));
+                                p.token = p.tokenizer.next();
+                                p.state = .parse_post_left_paren;
+                            },
                             else => {
-                                p.state = p.pending_states.pop().?;
+                                p.state = p.pending_states.pop();
                             },
                         }
                     },
 
+                    .parse_post_left_paren => {
+                        if (p.token.tag == .indent) {
+                            const curr_lvl = try p.indent.getLevel(p.token.len());
+                            if (curr_lvl != p.indent.level + 1) {
+                                return error.UnalignedIndent;
+                            }
+                            p.token = p.tokenizer.next();
+                            // inline = false
+                        }
+                        try p.pending_states.push(.parse_end_right_paren);
+                        p.state = .parse_prime;
+                    },
+                    .parse_end_right_paren => {
+                        if (p.token.tag != .right_paren) {
+                            return error.UnmatchedBracket;
+                        }
+                        try p.resolveAllUnparsedUntilInc(.parens);
+                        p.token = p.tokenizer.next();
+                        p.state = .parse_post_prime;
+                    },
+
                     // a+.. | a,..
-                    .exp_post_prime => {
+                    .parse_post_prime => {
                         switch (p.token.tag) {
                             inline .minus,
                             .plus,
                             .asterisk,
                             .slash,
+                            .comma,
+                            .pipe,
                             => |tag| {
                                 const node_tag = switch (tag) {
                                     .minus => .op_arith_sub,
@@ -265,36 +309,34 @@ pub fn Parser(opt: ParserOptions) type {
                                     .asterisk => .op_arith_mul,
                                     .slash => .op_arith_div,
                                     .caret => .op_arith_exp,
+                                    .comma => .list_and,
+                                    .pipe => .list_or,
                                     else => unreachable,
                                 };
-                                try p.resolveUnparsedWhileHigherPre(node_tag);
+                                try p.resolveAllUnparsedWhileHigherPre(node_tag);
                                 try p.unparsed.append(p.alloc, try Node.init(p.alloc, node_tag, p.token));
-                                p.inline_scope = true;
-                                p.state = .exp_prime;
-                            },
-                            .comma => {
-                                try p.resolveUnparsed();
-                                try p.unparsed.append(p.alloc, try Node.init(p.alloc, .list_and, p.token));
-                                p.state = .exp_prime;
+                                p.token = p.tokenizer.next();
+                                p.state = .parse_prime;
                             },
                             .indent => {
                                 if (try p.indent.getLevel(p.token.len()) == 0) {
-                                    try p.resolveUnparsed();
-                                    p.state = .exp_prime;
+                                    try p.resolveAllUnparsed();
+                                    p.token = p.tokenizer.next();
+                                    p.state = .parse_prime;
                                 } else {
-                                    p.state = p.pending_states.pop().?;
+                                    p.state = p.pending_states.pop();
                                 }
                             },
                             else => {
-                                p.state = p.pending_states.pop().?;
+                                p.state = p.pending_states.pop();
                             },
                         }
                     },
 
-                    .end => {
+                    .parse_end => {
                         switch (p.token.tag) {
                             .eof => {
-                                try p.resolveUnparsed();
+                                try p.resolveAllUnparsed();
                                 break;
                             },
                             else => return error.UnexpectedToken,
@@ -303,10 +345,6 @@ pub fn Parser(opt: ParserOptions) type {
 
                     else => unreachable,
                 }
-                p.log(logger.writer(), .token, false);
-                p.log(logger.writer(), .unparsed, false);
-                p.log(logger.writer(), .parsed, false);
-                p.log(logger.writer(), .state, true);
             }
             p.log(logger.writer(), .all, true);
 
@@ -319,21 +357,28 @@ pub fn Parser(opt: ParserOptions) type {
             return node;
         }
 
-        pub fn resolveUnparsedWhileHigherPre(p: *Self, tag: Node.Tag) !void {
+        pub fn resolveAllUnparsedWhileHigherPre(p: *Self, tag: Node.Tag) !void {
             while (p.unparsed.getLastOrNull()) |last| {
                 if (last.tag.isHigherPrecedenceThan(tag)) {
-                    try p.resolve(last);
+                    try p.resolveUnparsed(last);
                     _ = p.unparsed.pop();
                 } else break;
             }
         }
 
-        pub fn resolveUnparsed(p: *Self) !void {
-            while (p.unparsed.pop()) |n|
-                try p.resolve(n);
+        pub fn resolveAllUnparsedUntilInc(p: *Self, tag: Node.Tag) !void {
+            while (p.unparsed.pop()) |n| {
+                try p.resolveUnparsed(n);
+                if (n.tag == tag) break;
+            }
         }
 
-        pub fn resolve(p: *Self, node: *Node) !void {
+        pub fn resolveAllUnparsed(p: *Self) !void {
+            while (p.unparsed.pop()) |n|
+                try p.resolveUnparsed(n);
+        }
+
+        pub fn resolveUnparsed(p: *Self, node: *Node) !void {
             switch (node.tag) {
                 .op_arith_add,
                 .op_arith_mul,
@@ -355,6 +400,10 @@ pub fn Parser(opt: ParserOptions) type {
                         try p.parsed.append(p.alloc, node);
                     }
                 },
+                .parens => {
+                    node.data.single = p.parsed.pop().?;
+                    try p.parsed.append(p.alloc, node);
+                },
                 else => unreachable,
             }
         }
@@ -374,6 +423,7 @@ pub fn Parser(opt: ParserOptions) type {
                 parsed,
                 token,
                 state,
+                pending_states,
                 cursor,
             },
             comptime extra_nl: bool,
@@ -418,6 +468,17 @@ pub fn Parser(opt: ParserOptions) type {
                         }) catch {};
                     }
                 },
+                .pending_states => {
+                    writer.print("pending_states:\n", .{}) catch {};
+                    var i: usize = p.pending_states.constSlice().len;
+                    if (i == 0) {
+                        writer.print("  (empty)\n", .{}) catch {};
+                    } else while (i > 0) {
+                        i -= 1;
+                        const state = p.pending_states.arr[i];
+                        writer.print("  .{s}\n", .{@tagName(state)}) catch {};
+                    }
+                },
                 .cursor => {
                     line.printWithCursor(writer, p.tokenizer.input, .{
                         .index = p.token.loc.start,
@@ -427,10 +488,11 @@ pub fn Parser(opt: ParserOptions) type {
                 },
                 .all => {
                     log(p, writer, .token, false);
-                    log(p, writer, .state, false);
                     log(p, writer, .indent, false);
                     log(p, writer, .unparsed, false);
                     log(p, writer, .parsed, false);
+                    log(p, writer, .pending_states, false);
+                    log(p, writer, .state, false);
                     log(p, writer, .cursor, false);
                 },
             }
@@ -483,9 +545,10 @@ test Parser {
     }
     {
         const input =
-            \\
+            \\ ((1 + 2) * 3)
+            \\ 4
         ;
-        var p = Parser(.{ .log = false }).init(alloc, input);
+        var p = Parser(.{ .log = true }).init(alloc, input);
         const node = try p.parse();
         if (node) |n| {
             try t.expectEqualStrings(
