@@ -20,7 +20,7 @@ pub const Tokenizer = @import("tokenizer.zig").Tokenizer(.{
     .tokenize_spaces = false,
     .tokenize_indents = true,
 });
-var logger = @import("utils/log.zig").Scope(.parser, .{}){};
+pub var logger = @import("utils/log.zig").Scope(.parser, .{}){};
 
 pub const Node = struct {
     tag: Tag,
@@ -191,29 +191,29 @@ pub fn Parser(opt: ParserOptions) type {
         indent: Indent = .{},
         unparsed: List(*Node) = .{},
         parsed: List(*Node) = .{},
-        inline_scope: bool = false,
+        break_allowed: bool = true,
         pending_states: stack.Stack(State, 32) = .{},
-        state: State = .parse_prime,
+        state: State = .parse_expression,
 
         const Self = @This();
 
         pub const State = enum {
-            parse_prime,
-            parse_post_prime,
+            parse_expression,
+            parse_operator,
 
-            parse_post_left_paren,
-            parse_end_right_paren,
+            parse_paren_post_open,
+            parse_paren_close,
 
-            phony,
             parse_end,
+            phony,
         };
 
         pub const Indent = struct {
             trim_size: usize = 0,
             size: usize = 0,
-            level: usize = 0,
+            curr_level: usize = 0,
 
-            fn getLevel(self: *Indent, curr_size: usize) !usize {
+            fn level(self: *Indent, curr_size: usize) !usize {
                 if (curr_size == self.trim_size) return 0;
                 if (curr_size < self.trim_size) return error.UnalignedIndent;
 
@@ -235,7 +235,7 @@ pub fn Parser(opt: ParserOptions) type {
         pub fn initTrimSize(p: *Self) void {
             p.token = p.tokenizer.nextFrom(.space);
             switch (p.token.tag) {
-                .space => {
+                .space, .indent => {
                     p.indent.trim_size = p.token.len();
                     p.token = p.tokenizer.next();
                 },
@@ -254,17 +254,17 @@ pub fn Parser(opt: ParserOptions) type {
                 p.log(logger.writer(), .state, true);
                 switch (p.state) {
                     // empty | a.. | if.. | true.. | (..
-                    .parse_prime => {
+                    .parse_expression => {
                         switch (p.token.tag) {
                             .number => {
                                 try p.parsed.append(p.alloc, try Node.init(p.alloc, .literal_number, p.token));
                                 p.token = p.tokenizer.next();
-                                p.state = .parse_post_prime;
+                                p.state = .parse_operator;
                             },
                             .left_paren => {
                                 try p.unparsed.append(p.alloc, try Node.init(p.alloc, .parens, p.token));
                                 p.token = p.tokenizer.next();
-                                p.state = .parse_post_left_paren;
+                                p.state = .parse_paren_post_open;
                             },
                             else => {
                                 p.state = p.pending_states.pop();
@@ -272,29 +272,8 @@ pub fn Parser(opt: ParserOptions) type {
                         }
                     },
 
-                    .parse_post_left_paren => {
-                        if (p.token.tag == .indent) {
-                            const curr_lvl = try p.indent.getLevel(p.token.len());
-                            if (curr_lvl != p.indent.level + 1) {
-                                return error.UnalignedIndent;
-                            }
-                            p.token = p.tokenizer.next();
-                            // inline = false
-                        }
-                        try p.pending_states.push(.parse_end_right_paren);
-                        p.state = .parse_prime;
-                    },
-                    .parse_end_right_paren => {
-                        if (p.token.tag != .right_paren) {
-                            return error.UnmatchedBracket;
-                        }
-                        try p.resolveAllUnparsedUntilInc(.parens);
-                        p.token = p.tokenizer.next();
-                        p.state = .parse_post_prime;
-                    },
-
                     // a+.. | a,..
-                    .parse_post_prime => {
+                    .parse_operator => {
                         switch (p.token.tag) {
                             inline .minus,
                             .plus,
@@ -316,21 +295,45 @@ pub fn Parser(opt: ParserOptions) type {
                                 try p.resolveAllUnparsedWhileHigherPre(node_tag);
                                 try p.unparsed.append(p.alloc, try Node.init(p.alloc, node_tag, p.token));
                                 p.token = p.tokenizer.next();
-                                p.state = .parse_prime;
+                                p.state = .parse_expression;
                             },
                             .indent => {
-                                if (try p.indent.getLevel(p.token.len()) == 0) {
+                                if (!p.break_allowed) return Error.UnexpectedToken;
+                                if (try p.indent.level(p.token.len()) == p.indent.curr_level) {
                                     try p.resolveAllUnparsed();
                                     p.token = p.tokenizer.next();
-                                    p.state = .parse_prime;
+                                    p.state = .parse_expression;
                                 } else {
-                                    p.state = p.pending_states.pop();
+                                    return Error.UnexpectedToken;
                                 }
                             },
                             else => {
                                 p.state = p.pending_states.pop();
                             },
                         }
+                    },
+
+                    .parse_paren_post_open => {
+                        if (p.token.tag == .indent) {
+                            if (try p.indent.level(p.token.len()) != p.indent.curr_level + 1) {
+                                return error.UnalignedIndent;
+                            }
+                            p.token = p.tokenizer.next();
+                            p.break_allowed = true;
+                        } else {
+                            p.break_allowed = false;
+                        }
+                        try p.pending_states.push(.parse_paren_close);
+                        p.state = .parse_expression;
+                    },
+                    .parse_paren_close => {
+                        if (p.token.tag != .right_paren) {
+                            return error.UnmatchedBracket;
+                        }
+                        try p.resolveAllUnparsedUntilInc(.parens);
+                        p.break_allowed = true;
+                        p.token = p.tokenizer.next();
+                        p.state = .parse_operator;
                     },
 
                     .parse_end => {
@@ -441,7 +444,7 @@ pub fn Parser(opt: ParserOptions) type {
                 },
                 .indent => {
                     writer.print("indent.size: {d}\n", .{p.indent.size}) catch {};
-                    writer.print("indent.level: {d}\n", .{p.indent.level}) catch {};
+                    writer.print("indent.level: {d}\n", .{p.indent.curr_level}) catch {};
                     writer.print("indent.trim_size: {d}\n", .{p.indent.trim_size}) catch {};
                 },
                 .unparsed => {
@@ -503,24 +506,30 @@ pub fn Parser(opt: ParserOptions) type {
 
 test Parser {
     const alloc = std.heap.c_allocator;
+    const stderr = std.io.getStdErr();
+    const case = struct {
+        pub fn run(alc: std.mem.Allocator, node: ?*Node, expect: []const u8, input: []const u8) !void {
+            if (node) |n| {
+                try t.expectEqualStrings(expect, try n.dumpTreeString(alc, input));
+            } else return error.UnexpectedNull;
+        }
+    }.run;
+
     defer logger.flush() catch {};
     {
         const input =
             \\ 1 + 2 * 3
         ;
         var p = Parser(.{}).init(alloc, input);
-        const node = try p.parse();
-        if (node) |n| {
-            try t.expectEqualStrings(
-                \\.root '?'
-                \\  .op_arith_add '+'
-                \\    .literal_number '1'
-                \\    .op_arith_mul '*'
-                \\      .literal_number '2'
-                \\      .literal_number '3'
-                \\
-            , try n.dumpTreeString(alloc, input));
-        } else return error.UnexpectedNull;
+        try case(alloc, try p.parse(),
+            \\.root '?'
+            \\  .op_arith_add '+'
+            \\    .literal_number '1'
+            \\    .op_arith_mul '*'
+            \\      .literal_number '2'
+            \\      .literal_number '3'
+            \\
+        , input);
     }
     {
         const input =
@@ -529,32 +538,42 @@ test Parser {
             \\ 5
         ;
         var p = Parser(.{}).init(alloc, input);
-        const node = try p.parse();
-        if (node) |n| {
-            try t.expectEqualStrings(
-                \\.root '?'
-                \\  .list_and ','
-                \\    .literal_number '1'
-                \\    .literal_number '2'
-                \\    .literal_number '3'
-                \\  .literal_number '4'
-                \\  .literal_number '5'
-                \\
-            , try n.dumpTreeString(alloc, input));
-        } else return error.UnexpectedNull;
+        try case(alloc, try p.parse(),
+            \\.root '?'
+            \\  .list_and ','
+            \\    .literal_number '1'
+            \\    .literal_number '2'
+            \\    .literal_number '3'
+            \\  .literal_number '4'
+            \\  .literal_number '5'
+            \\
+        , input);
+    }
+    {
+        const input =
+            \\()
+        ;
+        var p = Parser(.{}).init(alloc, input);
+        try t.expectError(error.UnexpectedToken, p.parse());
     }
     {
         const input =
             \\ ((1 + 2) * 3)
             \\ 4
         ;
-        var p = Parser(.{ .log = true }).init(alloc, input);
-        const node = try p.parse();
-        if (node) |n| {
-            try t.expectEqualStrings(
-                \\.root '?'
-                \\
-            , try n.dumpTreeString(alloc, input));
-        } else return error.UnexpectedNull;
+        var p = Parser(.{}).init(alloc, input);
+        errdefer p.log(stderr.writer(), .cursor, true);
+        try case(alloc, try p.parse(),
+            \\.root '?'
+            \\  .parens '('
+            \\    .op_arith_mul '*'
+            \\      .parens '('
+            \\        .op_arith_add '+'
+            \\          .literal_number '1'
+            \\          .literal_number '2'
+            \\      .literal_number '3'
+            \\  .literal_number '4'
+            \\
+        , input);
     }
 }
