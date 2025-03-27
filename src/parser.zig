@@ -15,6 +15,7 @@ const line = @import("utils/line.zig");
 const stack = @import("utils/stack.zig");
 pub const List = std.ArrayListUnmanaged;
 pub const Map = std.StringHashMapUnmanaged;
+pub const Allocator = std.mem.Allocator;
 pub const Token = @import("tokenizer.zig").Token;
 pub const Tokenizer = @import("tokenizer.zig").Tokenizer(.{
     .tokenize_spaces = false,
@@ -37,16 +38,16 @@ pub const Node = struct {
     };
 
     pub const Tag = enum {
-        root,
-
         // primitives
         literal_number,
         literal_string,
         literal_identifier,
 
         // aggregation
-        list_and,
-        list_or,
+        inline_enum_and,
+        inline_enum_or,
+        block_enum_and,
+        block_enum_or,
         parens,
 
         // arithmetics
@@ -58,8 +59,8 @@ pub const Node = struct {
         op_arith_neg,
 
         // abstraction
-        node_def,
-        node_ref,
+        name_def,
+        name_ref,
 
         // control
         ctrl_for,
@@ -79,13 +80,14 @@ pub const Node = struct {
                 .op_arith_exp,
                 => .pair,
 
-                .list_and,
-                .list_or,
+                .block_enum_and,
+                .block_enum_or,
+                .inline_enum_and,
+                .inline_enum_or,
                 => .list,
 
-                .root,
-                .node_def,
-                .node_ref,
+                .name_def,
+                .name_ref,
                 .ctrl_for,
                 .ctrl_while,
                 .ctrl_if,
@@ -98,15 +100,16 @@ pub const Node = struct {
         const precedence_table = blk: {
             const tags_len = std.meta.fields(Tag).len;
             var table = [1]std.meta.Tag(Tag){0} ** tags_len; // 0 for all, except:
-            table[@intFromEnum(Tag.parens)] = 0;
-            table[@intFromEnum(Tag.list_and)] = 1;
-            table[@intFromEnum(Tag.list_or)] = 2;
-            table[@intFromEnum(Tag.op_arith_add)] = 3;
-            table[@intFromEnum(Tag.op_arith_sub)] = 3;
-            table[@intFromEnum(Tag.op_arith_mul)] = 4;
-            table[@intFromEnum(Tag.op_arith_div)] = 4;
-            table[@intFromEnum(Tag.op_arith_exp)] = 5;
-            table[@intFromEnum(Tag.op_arith_neg)] = 5;
+            table[@intFromEnum(Tag.block_enum_and)] = 1;
+            table[@intFromEnum(Tag.block_enum_or)] = 2;
+            table[@intFromEnum(Tag.inline_enum_and)] = 3;
+            table[@intFromEnum(Tag.inline_enum_or)] = 4;
+            table[@intFromEnum(Tag.op_arith_add)] = 5;
+            table[@intFromEnum(Tag.op_arith_sub)] = 5;
+            table[@intFromEnum(Tag.op_arith_mul)] = 6;
+            table[@intFromEnum(Tag.op_arith_div)] = 6;
+            table[@intFromEnum(Tag.op_arith_exp)] = 7;
+            table[@intFromEnum(Tag.op_arith_neg)] = 7;
             break :blk table;
         };
 
@@ -126,7 +129,7 @@ pub const Node = struct {
         }
     };
 
-    pub fn init(alloc: std.mem.Allocator, comptime tag: Tag, token: ?Token) !*Node {
+    pub fn init(alloc: Allocator, comptime tag: Tag, token: ?Token) !*Node {
         const node = try alloc.create(Node);
         node.tag = tag;
         node.token = token;
@@ -142,30 +145,34 @@ pub const Node = struct {
         return "?";
     }
 
-    pub fn dumpTree(node: *const Node, writer: anytype, input: []const u8, lvl: usize) !void {
-        try writer.writeByteNTimes(' ', lvl * 2);
+    pub fn dump(node: *const Node, writer: anytype, input: []const u8) !void {
         try writer.print(".{s} '{s}'\n", .{ @tagName(node.tag), node.tokenString(input) });
+    }
+
+    pub fn dumpRec(node: *const Node, writer: anytype, input: []const u8, lvl: usize) !void {
+        try writer.writeByteNTimes(' ', lvl * 2);
+        try node.dump(writer, input);
         if (lvl > 16) return;
         switch (node.tag.dataTag()) {
             .void => {},
             .single => {
-                try node.data.single.dumpTree(writer, input, lvl +| 1);
+                try node.data.single.dumpRec(writer, input, lvl +| 1);
             },
             .pair => {
-                try node.data.pair.left.dumpTree(writer, input, lvl +| 1);
-                try node.data.pair.right.dumpTree(writer, input, lvl +| 1);
+                try node.data.pair.left.dumpRec(writer, input, lvl +| 1);
+                try node.data.pair.right.dumpRec(writer, input, lvl +| 1);
             },
             .list => {
                 for (node.data.list.items) |item| {
-                    try item.dumpTree(writer, input, lvl +| 1);
+                    try item.dumpRec(writer, input, lvl +| 1);
                 }
             },
         }
     }
 
-    pub fn dumpTreeString(node: *const Node, alloc: std.mem.Allocator, input: []const u8) ![]u8 {
+    pub fn dumpRecString(node: *const Node, alloc: Allocator, input: []const u8) ![]u8 {
         var str = std.ArrayListUnmanaged(u8){};
-        try node.dumpTree(str.writer(alloc), input, 0);
+        try node.dumpRec(str.writer(alloc), input, 0);
         return try str.toOwnedSlice(alloc);
     }
 };
@@ -185,24 +192,26 @@ pub const ParserOptions = struct {
 
 pub fn Parser(opt: ParserOptions) type {
     return struct {
-        alloc: std.mem.Allocator,
+        alloc: Allocator,
         tokenizer: Tokenizer,
         token: Token = undefined,
         indent: Indent = .{},
-        unparsed: List(*Node) = .{},
-        parsed: List(*Node) = .{},
-        break_allowed: bool = true,
-        pending_states: stack.Stack(State, 32) = .{},
-        state: State = .parse_expression,
+        pending: Pending = .{},
+        inline_mode: bool = false,
+        state: State = .parse_expr,
 
         const Self = @This();
 
         pub const State = enum {
-            parse_expression,
+            parse_expr,
             parse_operator,
 
             parse_paren_post_open,
-            parse_paren_close,
+            parse_paren_close_end,
+
+            parse_name_post_dot,
+            parse_name_post_dot_id,
+            parse_name_assign_end,
 
             parse_end,
             phony,
@@ -213,7 +222,7 @@ pub fn Parser(opt: ParserOptions) type {
             size: usize = 0,
             curr_level: usize = 0,
 
-            fn level(self: *Indent, curr_size: usize) !usize {
+            fn levelOf(self: *Indent, curr_size: usize) !usize {
                 if (curr_size == self.trim_size) return 0;
                 if (curr_size < self.trim_size) return error.UnalignedIndent;
 
@@ -228,7 +237,78 @@ pub fn Parser(opt: ParserOptions) type {
             }
         };
 
-        pub fn init(alloc: std.mem.Allocator, input: [:0]const u8) Self {
+        pub const Pending = struct {
+            operators: List(*Node) = .{},
+            operands: List(*Node) = .{},
+            states: stack.Stack(State, 64) = .{},
+
+            pub fn pushState(p: *Pending, state: State) !void {
+                try p.states.push(state);
+            }
+
+            pub fn pushOperand(p: *Pending, alloc: Allocator, comptime node_tag: Node.Tag, token: ?Token) !void {
+                try p.operands.append(alloc, try Node.init(alloc, node_tag, token));
+            }
+
+            pub fn pushOperator(p: *Pending, alloc: Allocator, comptime node_tag: Node.Tag, token: ?Token) !void {
+                try p.operators.append(alloc, try Node.init(alloc, node_tag, token));
+            }
+
+            pub fn reduceAllOperatorsWhileHigherPre(p: *Pending, alloc: Allocator, tag: Node.Tag) !void {
+                while (p.operators.getLastOrNull()) |last| {
+                    if (last.tag.isHigherPrecedenceThan(tag)) {
+                        try p.reduceOperator(alloc, last);
+                        _ = p.operators.pop();
+                    } else break;
+                }
+            }
+
+            pub fn reduceAllOperatorsUntilInc(p: *Pending, alloc: Allocator, tag: Node.Tag) !void {
+                while (p.operators.pop()) |n| {
+                    try p.reduceOperator(alloc, n);
+                    if (n.tag == tag) break;
+                }
+            }
+
+            pub fn reduceAllOperators(p: *Pending, alloc: Allocator) !void {
+                while (p.operators.pop()) |n|
+                    try p.reduceOperator(alloc, n);
+            }
+
+            pub fn reduceOperator(p: *Pending, alloc: Allocator, node: *Node) !void {
+                switch (node.tag) {
+                    .op_arith_add,
+                    .op_arith_mul,
+                    => {
+                        node.data.pair.right = p.operands.pop().?;
+                        node.data.pair.left = p.operands.pop().?;
+                        try p.operands.append(alloc, node);
+                    },
+                    inline .inline_enum_and,
+                    .inline_enum_or,
+                    .block_enum_and,
+                    .block_enum_or,
+                    => |tag| {
+                        const tail = p.operands.pop().?;
+                        const head = p.operands.getLast();
+                        if (head.tag == tag) { // continue pushing
+                            try head.data.list.append(alloc, tail);
+                        } else {
+                            try node.data.list.append(alloc, p.operands.pop().?); // head
+                            try node.data.list.append(alloc, tail);
+                            try p.operands.append(alloc, node);
+                        }
+                    },
+                    .parens => {
+                        node.data.single = p.operands.pop().?;
+                        try p.operands.append(alloc, node);
+                    },
+                    else => unreachable,
+                }
+            }
+        };
+
+        pub fn init(alloc: Allocator, input: [:0]const u8) Self {
             return .{ .tokenizer = .init(input), .alloc = alloc };
         }
 
@@ -237,42 +317,66 @@ pub fn Parser(opt: ParserOptions) type {
             switch (p.token.tag) {
                 .space, .indent => {
                     p.indent.trim_size = p.token.len();
-                    p.token = p.tokenizer.next();
+                    p.nextToken();
                 },
                 else => {},
             }
         }
 
+        pub fn assertTokenOrelse(p: *Self, token_tag: Token.Tag, err: Error) Error!void {
+            if (p.token.tag != token_tag)
+                return err;
+        }
+
+        pub fn nextState(p: *Self, state: State) void {
+            p.state = state;
+        }
+
+        pub fn nextToken(p: *Self) void {
+            p.token = p.tokenizer.next();
+        }
+
         pub fn parse(p: *Self) Error!?*Node {
             p.initTrimSize();
-            try p.pending_states.push(.parse_end);
+            try p.pending.pushState(.parse_end);
             while (true) {
                 p.log(logger.writer(), .token, false);
-                p.log(logger.writer(), .unparsed, false);
-                p.log(logger.writer(), .parsed, false);
+                p.log(logger.writer(), .pending_operators, false);
+                p.log(logger.writer(), .pending_operands, false);
                 p.log(logger.writer(), .pending_states, false);
                 p.log(logger.writer(), .state, true);
                 switch (p.state) {
-                    // empty | a.. | if.. | true.. | (..
-                    .parse_expression => {
+                    // ----------------
+                    // .parse_expr
+                    // ----------------
+                    .parse_expr => {
                         switch (p.token.tag) {
                             .number => {
-                                try p.parsed.append(p.alloc, try Node.init(p.alloc, .literal_number, p.token));
-                                p.token = p.tokenizer.next();
-                                p.state = .parse_operator;
+                                try p.pending.pushOperand(p.alloc, .literal_number, p.token);
+                                p.nextToken();
+                                p.nextState(.parse_operator);
                             },
                             .left_paren => {
-                                try p.unparsed.append(p.alloc, try Node.init(p.alloc, .parens, p.token));
-                                p.token = p.tokenizer.next();
-                                p.state = .parse_paren_post_open;
+                                try p.pending.pushOperator(p.alloc, .parens, p.token);
+                                p.nextToken();
+                                p.nextState(.parse_paren_post_open);
+                            },
+                            .dot => {
+                                p.nextToken();
+                                p.nextState(.parse_name_post_dot);
+                            },
+                            .identifier => {
+                                //
                             },
                             else => {
-                                p.state = p.pending_states.pop();
+                                p.state = p.pending.states.pop();
                             },
                         }
                     },
 
-                    // a+.. | a,..
+                    // ----------------
+                    // .parse_operator
+                    // ----------------
                     .parse_operator => {
                         switch (p.token.tag) {
                             inline .minus,
@@ -288,58 +392,93 @@ pub fn Parser(opt: ParserOptions) type {
                                     .asterisk => .op_arith_mul,
                                     .slash => .op_arith_div,
                                     .caret => .op_arith_exp,
-                                    .comma => .list_and,
-                                    .pipe => .list_or,
+                                    .comma => .inline_enum_and,
+                                    .pipe => .inline_enum_or,
                                     else => unreachable,
                                 };
-                                try p.resolveAllUnparsedWhileHigherPre(node_tag);
-                                try p.unparsed.append(p.alloc, try Node.init(p.alloc, node_tag, p.token));
-                                p.token = p.tokenizer.next();
-                                p.state = .parse_expression;
+                                try p.pending.reduceAllOperatorsWhileHigherPre(p.alloc, node_tag);
+                                try p.pending.pushOperator(p.alloc, node_tag, p.token);
+                                p.nextToken();
+                                // p.inline_mode = true;
+                                p.nextState(.parse_expr);
                             },
                             .indent => {
-                                if (!p.break_allowed) return Error.UnexpectedToken;
-                                if (try p.indent.level(p.token.len()) == p.indent.curr_level) {
-                                    try p.resolveAllUnparsed();
-                                    p.token = p.tokenizer.next();
-                                    p.state = .parse_expression;
+                                if (p.inline_mode) return Error.UnexpectedToken;
+                                if (try p.indent.levelOf(p.token.len()) == p.indent.curr_level) {
+                                    try p.pending.reduceAllOperatorsWhileHigherPre(p.alloc, .block_enum_and);
+                                    try p.pending.pushOperator(p.alloc, .block_enum_and, p.token);
+                                    p.nextToken();
+                                    p.nextState(.parse_expr);
                                 } else {
                                     return Error.UnexpectedToken;
                                 }
                             },
                             else => {
-                                p.state = p.pending_states.pop();
+                                p.state = p.pending.states.pop();
                             },
                         }
                     },
 
+                    // ----------------
+                    // .parse_name
+                    // ----------------
+                    .parse_name_post_dot => {
+                        try p.assertTokenOrelse(.identifier, error.UnexpectedToken);
+                        try p.pending.pushOperand(p.alloc, .name_def, p.token);
+                        p.nextToken();
+                        p.nextState(.parse_name_post_dot_id);
+                    },
+                    .parse_name_post_dot_id => {
+                        switch (p.token.tag) {
+                            .indent => { // assignment
+                                if (try p.indent.levelOf(p.token.len()) == p.indent.curr_level + 1) {
+                                    if (p.inline_mode) return Error.UnexpectedToken;
+                                    try p.pending.pushState(.parse_name_assign_end);
+                                    p.nextToken();
+                                }
+                                p.nextState(.parse_expr);
+                            },
+                            .left_square => { // attributes
+
+                            },
+                            else => {
+                                p.nextState(.parse_operator);
+                            },
+                        }
+                    },
+                    .parse_name_assign_end => {
+                        try p.pending.reduceAllOperatorsUntilInc(p.alloc, .parens);
+                        p.nextState(.parse_expr);
+                    },
+
+                    // ----------------
+                    // .parse_paren
+                    // ----------------
                     .parse_paren_post_open => {
                         if (p.token.tag == .indent) {
-                            if (try p.indent.level(p.token.len()) != p.indent.curr_level + 1) {
+                            if (try p.indent.levelOf(p.token.len()) != p.indent.curr_level + 1) {
                                 return error.UnalignedIndent;
                             }
-                            p.token = p.tokenizer.next();
-                            p.break_allowed = true;
+                            p.nextToken();
+                            p.inline_mode = false;
                         } else {
-                            p.break_allowed = false;
+                            p.inline_mode = true;
                         }
-                        try p.pending_states.push(.parse_paren_close);
-                        p.state = .parse_expression;
+                        try p.pending.pushState(.parse_paren_close_end);
+                        p.nextState(.parse_expr);
                     },
-                    .parse_paren_close => {
-                        if (p.token.tag != .right_paren) {
-                            return error.UnmatchedBracket;
-                        }
-                        try p.resolveAllUnparsedUntilInc(.parens);
-                        p.break_allowed = true;
-                        p.token = p.tokenizer.next();
-                        p.state = .parse_operator;
+                    .parse_paren_close_end => {
+                        try p.assertTokenOrelse(.right_paren, error.UnmatchedBracket);
+                        try p.pending.reduceAllOperatorsUntilInc(p.alloc, .parens);
+                        p.inline_mode = false;
+                        p.nextToken();
+                        p.nextState(.parse_operator);
                     },
 
                     .parse_end => {
                         switch (p.token.tag) {
                             .eof => {
-                                try p.resolveAllUnparsed();
+                                try p.pending.reduceAllOperators(p.alloc);
                                 break;
                             },
                             else => return error.UnexpectedToken,
@@ -351,67 +490,10 @@ pub fn Parser(opt: ParserOptions) type {
             }
             p.log(logger.writer(), .all, true);
 
-            return p.root();
+            return p.pending.operands.pop();
         }
 
-        pub fn root(p: *Self) !*Node {
-            const node = try Node.init(p.alloc, .root, null);
-            node.data.list = p.parsed;
-            return node;
-        }
-
-        pub fn resolveAllUnparsedWhileHigherPre(p: *Self, tag: Node.Tag) !void {
-            while (p.unparsed.getLastOrNull()) |last| {
-                if (last.tag.isHigherPrecedenceThan(tag)) {
-                    try p.resolveUnparsed(last);
-                    _ = p.unparsed.pop();
-                } else break;
-            }
-        }
-
-        pub fn resolveAllUnparsedUntilInc(p: *Self, tag: Node.Tag) !void {
-            while (p.unparsed.pop()) |n| {
-                try p.resolveUnparsed(n);
-                if (n.tag == tag) break;
-            }
-        }
-
-        pub fn resolveAllUnparsed(p: *Self) !void {
-            while (p.unparsed.pop()) |n|
-                try p.resolveUnparsed(n);
-        }
-
-        pub fn resolveUnparsed(p: *Self, node: *Node) !void {
-            switch (node.tag) {
-                .op_arith_add,
-                .op_arith_mul,
-                => {
-                    node.data.pair.right = p.parsed.pop().?;
-                    node.data.pair.left = p.parsed.pop().?;
-                    try p.parsed.append(p.alloc, node);
-                },
-                inline .list_and,
-                .list_or,
-                => |tag| {
-                    const tail = p.parsed.pop().?;
-                    const head = p.parsed.getLast();
-                    if (head.tag == tag) { // continue pushing
-                        try head.data.list.append(p.alloc, tail);
-                    } else {
-                        try node.data.list.append(p.alloc, p.parsed.pop().?); // head
-                        try node.data.list.append(p.alloc, tail);
-                        try p.parsed.append(p.alloc, node);
-                    }
-                },
-                .parens => {
-                    node.data.single = p.parsed.pop().?;
-                    try p.parsed.append(p.alloc, node);
-                },
-                else => unreachable,
-            }
-        }
-
-        pub fn parseInput(alloc: std.mem.Allocator, input: [:0]const u8) Error!?*Node {
+        pub fn parseInput(alloc: Allocator, input: [:0]const u8) Error!?*Node {
             var p = Self.init(alloc, input);
             return p.parse();
         }
@@ -422,11 +504,11 @@ pub fn Parser(opt: ParserOptions) type {
             comptime part: enum {
                 all,
                 indent,
-                unparsed,
-                parsed,
                 token,
                 state,
                 pending_states,
+                pending_operators,
+                pending_operands,
                 cursor,
             },
             comptime extra_nl: bool,
@@ -447,38 +529,29 @@ pub fn Parser(opt: ParserOptions) type {
                     writer.print("indent.level: {d}\n", .{p.indent.curr_level}) catch {};
                     writer.print("indent.trim_size: {d}\n", .{p.indent.trim_size}) catch {};
                 },
-                .unparsed => {
-                    writer.print("unparsed:\n", .{}) catch {};
-                    var i: usize = p.unparsed.items.len;
+                .pending_operands,
+                .pending_operators,
+                => |tag| {
+                    writer.print(@tagName(tag) ++ ":\n", .{}) catch {};
+                    const src = switch (tag) {
+                        .pending_operands => p.pending.operands,
+                        .pending_operators => p.pending.operators,
+                        else => unreachable,
+                    };
+                    var i: usize = src.items.len;
                     while (i > 0) {
                         i -= 1;
-                        const node = p.unparsed.items[i];
-                        writer.print("  .{s} '{s}'\n", .{
-                            @tagName(node.tag),
-                            node.tokenString(p.tokenizer.input),
-                        }) catch {};
+                        const node = src.items[i];
+                        writer.writeByteNTimes(' ', 2) catch {};
+                        node.dump(writer, p.tokenizer.input) catch {};
                     }
                 },
-                .parsed => {
-                    writer.print("parsed:\n", .{}) catch {};
-                    var i: usize = p.parsed.items.len;
+                .pending_states => |tag| {
+                    writer.print(@tagName(tag) ++ ":\n", .{}) catch {};
+                    var i: usize = p.pending.states.constSlice().len;
                     while (i > 0) {
                         i -= 1;
-                        const node = p.parsed.items[i];
-                        writer.print("  .{s} '{s}'\n", .{
-                            @tagName(node.tag),
-                            node.tokenString(p.tokenizer.input),
-                        }) catch {};
-                    }
-                },
-                .pending_states => {
-                    writer.print("pending_states:\n", .{}) catch {};
-                    var i: usize = p.pending_states.constSlice().len;
-                    if (i == 0) {
-                        writer.print("  (empty)\n", .{}) catch {};
-                    } else while (i > 0) {
-                        i -= 1;
-                        const state = p.pending_states.arr[i];
+                        const state = p.pending.states.arr[i];
                         writer.print("  .{s}\n", .{@tagName(state)}) catch {};
                     }
                 },
@@ -492,8 +565,8 @@ pub fn Parser(opt: ParserOptions) type {
                 .all => {
                     log(p, writer, .token, false);
                     log(p, writer, .indent, false);
-                    log(p, writer, .unparsed, false);
-                    log(p, writer, .parsed, false);
+                    log(p, writer, .pending_operators, false);
+                    log(p, writer, .pending_operands, false);
                     log(p, writer, .pending_states, false);
                     log(p, writer, .state, false);
                     log(p, writer, .cursor, false);
@@ -507,10 +580,11 @@ pub fn Parser(opt: ParserOptions) type {
 test Parser {
     const alloc = std.heap.c_allocator;
     const stderr = std.io.getStdErr();
+    _ = stderr; // autofix
     const case = struct {
-        pub fn run(alc: std.mem.Allocator, node: ?*Node, expect: []const u8, input: []const u8) !void {
+        pub fn run(alc: Allocator, node: ?*Node, expect: []const u8, input: []const u8) !void {
             if (node) |n| {
-                try t.expectEqualStrings(expect, try n.dumpTreeString(alc, input));
+                try t.expectEqualStrings(expect, try n.dumpRecString(alc, input));
             } else return error.UnexpectedNull;
         }
     }.run;
@@ -522,12 +596,11 @@ test Parser {
         ;
         var p = Parser(.{}).init(alloc, input);
         try case(alloc, try p.parse(),
-            \\.root '?'
-            \\  .op_arith_add '+'
-            \\    .literal_number '1'
-            \\    .op_arith_mul '*'
-            \\      .literal_number '2'
-            \\      .literal_number '3'
+            \\.op_arith_add '+'
+            \\  .literal_number '1'
+            \\  .op_arith_mul '*'
+            \\    .literal_number '2'
+            \\    .literal_number '3'
             \\
         , input);
     }
@@ -539,8 +612,8 @@ test Parser {
         ;
         var p = Parser(.{}).init(alloc, input);
         try case(alloc, try p.parse(),
-            \\.root '?'
-            \\  .list_and ','
+            \\.block_enum_and ' '
+            \\  .inline_enum_and ','
             \\    .literal_number '1'
             \\    .literal_number '2'
             \\    .literal_number '3'
@@ -562,9 +635,8 @@ test Parser {
             \\ 4
         ;
         var p = Parser(.{}).init(alloc, input);
-        errdefer p.log(stderr.writer(), .cursor, true);
         try case(alloc, try p.parse(),
-            \\.root '?'
+            \\.block_enum_and ' '
             \\  .parens '('
             \\    .op_arith_mul '*'
             \\      .parens '('
