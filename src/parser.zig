@@ -91,7 +91,6 @@ pub const Node = struct {
                 .block_enum_or,
                 .inline_enum_and,
                 .inline_enum_or,
-                => .list,
 
                 .name_def,
                 .name_ref,
@@ -259,6 +258,12 @@ pub fn Parser(opt: ParserOptions) type {
                 try p.operators.append(alloc, try Node.init(alloc, node_tag, token));
             }
 
+            pub fn popOperandAppendToLast(p: *Pending, alloc: Allocator) !void {
+                const operand = p.operands.pop().?;
+                const last = p.operands.getLast();
+                try last.data.list.append(alloc, operand);
+            }
+
             pub fn reduceAllOperatorsWhileHigherPre(p: *Pending, alloc: Allocator, tag: Node.Tag) !void {
                 while (p.operators.getLastOrNull()) |last| {
                     if (last.tag.isHigherPrecedenceThan(tag)) {
@@ -281,25 +286,16 @@ pub fn Parser(opt: ParserOptions) type {
             }
 
             pub fn reduceOperator(p: *Pending, alloc: Allocator, op: *Node) !void {
-                switch (op.tag) {
-                    // join
-                    .op_arith_add,
-                    .op_arith_mul,
-                    => {
+                switch (op.tag.dataTag()) {
+                    .pair => {
                         op.data.pair.right = p.operands.pop().?;
                         op.data.pair.left = p.operands.pop().?;
                         try p.operands.append(alloc, op);
                     },
-
-                    // merge
-                    inline .inline_enum_and,
-                    .inline_enum_or,
-                    .block_enum_and,
-                    .block_enum_or,
-                    => |tag| {
+                    .list => {
                         const tail = p.operands.pop().?;
                         const head = p.operands.getLast();
-                        if (head.tag == tag) { // continue pushing
+                        if (head.tag == op.tag) { // continue pushing
                             try head.data.list.append(alloc, tail);
                         } else {
                             try op.data.list.append(alloc, p.operands.pop().?); // head
@@ -307,24 +303,11 @@ pub fn Parser(opt: ParserOptions) type {
                             try p.operands.append(alloc, op);
                         }
                     },
-
-                    // fold
-                    .parens,
-                    .square,
-                    => {
+                    .single => {
                         op.data.single = p.operands.pop().?;
                         try p.operands.append(alloc, op);
                     },
-
-                    // attach
-                    .block_assign,
-                    .inline_assign,
-                    => {
-                        op.data.single = p.operands.pop().?;
-                        const parent = p.operands.getLast();
-                        try parent.data.list.append(alloc, op);
-                    },
-                    else => unreachable,
+                    .void => unreachable,
                 }
             }
         };
@@ -479,12 +462,14 @@ pub fn Parser(opt: ParserOptions) type {
                     },
                     .parse_name_block_assign_end => {
                         try p.pending.reduceAllOperatorsUntilInc(p.alloc, .block_assign);
+                        try p.pending.popOperandAppendToLast(p.alloc);
                         switch (p.token.tag) {
                             .indent => {
                                 const indent_lvl = try p.indent.levelOf(p.token.len());
-                                if (p.indent.curr_level - indent_lvl > 1)
+                                if (p.indent.curr_level - indent_lvl > 1) // exit
                                     return error.UnalignedIndent;
                                 p.indent.curr_level -= 1;
+                                // enumerate next element
                                 try p.pending.pushOperator(p.alloc, .block_enum_and, p.token);
                                 p.nextToken();
                                 p.nextState(.parse_expr);
