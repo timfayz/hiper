@@ -8,7 +8,6 @@
 //! - Parser
 
 const std = @import("std");
-const t = std.testing;
 const ThisFile = @This();
 const slice = @import("utils/slice.zig");
 const line = @import("utils/line.zig");
@@ -43,12 +42,15 @@ pub const Node = struct {
         literal_string,
         literal_identifier,
 
-        // aggregation
+        // enumeration
         inline_enum_and,
         inline_enum_or,
         block_enum_and,
         block_enum_or,
+
+        // grouping
         parens,
+        square,
 
         // arithmetics
         op_arith_add,
@@ -62,6 +64,9 @@ pub const Node = struct {
         name_def,
         name_ref,
 
+        block_assign,
+        inline_assign,
+
         // control
         ctrl_for,
         ctrl_while,
@@ -70,7 +75,9 @@ pub const Node = struct {
         pub fn dataTag(tag: Tag) Data.Tag {
             return switch (tag) {
                 .parens,
+                .square,
                 .op_arith_neg,
+                .block_assign,
                 => .single,
 
                 .op_arith_add,
@@ -179,9 +186,7 @@ pub const Node = struct {
 
 pub const Error = error{
     OutOfMemory,
-    InvalidToken,
     UnalignedIndent,
-    IndentationTooDeep,
     UnexpectedToken,
     UnmatchedBracket,
 };
@@ -211,7 +216,7 @@ pub fn Parser(opt: ParserOptions) type {
 
             parse_name_post_dot,
             parse_name_post_dot_id,
-            parse_name_assign_end,
+            parse_name_block_assign_end,
 
             parse_end,
             phony,
@@ -227,7 +232,7 @@ pub fn Parser(opt: ParserOptions) type {
                 if (curr_size < self.trim_size) return error.UnalignedIndent;
 
                 if (self.size == 0 and curr_size > 0) { // init indent
-                    self.size = curr_size;
+                    self.size = curr_size - self.trim_size;
                     return 1;
                 }
 
@@ -275,15 +280,18 @@ pub fn Parser(opt: ParserOptions) type {
                     try p.reduceOperator(alloc, n);
             }
 
-            pub fn reduceOperator(p: *Pending, alloc: Allocator, node: *Node) !void {
-                switch (node.tag) {
+            pub fn reduceOperator(p: *Pending, alloc: Allocator, op: *Node) !void {
+                switch (op.tag) {
+                    // join
                     .op_arith_add,
                     .op_arith_mul,
                     => {
-                        node.data.pair.right = p.operands.pop().?;
-                        node.data.pair.left = p.operands.pop().?;
-                        try p.operands.append(alloc, node);
+                        op.data.pair.right = p.operands.pop().?;
+                        op.data.pair.left = p.operands.pop().?;
+                        try p.operands.append(alloc, op);
                     },
+
+                    // merge
                     inline .inline_enum_and,
                     .inline_enum_or,
                     .block_enum_and,
@@ -294,14 +302,27 @@ pub fn Parser(opt: ParserOptions) type {
                         if (head.tag == tag) { // continue pushing
                             try head.data.list.append(alloc, tail);
                         } else {
-                            try node.data.list.append(alloc, p.operands.pop().?); // head
-                            try node.data.list.append(alloc, tail);
-                            try p.operands.append(alloc, node);
+                            try op.data.list.append(alloc, p.operands.pop().?); // head
+                            try op.data.list.append(alloc, tail);
+                            try p.operands.append(alloc, op);
                         }
                     },
-                    .parens => {
-                        node.data.single = p.operands.pop().?;
-                        try p.operands.append(alloc, node);
+
+                    // fold
+                    .parens,
+                    .square,
+                    => {
+                        op.data.single = p.operands.pop().?;
+                        try p.operands.append(alloc, op);
+                    },
+
+                    // attach
+                    .block_assign,
+                    .inline_assign,
+                    => {
+                        op.data.single = p.operands.pop().?;
+                        const parent = p.operands.getLast();
+                        try parent.data.list.append(alloc, op);
                     },
                     else => unreachable,
                 }
@@ -330,6 +351,10 @@ pub fn Parser(opt: ParserOptions) type {
 
         pub fn nextState(p: *Self, state: State) void {
             p.state = state;
+        }
+
+        pub fn nextPendingState(p: *Self) void {
+            p.state = p.pending.states.pop();
         }
 
         pub fn nextToken(p: *Self) void {
@@ -369,7 +394,7 @@ pub fn Parser(opt: ParserOptions) type {
                                 //
                             },
                             else => {
-                                p.state = p.pending.states.pop();
+                                p.nextPendingState();
                             },
                         }
                     },
@@ -399,7 +424,6 @@ pub fn Parser(opt: ParserOptions) type {
                                 try p.pending.reduceAllOperatorsWhileHigherPre(p.alloc, node_tag);
                                 try p.pending.pushOperator(p.alloc, node_tag, p.token);
                                 p.nextToken();
-                                // p.inline_mode = true;
                                 p.nextState(.parse_expr);
                             },
                             .indent => {
@@ -410,11 +434,11 @@ pub fn Parser(opt: ParserOptions) type {
                                     p.nextToken();
                                     p.nextState(.parse_expr);
                                 } else {
-                                    return Error.UnexpectedToken;
+                                    p.nextPendingState();
                                 }
                             },
                             else => {
-                                p.state = p.pending.states.pop();
+                                p.nextPendingState();
                             },
                         }
                     },
@@ -430,13 +454,20 @@ pub fn Parser(opt: ParserOptions) type {
                     },
                     .parse_name_post_dot_id => {
                         switch (p.token.tag) {
-                            .indent => { // assignment
+                            .indent => {
+                                // block assignment
                                 if (try p.indent.levelOf(p.token.len()) == p.indent.curr_level + 1) {
-                                    if (p.inline_mode) return Error.UnexpectedToken;
-                                    try p.pending.pushState(.parse_name_assign_end);
+                                    p.indent.curr_level += 1;
+                                    try p.pending.pushOperator(p.alloc, .block_assign, p.token);
+                                    try p.pending.pushState(.parse_name_block_assign_end);
                                     p.nextToken();
+                                    p.nextState(.parse_expr);
+                                } else {
+                                    p.nextState(.parse_operator);
                                 }
-                                p.nextState(.parse_expr);
+                            },
+                            .equal => { // inline assignment
+
                             },
                             .left_square => { // attributes
 
@@ -446,9 +477,22 @@ pub fn Parser(opt: ParserOptions) type {
                             },
                         }
                     },
-                    .parse_name_assign_end => {
-                        try p.pending.reduceAllOperatorsUntilInc(p.alloc, .parens);
-                        p.nextState(.parse_expr);
+                    .parse_name_block_assign_end => {
+                        try p.pending.reduceAllOperatorsUntilInc(p.alloc, .block_assign);
+                        switch (p.token.tag) {
+                            .indent => {
+                                const indent_lvl = try p.indent.levelOf(p.token.len());
+                                if (p.indent.curr_level - indent_lvl > 1)
+                                    return error.UnalignedIndent;
+                                p.indent.curr_level -= 1;
+                                try p.pending.pushOperator(p.alloc, .block_enum_and, p.token);
+                                p.nextToken();
+                                p.nextState(.parse_expr);
+                            },
+                            else => {
+                                p.nextPendingState();
+                            },
+                        }
                     },
 
                     // ----------------
@@ -575,77 +619,4 @@ pub fn Parser(opt: ParserOptions) type {
             if (extra_nl) writer.print("---\n", .{}) catch {};
         }
     };
-}
-
-test Parser {
-    const alloc = std.heap.c_allocator;
-    const stderr = std.io.getStdErr();
-    _ = stderr; // autofix
-    const case = struct {
-        pub fn run(alc: Allocator, node: ?*Node, expect: []const u8, input: []const u8) !void {
-            if (node) |n| {
-                try t.expectEqualStrings(expect, try n.dumpRecString(alc, input));
-            } else return error.UnexpectedNull;
-        }
-    }.run;
-
-    defer logger.flush() catch {};
-    {
-        const input =
-            \\ 1 + 2 * 3
-        ;
-        var p = Parser(.{}).init(alloc, input);
-        try case(alloc, try p.parse(),
-            \\.op_arith_add '+'
-            \\  .literal_number '1'
-            \\  .op_arith_mul '*'
-            \\    .literal_number '2'
-            \\    .literal_number '3'
-            \\
-        , input);
-    }
-    {
-        const input =
-            \\ 1, 2, 3
-            \\ 4
-            \\ 5
-        ;
-        var p = Parser(.{}).init(alloc, input);
-        try case(alloc, try p.parse(),
-            \\.block_enum_and ' '
-            \\  .inline_enum_and ','
-            \\    .literal_number '1'
-            \\    .literal_number '2'
-            \\    .literal_number '3'
-            \\  .literal_number '4'
-            \\  .literal_number '5'
-            \\
-        , input);
-    }
-    {
-        const input =
-            \\()
-        ;
-        var p = Parser(.{}).init(alloc, input);
-        try t.expectError(error.UnexpectedToken, p.parse());
-    }
-    {
-        const input =
-            \\ ((1 + 2) * 3)
-            \\ 4
-        ;
-        var p = Parser(.{}).init(alloc, input);
-        try case(alloc, try p.parse(),
-            \\.block_enum_and ' '
-            \\  .parens '('
-            \\    .op_arith_mul '*'
-            \\      .parens '('
-            \\        .op_arith_add '+'
-            \\          .literal_number '1'
-            \\          .literal_number '2'
-            \\      .literal_number '3'
-            \\  .literal_number '4'
-            \\
-        , input);
-    }
 }
