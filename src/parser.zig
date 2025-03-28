@@ -211,11 +211,13 @@ pub fn Parser(opt: ParserOptions) type {
             parse_operator,
 
             parse_paren_post_open,
-            parse_paren_close_end,
+            parse_paren_end_close,
 
             parse_name_post_dot,
             parse_name_post_dot_id,
-            parse_name_block_assign_end,
+            parse_name_post_square_open,
+            parse_name_end_square_close,
+            parse_name_end_block_assign,
 
             parse_end,
             phony,
@@ -295,9 +297,9 @@ pub fn Parser(opt: ParserOptions) type {
                     .list => {
                         const tail = p.operands.pop().?;
                         const head = p.operands.getLast();
-                        if (head.tag == op.tag) { // continue pushing
+                        if (head.tag == op.tag) { // continue pushing to operand
                             try head.data.list.append(alloc, tail);
-                        } else {
+                        } else { // move operator to operand
                             try op.data.list.append(alloc, p.operands.pop().?); // head
                             try op.data.list.append(alloc, tail);
                             try p.operands.append(alloc, op);
@@ -442,7 +444,7 @@ pub fn Parser(opt: ParserOptions) type {
                                 if (try p.indent.levelOf(p.token.len()) == p.indent.curr_level + 1) {
                                     p.indent.curr_level += 1;
                                     try p.pending.pushOperator(p.alloc, .block_assign, p.token);
-                                    try p.pending.pushState(.parse_name_block_assign_end);
+                                    try p.pending.pushState(.parse_name_end_block_assign);
                                     p.nextToken();
                                     p.nextState(.parse_expr);
                                 } else {
@@ -453,14 +455,36 @@ pub fn Parser(opt: ParserOptions) type {
 
                             },
                             .left_square => { // attributes
-
+                                try p.pending.pushOperator(p.alloc, .square, p.token);
+                                p.nextToken();
+                                p.nextState(.parse_name_post_square_open);
                             },
                             else => {
                                 p.nextState(.parse_operator);
                             },
                         }
                     },
-                    .parse_name_block_assign_end => {
+                    .parse_name_post_square_open => {
+                        if (p.token.tag == .indent) {
+                            if (try p.indent.levelOf(p.token.len()) != p.indent.curr_level + 1) {
+                                return error.UnalignedIndent;
+                            }
+                            p.nextToken();
+                            // TODO block
+                        } else {
+                            // TODO inline
+                        }
+                        try p.pending.pushState(.parse_name_end_square_close);
+                        p.nextState(.parse_expr);
+                    },
+                    .parse_name_end_square_close => {
+                        try p.assertTokenOrelse(.right_square, error.UnmatchedBracket);
+                        try p.pending.reduceAllOperatorsUntilInc(p.alloc, .square);
+                        try p.pending.popOperandAppendToLast(p.alloc); // merge
+                        p.nextToken();
+                        p.nextState(.parse_name_post_dot_id);
+                    },
+                    .parse_name_end_block_assign => {
                         try p.pending.reduceAllOperatorsUntilInc(p.alloc, .block_assign);
                         try p.pending.popOperandAppendToLast(p.alloc);
                         switch (p.token.tag) {
@@ -489,14 +513,14 @@ pub fn Parser(opt: ParserOptions) type {
                                 return error.UnalignedIndent;
                             }
                             p.nextToken();
-                            p.inline_mode = false;
+                            // TODO block
                         } else {
-                            p.inline_mode = true;
+                            // TODO inline
                         }
-                        try p.pending.pushState(.parse_paren_close_end);
+                        try p.pending.pushState(.parse_paren_end_close);
                         p.nextState(.parse_expr);
                     },
-                    .parse_paren_close_end => {
+                    .parse_paren_end_close => {
                         try p.assertTokenOrelse(.right_paren, error.UnmatchedBracket);
                         try p.pending.reduceAllOperatorsUntilInc(p.alloc, .parens);
                         p.inline_mode = false;

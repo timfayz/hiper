@@ -42,8 +42,8 @@ test Parser {
     {
         const input =
             \\ 1, 2, 3
+            \\ ((1 + 2) * 3)
             \\ 4
-            \\ 5
         ;
         var p = Parser(.{}).init(alloc, input);
         try case(alloc, try p.parse(),
@@ -52,19 +52,6 @@ test Parser {
             \\    .literal_number '1'
             \\    .literal_number '2'
             \\    .literal_number '3'
-            \\  .literal_number '4'
-            \\  .literal_number '5'
-            \\
-        , input);
-    }
-    {
-        const input =
-            \\ ((1 + 2) * 3)
-            \\ 4
-        ;
-        var p = Parser(.{}).init(alloc, input);
-        try case(alloc, try p.parse(),
-            \\.block_enum_and ' '
             \\  .parens '('
             \\    .op_arith_mul '*'
             \\      .parens '('
@@ -78,7 +65,7 @@ test Parser {
     }
     {
         const input =
-            \\ .a
+            \\ .a [.x, .z]
             \\   1, 2, 3
             \\   4
             \\ .b
@@ -87,6 +74,10 @@ test Parser {
         try case(alloc, try p.parse(),
             \\.block_enum_and ' '
             \\  .name_def 'a'
+            \\    .square '['
+            \\      .inline_enum_and ','
+            \\        .name_def 'x'
+            \\        .name_def 'z'
             \\    .block_assign '   '
             \\      .block_enum_and '   '
             \\        .inline_enum_and ','
@@ -98,4 +89,5 @@ test Parser {
             \\
         , input);
     }
+    // if (true) return;
 }
