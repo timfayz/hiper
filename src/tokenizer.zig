@@ -35,14 +35,17 @@ pub const Token = struct {
         indent,
 
         // brackets
-        left_paren, // (
-        right_paren, // )
+        paren_open, // (
+        paren_close, // )
         empty_parens, // ()
 
-        left_curly, // {
-        right_curly, // }
-        left_square, // [
-        right_square, // ]
+        curly_open, // {
+        curly_close, // }
+        empty_curly, // {}
+
+        square_open, // [
+        square_close, // ]
+        empty_square, // []
 
         // special
         single_quote, // ' (currently unused)
@@ -115,12 +118,12 @@ pub const Token = struct {
                 '\n' => .newline,
 
                 // brackets
-                '(' => .left_paren,
-                ')' => .right_paren,
-                '{' => .left_curly,
-                '}' => .right_curly,
-                '[' => .left_square,
-                ']' => .right_square,
+                '(' => .paren_open,
+                ')' => .paren_close,
+                '{' => .curly_open,
+                '}' => .curly_close,
+                '[' => .square_open,
+                ']' => .square_close,
 
                 // special
                 '\'' => .single_quote,
@@ -171,12 +174,12 @@ pub const Token = struct {
                 .newline => '\n',
 
                 // brackets
-                .left_paren => '(',
-                .right_paren => ')',
-                .left_curly => '{',
-                .right_curly => '}',
-                .left_square => '[',
-                .right_square => ']',
+                .paren_open => '(',
+                .paren_close => ')',
+                .curly_open => '{',
+                .curly_close => '}',
+                .square_open => '[',
+                .square_close => ']',
 
                 // special
                 .single_quote => '\'',
@@ -303,7 +306,9 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             // [symbols recognition states]
 
             post_newline,
-            left_paren,
+            post_open_paren,
+            post_open_square,
+            post_open_curly,
             plus,
 
             // [literals recognition states]
@@ -499,15 +504,15 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                             },
 
                             // operator-looking tokens
-                            '(' => s.state = .left_paren,
                             '+' => s.state = .plus,
+                            '(' => s.state = .post_open_paren,
+                            '[' => s.state = .post_open_square,
+                            '{' => s.state = .post_open_curly,
 
                             inline
                             // brackets
                             ')',
-                            '{',
                             '}',
-                            '[',
                             ']',
                             // special
                             '`',
@@ -642,7 +647,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                         s.state = .complete;
                         break;
                     },
-                    .left_paren => {
+                    .post_open_paren => {
                         switch (c) {
                             ')' => {
                                 token.tag = .empty_parens;
@@ -651,7 +656,37 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                                 break;
                             },
                             else => {
-                                token.tag = .left_paren;
+                                token.tag = .paren_open;
+                                s.state = .complete;
+                                break;
+                            },
+                        }
+                    },
+                    .post_open_square => {
+                        switch (c) {
+                            ']' => {
+                                token.tag = .empty_square;
+                                s.state = .complete;
+                                s.index += 1;
+                                break;
+                            },
+                            else => {
+                                token.tag = .square_open;
+                                s.state = .complete;
+                                break;
+                            },
+                        }
+                    },
+                    .post_open_curly => {
+                        switch (c) {
+                            '}' => {
+                                token.tag = .empty_curly;
+                                s.state = .complete;
+                                s.index += 1;
+                                break;
+                            },
+                            else => {
+                                token.tag = .curly_open;
                                 s.state = .complete;
                                 break;
                             },
@@ -1180,13 +1215,15 @@ test Tokenizer {
         try case("\n ", .newline, .complete);
 
         // brackets
-        try case("( ", .left_paren, .complete);
-        try case(") ", .right_paren, .complete);
+        try case("( ", .paren_open, .complete);
+        try case(") ", .paren_close, .complete);
         try case("() ", .empty_parens, .complete);
-        try case("{ ", .left_curly, .complete);
-        try case("} ", .right_curly, .complete);
-        try case("[ ", .left_square, .complete);
-        try case("] ", .right_square, .complete);
+        try case("{ ", .curly_open, .complete);
+        try case("} ", .curly_close, .complete);
+        try case("{} ", .empty_curly, .complete);
+        try case("[ ", .square_open, .complete);
+        try case("] ", .square_close, .complete);
+        try case("[] ", .empty_square, .complete);
 
         // special
         // no single quotes (see strings)
@@ -1467,11 +1504,11 @@ test Tokenizer {
             token = scan.next();
             try t.expectEqual(.indent, token.tag);
             try t.expectEqual(2, token.len());
-            try t.expectEqual(.left_curly, scan.next().tag);
+            try t.expectEqual(.curly_open, scan.next().tag);
             try t.expectEqual(.number, scan.next().tag);
             try t.expectEqual(.comma, scan.next().tag);
             try t.expectEqual(.number, scan.next().tag);
-            try t.expectEqual(.right_curly, scan.next().tag);
+            try t.expectEqual(.curly_close, scan.next().tag);
             try t.expectEqual(.plus, scan.next().tag);
             try t.expectEqual(.eof, scan.next().tag);
             try t.expectEqual(.eof, scan.next().tag); // make sure we stay the same

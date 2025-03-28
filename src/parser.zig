@@ -366,7 +366,7 @@ pub fn Parser(opt: ParserOptions) type {
                                 p.nextToken();
                                 p.nextState(.parse_operator);
                             },
-                            .left_paren => {
+                            .paren_open => {
                                 try p.pending.pushOperator(p.alloc, .parens, p.token);
                                 p.nextToken();
                                 p.nextState(.parse_paren_post_open);
@@ -454,7 +454,7 @@ pub fn Parser(opt: ParserOptions) type {
                             .equal => { // inline assignment
 
                             },
-                            .left_square => { // attributes
+                            .square_open => { // attributes
                                 try p.pending.pushOperator(p.alloc, .square, p.token);
                                 p.nextToken();
                                 p.nextState(.parse_name_post_square_open);
@@ -478,7 +478,7 @@ pub fn Parser(opt: ParserOptions) type {
                         p.nextState(.parse_expr);
                     },
                     .parse_name_end_square_close => {
-                        try p.assertTokenOrelse(.right_square, error.UnmatchedBracket);
+                        try p.assertTokenOrelse(.square_close, error.UnmatchedBracket);
                         try p.pending.reduceAllOperatorsUntilInc(p.alloc, .square);
                         try p.pending.popOperandAppendToLast(p.alloc); // merge
                         p.nextToken();
@@ -521,7 +521,7 @@ pub fn Parser(opt: ParserOptions) type {
                         p.nextState(.parse_expr);
                     },
                     .parse_paren_end_close => {
-                        try p.assertTokenOrelse(.right_paren, error.UnmatchedBracket);
+                        try p.assertTokenOrelse(.paren_close, error.UnmatchedBracket);
                         try p.pending.reduceAllOperatorsUntilInc(p.alloc, .parens);
                         p.inline_mode = false;
                         p.nextToken();
