@@ -10,7 +10,7 @@ const Node = @import("parser.zig").Node;
 
 test Parser {
     const alloc = std.heap.c_allocator;
-    defer parser.logger.flush() catch {};
+    // defer parser.logger.flush() catch {};
     const case = struct {
         pub fn run(alc: Allocator, node: ?*Node, expect: []const u8, input: []const u8) !void {
             if (node) |n| {
@@ -89,5 +89,4 @@ test Parser {
             \\
         , input);
     }
-    // if (true) return;
 }

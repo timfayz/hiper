@@ -143,6 +143,25 @@ pub const Node = struct {
         return node;
     }
 
+    pub fn get(node: *const Node, comptime field: enum { val }) ?*Node {
+        switch (node.tag) {
+            .name_def => {
+                const items = node.data.list.items;
+                switch (field) {
+                    .val => {
+                        return switch (items.len) {
+                            0 => null,
+                            1 => items[0].data.single,
+                            2 => items[1].data.single,
+                            else => unreachable,
+                        };
+                    },
+                }
+            },
+            else => unreachable,
+        }
+    }
+
     pub fn tokenString(node: *const Node, input: []const u8) []const u8 {
         if (node.token) |tok| {
             const str = tok.sliceFrom(input);
@@ -201,26 +220,25 @@ pub fn Parser(opt: ParserOptions) type {
         token: Token = undefined,
         indent: Indent = .{},
         pending: Pending = .{},
-        inline_mode: bool = false,
-        state: State = .parse_expr,
+        state: State = .expr,
 
         const Self = @This();
 
         pub const State = enum {
-            parse_expr,
-            parse_operator,
+            expr,
+            operator,
 
-            parse_paren_post_open,
-            parse_paren_end_close,
+            paren_post_open,
+            paren_end,
+            paren_end_post_indent,
 
-            parse_name_post_dot,
-            parse_name_post_dot_id,
-            parse_name_post_square_open,
-            parse_name_end_square_close,
-            parse_name_end_block_assign,
+            name_post_dot,
+            name_post_dot_id,
+            name_post_square_open,
+            name_end_square,
+            name_end_assign,
 
-            parse_end,
-            phony,
+            end,
         };
 
         pub const Indent = struct {
@@ -228,18 +246,30 @@ pub fn Parser(opt: ParserOptions) type {
             size: usize = 0,
             curr_level: usize = 0,
 
-            fn levelOf(self: *Indent, curr_size: usize) !usize {
-                if (curr_size == self.trim_size) return 0;
-                if (curr_size < self.trim_size) return error.UnalignedIndent;
+            fn levelOf(indent: *Indent, indent_size: usize) !usize {
+                if (indent_size == indent.trim_size) return 0;
+                if (indent_size < indent.trim_size) return error.UnalignedIndent;
 
-                if (self.size == 0 and curr_size > 0) { // init indent
-                    self.size = curr_size - self.trim_size;
+                if (indent.size == 0 and indent_size > 0) { // init indent
+                    indent.size = indent_size - indent.trim_size;
                     return 1;
                 }
 
-                const size = curr_size - self.trim_size;
-                if (size % self.size != 0) return error.UnalignedIndent;
-                return size / self.size;
+                const size = indent_size - indent.trim_size;
+                if (size % indent.size != 0) return error.UnalignedIndent;
+                return size / indent.size;
+            }
+
+            fn isEqual(indent: *Indent, indent_size: usize) !bool {
+                return try indent.levelOf(indent_size) == indent.curr_level;
+            }
+
+            fn isIncreased(indent: *Indent, indent_size: usize) !bool {
+                return try indent.levelOf(indent_size) == indent.curr_level + 1;
+            }
+
+            fn isDecreased(indent: *Indent, indent_size: usize) !bool {
+                return try indent.levelOf(indent_size) < indent.curr_level;
             }
         };
 
@@ -248,25 +278,25 @@ pub fn Parser(opt: ParserOptions) type {
             operands: List(*Node) = .{},
             states: stack.Stack(State, 64) = .{},
 
-            pub fn pushState(p: *Pending, state: State) !void {
+            fn pushState(p: *Pending, state: State) !void {
                 try p.states.push(state);
             }
 
-            pub fn pushOperand(p: *Pending, alloc: Allocator, comptime node_tag: Node.Tag, token: ?Token) !void {
+            fn pushOperand(p: *Pending, alloc: Allocator, comptime node_tag: Node.Tag, token: ?Token) !void {
                 try p.operands.append(alloc, try Node.init(alloc, node_tag, token));
             }
 
-            pub fn pushOperator(p: *Pending, alloc: Allocator, comptime node_tag: Node.Tag, token: ?Token) !void {
+            fn pushOperator(p: *Pending, alloc: Allocator, comptime node_tag: Node.Tag, token: ?Token) !void {
                 try p.operators.append(alloc, try Node.init(alloc, node_tag, token));
             }
 
-            pub fn popOperandAppendToLast(p: *Pending, alloc: Allocator) !void {
+            fn popOperandAppendToLast(p: *Pending, alloc: Allocator) !void {
                 const operand = p.operands.pop().?;
                 const last = p.operands.getLast();
                 try last.data.list.append(alloc, operand);
             }
 
-            pub fn reduceAllOperatorsWhileHigherPre(p: *Pending, alloc: Allocator, tag: Node.Tag) !void {
+            fn reduceWhileHigherPre(p: *Pending, alloc: Allocator, tag: Node.Tag) !void {
                 while (p.operators.getLastOrNull()) |last| {
                     if (last.tag.isHigherPrecedenceThan(tag)) {
                         try p.reduceOperator(alloc, last);
@@ -275,19 +305,19 @@ pub fn Parser(opt: ParserOptions) type {
                 }
             }
 
-            pub fn reduceAllOperatorsUntilInc(p: *Pending, alloc: Allocator, tag: Node.Tag) !void {
+            fn reduceUntilInc(p: *Pending, alloc: Allocator, tag: Node.Tag) !void {
                 while (p.operators.pop()) |n| {
                     try p.reduceOperator(alloc, n);
                     if (n.tag == tag) break;
                 }
             }
 
-            pub fn reduceAllOperators(p: *Pending, alloc: Allocator) !void {
+            fn reduceAll(p: *Pending, alloc: Allocator) !void {
                 while (p.operators.pop()) |n|
                     try p.reduceOperator(alloc, n);
             }
 
-            pub fn reduceOperator(p: *Pending, alloc: Allocator, op: *Node) !void {
+            fn reduceOperator(p: *Pending, alloc: Allocator, op: *Node) !void {
                 switch (op.tag.dataTag()) {
                     .pair => {
                         op.data.pair.right = p.operands.pop().?;
@@ -323,32 +353,46 @@ pub fn Parser(opt: ParserOptions) type {
             switch (p.token.tag) {
                 .space, .indent => {
                     p.indent.trim_size = p.token.len();
-                    p.nextToken();
+                    p.advance();
                 },
                 else => {},
             }
         }
 
-        pub fn assertTokenOrelse(p: *Self, token_tag: Token.Tag, err: Error) Error!void {
+        fn assert(p: *Self, token_tag: Token.Tag, err: Error) Error!void {
             if (p.token.tag != token_tag)
                 return err;
         }
 
-        pub fn nextState(p: *Self, state: State) void {
+        fn assertIndentIncreased(p: *Self) Error!void {
+            if (!try p.indent.isIncreased(p.token.len()))
+                return error.UnalignedIndent;
+        }
+
+        fn updateIndent(p: *Self) Error!void {
+            p.indent.curr_level = try p.indent.levelOf(p.token.len());
+        }
+
+        fn jump(p: *Self, state: State) void {
             p.state = state;
         }
 
-        pub fn nextPendingState(p: *Self) void {
+        fn jumpPending(p: *Self) void {
             p.state = p.pending.states.pop();
         }
 
-        pub fn nextToken(p: *Self) void {
+        fn advance(p: *Self) void {
             p.token = p.tokenizer.next();
+        }
+
+        fn advanceAndJump(p: *Self, state: State) void {
+            p.token = p.tokenizer.next();
+            p.state = state;
         }
 
         pub fn parse(p: *Self) Error!?*Node {
             p.initTrimSize();
-            try p.pending.pushState(.parse_end);
+            try p.pending.pushState(.end);
             while (true) {
                 p.log(logger.writer(), .token, false);
                 p.log(logger.writer(), .pending_operators, false);
@@ -357,42 +401,46 @@ pub fn Parser(opt: ParserOptions) type {
                 p.log(logger.writer(), .state, true);
                 switch (p.state) {
                     // ----------------
-                    // .parse_expr
+                    // .expr
                     // ----------------
-                    .parse_expr => {
+                    .expr => {
                         switch (p.token.tag) {
                             .number => {
                                 try p.pending.pushOperand(p.alloc, .literal_number, p.token);
-                                p.nextToken();
-                                p.nextState(.parse_operator);
+                                p.advanceAndJump(.operator);
+                            },
+                            .identifier => {
+                                try p.pending.pushOperand(p.alloc, .literal_identifier, p.token);
+                                p.advanceAndJump(.operator);
+                            },
+                            .string => {
+                                try p.pending.pushOperand(p.alloc, .literal_string, p.token);
+                                p.advanceAndJump(.operator);
                             },
                             .paren_open => {
                                 try p.pending.pushOperator(p.alloc, .parens, p.token);
-                                p.nextToken();
-                                p.nextState(.parse_paren_post_open);
+                                p.advanceAndJump(.paren_post_open);
                             },
                             .dot => {
-                                p.nextToken();
-                                p.nextState(.parse_name_post_dot);
-                            },
-                            .identifier => {
-                                //
+                                p.advanceAndJump(.name_post_dot);
                             },
                             else => {
-                                p.nextPendingState();
+                                return error.UnexpectedToken;
+                                // p.jumpPending();
                             },
                         }
                     },
 
                     // ----------------
-                    // .parse_operator
+                    // .operator
                     // ----------------
-                    .parse_operator => {
+                    .operator => {
                         switch (p.token.tag) {
                             inline .minus,
                             .plus,
                             .asterisk,
                             .slash,
+                            .caret,
                             .comma,
                             .pipe,
                             => |tag| {
@@ -406,86 +454,85 @@ pub fn Parser(opt: ParserOptions) type {
                                     .pipe => .inline_enum_or,
                                     else => unreachable,
                                 };
-                                try p.pending.reduceAllOperatorsWhileHigherPre(p.alloc, node_tag);
+                                try p.pending.reduceWhileHigherPre(p.alloc, node_tag);
                                 try p.pending.pushOperator(p.alloc, node_tag, p.token);
-                                p.nextToken();
-                                p.nextState(.parse_expr);
+                                p.advanceAndJump(.expr);
                             },
                             .indent => {
-                                if (p.inline_mode) return Error.UnexpectedToken;
-                                if (try p.indent.levelOf(p.token.len()) == p.indent.curr_level) {
-                                    try p.pending.reduceAllOperatorsWhileHigherPre(p.alloc, .block_enum_and);
+                                if (try p.indent.isEqual(p.token.len())) {
+                                    try p.pending.reduceWhileHigherPre(p.alloc, .block_enum_and);
                                     try p.pending.pushOperator(p.alloc, .block_enum_and, p.token);
-                                    p.nextToken();
-                                    p.nextState(.parse_expr);
+                                    p.advanceAndJump(.expr);
                                 } else {
-                                    p.nextPendingState();
+                                    p.jumpPending();
                                 }
                             },
                             else => {
-                                p.nextPendingState();
+                                p.jumpPending();
                             },
                         }
                     },
 
                     // ----------------
-                    // .parse_name
+                    // .name
                     // ----------------
-                    .parse_name_post_dot => {
-                        try p.assertTokenOrelse(.identifier, error.UnexpectedToken);
+                    .name_post_dot => {
+                        try p.assert(.identifier, error.UnexpectedToken);
                         try p.pending.pushOperand(p.alloc, .name_def, p.token);
-                        p.nextToken();
-                        p.nextState(.parse_name_post_dot_id);
+                        p.advanceAndJump(.name_post_dot_id);
                     },
-                    .parse_name_post_dot_id => {
+                    .name_post_dot_id => {
                         switch (p.token.tag) {
                             .indent => {
-                                // block assignment
-                                if (try p.indent.levelOf(p.token.len()) == p.indent.curr_level + 1) {
+                                // block assign
+                                if (try p.indent.isIncreased(p.token.len())) {
                                     p.indent.curr_level += 1;
                                     try p.pending.pushOperator(p.alloc, .block_assign, p.token);
-                                    try p.pending.pushState(.parse_name_end_block_assign);
-                                    p.nextToken();
-                                    p.nextState(.parse_expr);
+                                    try p.pending.pushState(.name_end_assign);
+                                    p.advanceAndJump(.expr);
                                 } else {
-                                    p.nextState(.parse_operator);
+                                    p.jump(.operator);
                                 }
                             },
-                            .equal => { // inline assignment
+                            .equal => { // inline assign
 
                             },
                             .square_open => { // attributes
                                 try p.pending.pushOperator(p.alloc, .square, p.token);
-                                p.nextToken();
-                                p.nextState(.parse_name_post_square_open);
+                                p.advanceAndJump(.name_post_square_open);
+                            },
+                            .empty_square => { // empty attributes
+                                p.advanceAndJump(.operator);
                             },
                             else => {
-                                p.nextState(.parse_operator);
+                                p.jump(.operator);
                             },
                         }
                     },
-                    .parse_name_post_square_open => {
+
+                    // .name [..]
+                    .name_post_square_open => {
                         if (p.token.tag == .indent) {
-                            if (try p.indent.levelOf(p.token.len()) != p.indent.curr_level + 1) {
-                                return error.UnalignedIndent;
-                            }
-                            p.nextToken();
-                            // TODO block
+                            if (try p.indent.isIncreased(p.token.len())) {
+                                p.advance();
+                            } // else jump below
                         } else {
                             // TODO inline
                         }
-                        try p.pending.pushState(.parse_name_end_square_close);
-                        p.nextState(.parse_expr);
+                        try p.pending.pushState(.name_end_square);
+                        p.jump(.expr);
                     },
-                    .parse_name_end_square_close => {
-                        try p.assertTokenOrelse(.square_close, error.UnmatchedBracket);
-                        try p.pending.reduceAllOperatorsUntilInc(p.alloc, .square);
+                    .name_end_square => {
+                        try p.assert(.square_close, error.UnmatchedBracket);
+                        try p.pending.reduceUntilInc(p.alloc, .square);
                         try p.pending.popOperandAppendToLast(p.alloc); // merge
-                        p.nextToken();
-                        p.nextState(.parse_name_post_dot_id);
+                        p.advanceAndJump(.name_post_dot_id);
                     },
-                    .parse_name_end_block_assign => {
-                        try p.pending.reduceAllOperatorsUntilInc(p.alloc, .block_assign);
+
+                    // .name = ..;
+                    .name_end_assign => {
+                        // TODO assert indent or ;
+                        try p.pending.reduceUntilInc(p.alloc, .block_assign);
                         try p.pending.popOperandAppendToLast(p.alloc);
                         switch (p.token.tag) {
                             .indent => {
@@ -495,47 +542,40 @@ pub fn Parser(opt: ParserOptions) type {
                                 p.indent.curr_level -= 1;
                                 // enumerate next element
                                 try p.pending.pushOperator(p.alloc, .block_enum_and, p.token);
-                                p.nextToken();
-                                p.nextState(.parse_expr);
+                                p.advanceAndJump(.expr);
                             },
                             else => {
-                                p.nextPendingState();
+                                p.jumpPending();
                             },
                         }
                     },
 
                     // ----------------
-                    // .parse_paren
+                    // .paren
                     // ----------------
-                    .parse_paren_post_open => {
+                    .paren_post_open => {
                         if (p.token.tag == .indent) {
-                            if (try p.indent.levelOf(p.token.len()) != p.indent.curr_level + 1) {
-                                return error.UnalignedIndent;
-                            }
-                            p.nextToken();
-                            // TODO block
-                        } else {
-                            // TODO inline
+                            try p.updateIndent();
+                            p.advance();
                         }
-                        try p.pending.pushState(.parse_paren_end_close);
-                        p.nextState(.parse_expr);
+                        try p.pending.pushState(.paren_end);
+                        p.jump(.expr);
                     },
-                    .parse_paren_end_close => {
-                        try p.assertTokenOrelse(.paren_close, error.UnmatchedBracket);
-                        try p.pending.reduceAllOperatorsUntilInc(p.alloc, .parens);
-                        p.inline_mode = false;
-                        p.nextToken();
-                        p.nextState(.parse_operator);
+                    .paren_end => {
+                        if (p.token.tag == .indent) {
+                            try p.updateIndent();
+                            p.advanceAndJump(.paren_end);
+                        } else {
+                            try p.assert(.paren_close, error.UnmatchedBracket);
+                            try p.pending.reduceUntilInc(p.alloc, .parens);
+                            p.advanceAndJump(.operator);
+                        }
                     },
 
-                    .parse_end => {
-                        switch (p.token.tag) {
-                            .eof => {
-                                try p.pending.reduceAllOperators(p.alloc);
-                                break;
-                            },
-                            else => return error.UnexpectedToken,
-                        }
+                    .end => {
+                        try p.assert(.eof, error.UnexpectedToken);
+                        try p.pending.reduceAll(p.alloc);
+                        break;
                     },
 
                     else => unreachable,
