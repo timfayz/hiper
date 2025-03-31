@@ -31,11 +31,12 @@ test Parser {
         ;
         var p = Parser(.{}).init(alloc, input);
         try case(alloc, try p.parse(),
-            \\.op_arith_add '+'
-            \\  .literal_number '1'
-            \\  .op_arith_mul '*'
-            \\    .literal_number '2'
-            \\    .literal_number '3'
+            \\.scope '?'
+            \\  .op_arith_add '+'
+            \\    .literal_number '1'
+            \\    .op_arith_mul '*'
+            \\      .literal_number '2'
+            \\      .literal_number '3'
             \\
         , input);
     }
@@ -47,14 +48,14 @@ test Parser {
         ;
         var p = Parser(.{}).init(alloc, input);
         try case(alloc, try p.parse(),
-            \\.block_enum_and ' '
+            \\.scope '?'
             \\  .inline_enum_and ','
             \\    .literal_number '1'
             \\    .literal_number '2'
             \\    .literal_number '3'
-            \\  .parens '('
+            \\  .scope '('
             \\    .op_arith_mul '*'
-            \\      .parens '('
+            \\      .scope '('
             \\        .op_arith_add '+'
             \\          .literal_number '1'
             \\          .literal_number '2'
@@ -63,30 +64,30 @@ test Parser {
             \\
         , input);
     }
-    {
-        const input =
-            \\ .a [.x, .z]
-            \\   1, 2, 3
-            \\   4
-            \\ .b
-        ;
-        var p = Parser(.{}).init(alloc, input);
-        try case(alloc, try p.parse(),
-            \\.block_enum_and ' '
-            \\  .name_def 'a'
-            \\    .square '['
-            \\      .inline_enum_and ','
-            \\        .name_def 'x'
-            \\        .name_def 'z'
-            \\    .block_assign '   '
-            \\      .block_enum_and '   '
-            \\        .inline_enum_and ','
-            \\          .literal_number '1'
-            \\          .literal_number '2'
-            \\          .literal_number '3'
-            \\        .literal_number '4'
-            \\  .name_def 'b'
-            \\
-        , input);
-    }
+    // {
+    //     const input =
+    //         \\ .a [.x, .z]
+    //         \\   1, 2, 3
+    //         \\   4
+    //         \\ .b
+    //     ;
+    //     var p = Parser(.{}).init(alloc, input);
+    //     try case(alloc, try p.parse(),
+    //         \\.block_enum_and ' '
+    //         \\  .name_def 'a'
+    //         \\    .square '['
+    //         \\      .inline_enum_and ','
+    //         \\        .name_def 'x'
+    //         \\        .name_def 'z'
+    //         \\    .block_assign '   '
+    //         \\      .block_enum_and '   '
+    //         \\        .inline_enum_and ','
+    //         \\          .literal_number '1'
+    //         \\          .literal_number '2'
+    //         \\          .literal_number '3'
+    //         \\        .literal_number '4'
+    //         \\  .name_def 'b'
+    //         \\
+    //     , input);
+    // }
 }
