@@ -31,7 +31,7 @@ test Parser {
         ;
         var p = Parser(.{}).init(alloc, input);
         try case(alloc, try p.parse(),
-            \\.scope '?'
+            \\.root '?'
             \\  .op_arith_add '+'
             \\    .literal_number '1'
             \\    .op_arith_mul '*'
@@ -48,14 +48,14 @@ test Parser {
         ;
         var p = Parser(.{}).init(alloc, input);
         try case(alloc, try p.parse(),
-            \\.scope '?'
+            \\.root '?'
             \\  .inline_enum_and ','
             \\    .literal_number '1'
             \\    .literal_number '2'
             \\    .literal_number '3'
-            \\  .scope '('
+            \\  .parens '('
             \\    .op_arith_mul '*'
-            \\      .scope '('
+            \\      .parens '('
             \\        .op_arith_add '+'
             \\          .literal_number '1'
             \\          .literal_number '2'
