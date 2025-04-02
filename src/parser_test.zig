@@ -27,16 +27,25 @@ test Parser {
     }
     {
         const input =
-            \\ 1 + 2 * 3
+            \\ .a
+            \\   1
+            \\   .c
+            \\     .g
+            \\   2
+            \\ .b
         ;
         var p = Parser(.{}).init(alloc, input);
+        errdefer p.log(parser.logger.writer(), .cursor, false);
         try case(alloc, try p.parse(),
             \\.root '?'
-            \\  .op_arith_add '+'
-            \\    .literal_number '1'
-            \\    .op_arith_mul '*'
+            \\  .name_def 'a'
+            \\    .name_val '   '
+            \\      .literal_number '1'
+            \\      .name_def 'c'
+            \\        .name_val '     '
+            \\          .name_def 'g'
             \\      .literal_number '2'
-            \\      .literal_number '3'
+            \\  .name_def 'b'
             \\
         , input);
     }
@@ -64,30 +73,29 @@ test Parser {
             \\
         , input);
     }
-    // {
-    //     const input =
-    //         \\ .a [.x, .z]
-    //         \\   1, 2, 3
-    //         \\   4
-    //         \\ .b
-    //     ;
-    //     var p = Parser(.{}).init(alloc, input);
-    //     try case(alloc, try p.parse(),
-    //         \\.block_enum_and ' '
-    //         \\  .name_def 'a'
-    //         \\    .square '['
-    //         \\      .inline_enum_and ','
-    //         \\        .name_def 'x'
-    //         \\        .name_def 'z'
-    //         \\    .block_assign '   '
-    //         \\      .block_enum_and '   '
-    //         \\        .inline_enum_and ','
-    //         \\          .literal_number '1'
-    //         \\          .literal_number '2'
-    //         \\          .literal_number '3'
-    //         \\        .literal_number '4'
-    //         \\  .name_def 'b'
-    //         \\
-    //     , input);
-    // }
+    {
+        const input =
+            \\ .a [.x, .z]
+            \\   1, 2, 3
+            \\   4
+            \\ .b
+        ;
+        var p = Parser(.{}).init(alloc, input);
+        try case(alloc, try p.parse(),
+            \\.root '?'
+            \\  .name_def 'a'
+            \\    .name_attr '['
+            \\      .inline_enum_and ','
+            \\        .name_def 'x'
+            \\        .name_def 'z'
+            \\    .name_val '   '
+            \\      .inline_enum_and ','
+            \\        .literal_number '1'
+            \\        .literal_number '2'
+            \\        .literal_number '3'
+            \\      .literal_number '4'
+            \\  .name_def 'b'
+            \\
+        , input);
+    }
 }
