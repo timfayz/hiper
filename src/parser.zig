@@ -101,15 +101,23 @@ pub const Node = struct {
         return node;
     }
 
-    pub fn field(node: *const Node, comptime tag: Node.Tag) ?*Node {
+    pub fn child(node: *const Node, comptime tag: Node.Tag) ?*Node {
         switch (node.tag) {
             .name_def => {
-                for (node.next.items) |child|
-                    if (child.tag == tag) return child;
+                for (node.next.items) |item|
+                    if (item.tag == tag) return item;
                 return null;
             },
             else => unreachable,
         }
+    }
+
+    pub fn children(node: *const Node) []*Node {
+        return node.next.items;
+    }
+
+    pub fn childDescendants(node: *const Node, comptime tag: Node.Tag) ?[]*Node {
+        return if (node.child(tag)) |c| c.next.items else null;
     }
 
     pub fn tokenString(node: *const Node, input: []const u8) []const u8 {
