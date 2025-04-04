@@ -20,47 +20,50 @@ pub fn Html(opt: HtmlOptions) type {
             var parser = Parser(.{}).init(arena, input);
             const root = try parser.parse();
             // try root.?.dumpRec(std.io.getStdErr().writer(), input, 0);
-            try s.render(arena, writer, input, root);
+            if (root) |node| {
+                try s.render(arena, writer, input, node);
+            }
         }
 
-        pub fn render(s: *Self, arena: Allocator, writer: anytype, input: [:0]const u8, root: ?*Node) !void {
-            if (root) |node| {
-                switch (node.tag) {
-                    .literal_number => {
-                        const literal = node.token.?.sliceFrom(input);
-                        try writer.writeByteNTimes(' ', opt.indent_size * s.lvl);
-                        try writer.print("{s}\n", .{literal});
-                    },
-                    .literal_string => {
-                        const literal = node.token.?.sliceFrom(input);
-                        try writer.writeByteNTimes(' ', opt.indent_size * s.lvl);
-                        try writer.print("{s}\n", .{literal[1 .. literal.len - 1]});
-                    },
-                    .block_enum_and => {
-                        for (node.data.list.items) |item| {
-                            try s.render(arena, writer, input, item);
-                        }
-                    },
-                    .name_def => {
-                        const tag_name = node.token.?.sliceFrom(input);
-                        try writer.writeByteNTimes(' ', opt.indent_size * s.lvl);
-                        try writer.print("<{0s}>\n", .{tag_name});
-                        s.lvl += 1;
-                        if (node.get(.val)) |val| {
-                            try s.render(arena, writer, input, val);
-                        }
-                        s.lvl -= 1;
-                        try writer.writeByteNTimes(' ', opt.indent_size * s.lvl);
-                        try writer.print("</{0s}>\n", .{tag_name});
-                    },
-                    .literal_identifier => {
-                        // resolve in scope, error or ignore otherwise
-                    },
-                    .ctrl_for => {
-                        // evaluate
-                    },
-                    else => return error.UnsupportedNode,
-                }
+        pub fn render(s: *Self, arena: Allocator, writer: anytype, input: [:0]const u8, node: *Node) !void {
+            switch (node.tag) {
+                .literal_number => {
+                    const literal = node.token.?.sliceFrom(input);
+                    try writer.writeByteNTimes(' ', opt.indent_size * s.lvl);
+                    try writer.print("{s}\n", .{literal});
+                },
+                .literal_string => {
+                    const literal = node.token.?.sliceFrom(input);
+                    try writer.writeByteNTimes(' ', opt.indent_size * s.lvl);
+                    try writer.print("{s}\n", .{literal[1 .. literal.len - 1]});
+                },
+                .name_def => {
+                    const tag_name = node.token.?.sliceFrom(input);
+                    try writer.writeByteNTimes(' ', opt.indent_size * s.lvl);
+                    try writer.print("<{0s}>\n", .{tag_name});
+                    s.lvl += 1;
+                    if (node.field(.name_val)) |val| {
+                        try s.render(arena, writer, input, val);
+                    }
+                    s.lvl -= 1;
+                    try writer.writeByteNTimes(' ', opt.indent_size * s.lvl);
+                    try writer.print("</{0s}>\n", .{tag_name});
+                },
+                .literal_identifier => {
+                    // resolve in scope, error or ignore otherwise
+                },
+                .ctrl_for => {
+                    // evaluate
+                },
+                .root, .name_val => {
+                    for (node.next.items) |child| {
+                        try s.render(arena, writer, input, child);
+                    }
+                },
+                else => {
+                    std.log.err("UnsupportedNode: {any}", .{node.tag});
+                    return error.UnsupportedNode;
+                },
             }
         }
     };
