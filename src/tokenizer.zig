@@ -229,29 +229,26 @@ pub const Token = struct {
 /// Tokenizer options.
 pub const TokenizerOptions = struct {
     /// Enable strict recognition of tokens:
-    /// * `true` - Consume only valid tokens (this is useful if you want to
-    ///    terminate tokenization as soon as the first invalid token is
-    ///    encountered).
-    /// * `false` - Consume any token that "looks" valid (this is useful if you
-    ///    want to tokenize the complete input and report several invalid
-    ///    occasions).
+    /// * `true` - Consume only valid tokens (useful if you want to terminate
+    ///    tokenization as soon as the first invalid token is encountered).
+    /// * `false` - Consume any token that "looks" valid (useful if you want
+    ///    to tokenize the complete input and report several invalid occasions).
     strict_mode: bool = true,
     /// Recognize spaces as separate tokens.
     tokenize_spaces: bool = false,
     /// Recognize indents as separate tokens. An indent is a newline followed by
     /// optional leading spaces before the next printable character.
     /// * `true` - tokenizer produces .indent tokens, skipping empty lines,
-    ///   including those with spaces. token.len() gives the size of the leading
-    ///   spaces before the first printable character.
+    ///   including those with spaces. `token.len()` gives the indent size.
     /// * `false` - tokenizer produces .newline tokens instead, consuming as
     ///   many newlines as possible in one go until it encounters a space or
-    ///   a printable character. token.len() gives the number of lines consumed.
+    ///   a printable character. `token.len()` gives the number of lines consumed.
     tokenize_indents: bool = false,
     /// Track line position of the cursor.
     /// ```txt
     /// 0 1  2 3 4  tokenizer.index = 4
     /// a \n b c d  tokenizer.loc.line_number = 2 (starts at 1)
-    ///          ^  tokenizer.loc.line_start = 2 (starts at 0)
+    ///          ^  tokenizer.loc.line_start = 1 (points to just before the line start)
     ///             tokenizer.atCol() = 3 (starts at 1)
     /// ````
     track_location: bool = true,
@@ -289,7 +286,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
         const Self = @This();
 
         pub const Loc = struct {
-            line_start: usize = @as(usize, 0) -% 1,
+            line_start: usize = @as(usize, 0) -% 1, // points to just before the line start
             line_number: usize = 1,
         };
 
@@ -354,25 +351,25 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             string_post_double_quote,
 
             /// Applicable only for .number_* states
-            pub fn toBase(s: @This()) Base {
+            pub fn toBase(s: State) Base {
                 return switch (s) {
                     .number_post_base_bin,
                     .number_post_base_first_digit_bin,
-                    => Base.binary,
+                    => .binary,
 
                     .number_post_base_oct,
                     .number_post_base_first_digit_oct,
-                    => Base.octal,
+                    => .octal,
 
                     .number_post_base_hex,
                     .number_post_base_first_digit_hex,
                     .number_post_dot_first_digit_hex,
                     .number_post_dot_hex,
-                    => Base.hex,
+                    => .hex,
 
                     .number_post_dot_decimal,
                     .number_post_dot_first_digit_decimal,
-                    => Base.decimal,
+                    => .decimal,
                     else => unreachable,
                 };
             }
@@ -400,11 +397,11 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
             };
 
             /// Applicable only for digits within '0'..'9'
-            pub fn hasDigit(base: @This(), digit: u8) bool {
+            pub fn hasDigit(base: Base, digit: u8) bool {
                 return digit_value[digit] < @intFromEnum(base);
             }
 
-            pub fn fromChar(char: u8) @This() {
+            pub fn fromChar(char: u8) Base {
                 return switch (char) {
                     'x' => .hex,
                     'o' => .octal,
@@ -487,6 +484,10 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                             // newline
                             '\n' => {
                                 if (opt.tokenize_indents) {
+                                    if (opt.track_location) {
+                                        s.loc.line_start = s.index;
+                                        s.loc.line_number += 1;
+                                    }
                                     token.loc.start += 1;
                                     s.state = .post_newline;
                                 } else {
@@ -496,7 +497,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                                     while (s.input[s.index] == '\n') : (s.index += 1) {}
                                     // }
                                     if (opt.track_location) {
-                                        s.loc.line_start = s.index -| 1;
+                                        s.loc.line_start = s.index - 1;
                                         s.loc.line_number += s.index - token.loc.start;
                                     }
                                     break;
@@ -607,14 +608,14 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                             ' ' => {}, // continue
                             '\n' => {
                                 s.index += 1;
+                                if (opt.track_location) s.loc.line_number += 1;
                                 // shortcut {
-                                while (s.input[s.index] == '\n') : (s.index += 1) {}
-                                // }
-                                if (opt.track_location) {
-                                    s.loc.line_start = s.index -| 1;
-                                    s.loc.line_number += s.index - token.loc.start;
+                                while (s.input[s.index] == '\n') : (s.index += 1) {
+                                    if (opt.track_location) s.loc.line_number += 1;
                                 }
+                                // }
                                 token.loc.start = s.index;
+                                if (opt.track_location) s.loc.line_start = s.index - 1;
                                 continue;
                             },
                             0 => {
@@ -1067,7 +1068,7 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                     },
                     else => break,
                 }
-                s.index +%= 1;
+                s.index += 1;
             }
             token.loc.end = s.index;
             s.logState();
@@ -1116,9 +1117,9 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                 logger.print("[state .{s} ", .{@tagName(s.state)}) catch {};
                 logger.setAnsiColor(.dim) catch {};
                 if (opt.track_location) {
-                    logger.print("{d}:{d}:", .{ s.getLine(), s.getCol() }) catch {};
+                    logger.print("l:{d} c:{d} ", .{ s.getLine(), s.getCol() }) catch {};
                 }
-                logger.print("{d}", .{s.index}) catch {};
+                logger.print("i:{d}", .{s.index}) catch {};
                 logger.setAnsiColor(.reset) catch {};
                 logger.printAndFlush("]\n", .{}) catch {};
             }
@@ -1130,52 +1131,72 @@ pub fn Tokenizer(opt: TokenizerOptions) type {
                 logger.setAnsiColor(.bold) catch {};
                 logger.print(".{s}", .{@tagName(token.tag)}) catch {};
                 logger.setAnsiColor(.reset) catch {};
-                logger.printAndFlush(":{d}:{d}]\n", .{ token.loc.start, token.loc.end }) catch {};
+                logger.printAndFlush(" {d}:{d}]\n", .{ token.loc.start, token.loc.end }) catch {};
             }
         }
     };
 }
 
 test Tokenizer {
-    // Test correct location tracking.
+    // location tracking
     {
-        var scan = Tokenizer(.{ .track_location = true }).init("\nfoo!\n\n");
+        var scan = Tokenizer(.{ .track_location = true, .tokenize_indents = true }).init(
+            \\
+            //0 (1)
+            \\a
+            //12 (2)
+            \\  
+            //345 ('  \n') (3)
+            \\   b
+            //678910 (4)
+            \\
+            \\
+            //^12 (double newline)
+            \\ c
+            //^13 (7)
+        );
         // cold start
+        try t.expectEqual(18446744073709551615, scan.loc.line_start); // 0 -% 1
+        try t.expectEqual(1, scan.loc.line_number);
+        try t.expectEqual(1, scan.getCol());
         try t.expectEqual(1, scan.getLine());
-        try t.expectEqual(1, scan.getCol());
 
-        // \n
-        try t.expectEqual(Token.Tag.newline, scan.next().tag);
-        try t.expectEqual(1, scan.index);
-        try t.expectEqual(2, scan.getLine());
+        var token = scan.next();
+        try t.expectEqual(.indent, token.tag);
+        try t.expectEqual(1, token.loc.start);
+        try t.expectEqual(0, token.len());
+        try t.expectEqual(0, scan.loc.line_start);
         try t.expectEqual(1, scan.getCol());
-
-        // foo
-        try t.expectEqual(Token.Tag.identifier, scan.next().tag);
-        try t.expectEqual(4, scan.index);
         try t.expectEqual(2, scan.getLine());
+
+        _ = scan.next(); // skip a
+        try t.expectEqual(2, scan.getCol());
+
+        token = scan.next();
+        try t.expectEqual(.indent, token.tag);
+        try t.expectEqual(6, token.loc.start);
+        try t.expectEqual(3, token.len());
         try t.expectEqual(4, scan.getCol());
-
-        // !
-        try t.expectEqual(Token.Tag.exclamation, scan.next().tag);
-        try t.expectEqual(5, scan.index);
-        try t.expectEqual(2, scan.getLine());
-        try t.expectEqual(5, scan.getCol());
-
-        // \n\n
-        try t.expectEqual(Token.Tag.newline, scan.next().tag);
-        try t.expectEqual(7, scan.index);
         try t.expectEqual(4, scan.getLine());
-        try t.expectEqual(1, scan.getCol());
 
-        // eof
-        try t.expectEqual(Token.Tag.eof, scan.next().tag);
-        try t.expectEqual(7, scan.index);
-        try t.expectEqual(4, scan.getLine());
-        try t.expectEqual(1, scan.getCol());
+        _ = scan.next(); // skip b
+
+        token = scan.next();
+        try t.expectEqual(.indent, token.tag);
+        try t.expectEqual(13, token.loc.start);
+        try t.expectEqual(1, token.len());
+        try t.expectEqual(2, scan.getCol());
+        try t.expectEqual(7, scan.getLine());
+
+        _ = scan.next(); // skip c
+
+        token = scan.next(); // eof
+        try t.expectEqual(.eof, token.tag);
+
+        try t.expectEqual(7, scan.getLine());
     }
 
-    // Test correct token recognition.
+    // token recognition
     {
         // Note, in this test set, all complete valid tokens end with a space to
         // avoid tokenizing only the correct beginning and leaving the invalid end.
@@ -1209,7 +1230,7 @@ test Tokenizer {
         }.run;
 
         // primes
-        // -------------------------------
+        // -------------
         // whitespace
         try case(" ", .space, .complete);
         try case("\n ", .newline, .complete);
@@ -1253,7 +1274,7 @@ test Tokenizer {
         try case("@ ", .at, .complete);
 
         // numbers
-        // -------------------------------
+        // -------------
         // [integers]
         // base 10
         try case("1 ", .number, .complete);
@@ -1399,119 +1420,87 @@ test Tokenizer {
         try case("0x12345678.9ABCCDEFp-10 ", .number, .complete); // more_hex
 
         // chars
-        // -------------------------------
+        // -------------
         try case("\'", .char, .char_post_single_quote);
 
         // strings
-        // -------------------------------
+        // -------------
         try case("\"\" ", .string, .complete);
         try case("\"", .incomplete, .string_post_double_quote);
         try case("\"\n", .invalid, .string_post_double_quote);
         try case("\" !#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\" ", .string, .complete);
+    }
 
-        // [.tokenize_spaces]
-        // -------------------------------
-        {
-            var scan = Tokenizer(.{ .tokenize_spaces = false }).init("  1");
-            try t.expectEqual(.number, scan.next().tag);
-            try t.expectEqual(.eof, scan.next().tag);
-        }
-        {
-            var scan = Tokenizer(.{ .tokenize_spaces = true }).init("  1");
-            const token = scan.next();
-            try t.expectEqual(.space, token.tag);
-            try t.expectEqual(2, token.len());
-            try t.expectEqual(.number, scan.next().tag);
-            try t.expectEqual(.eof, scan.next().tag);
-        }
+    // [.tokenize_spaces]
+    {
+        var scan = Tokenizer(.{ .tokenize_spaces = false }).init("  1");
+        try t.expectEqual(.number, scan.next().tag);
+        try t.expectEqual(.eof, scan.next().tag);
+    }
+    {
+        var scan = Tokenizer(.{ .tokenize_spaces = true }).init("  1");
+        const token = scan.next();
+        try t.expectEqual(.space, token.tag);
+        try t.expectEqual(2, token.len());
+        try t.expectEqual(.number, scan.next().tag);
+        try t.expectEqual(.eof, scan.next().tag);
+    }
 
-        // [.tokenize_indents]
-        // -------------------------------
-        {
-            var scan = Tokenizer(.{ .tokenize_indents = false }).init("\n");
-            try t.expectEqual(.newline, scan.next().tag);
-        }
-        {
-            var scan = Tokenizer(.{ .tokenize_indents = true }).init("\n");
-            const token = scan.next();
-            try t.expectEqual(.eof, token.tag);
-            try t.expectEqual(0, token.len());
-            try t.expectEqual(0, scan.input[token.loc.start]);
-            try t.expectEqual(0, scan.input[token.loc.end]);
-        }
-        {
-            var scan = Tokenizer(.{ .tokenize_indents = true }).init("\n!");
-            const token = scan.next();
-            try t.expectEqual(.indent, token.tag);
-            try t.expectEqual(0, token.len());
-            try t.expectEqual('!', scan.input[token.loc.start]);
-            try t.expectEqual('!', scan.input[token.loc.end]);
-        }
-        {
-            var scan = Tokenizer(.{ .tokenize_indents = true }).init("\n  !");
-            const token = scan.next();
-            try t.expectEqual(.indent, token.tag);
-            try t.expectEqual(2, token.len());
-            try t.expectEqual(' ', scan.input[token.loc.start]);
-            try t.expectEqual('!', scan.input[token.loc.end]);
-        }
-        {
-            var scan = Tokenizer(.{ .tokenize_indents = true }).init(
-                \\
-                //^ the first newline is necessary to recognize the indent
-                \\   hello
-                \\  
-                //^ '  \n' recognize indent with extra leading spaces
-                \\   world
-            );
-            var token = scan.next();
-            try t.expectEqual(.indent, token.tag);
-            try t.expectEqual(3, token.len());
-            try t.expectEqual(.identifier, scan.next().tag); // hello
-            try t.expectEqual(.indent, scan.next().tag);
-            try t.expectEqual(3, token.len());
-            try t.expectEqual(.identifier, scan.next().tag); // world
-        }
+    // [.tokenize_indents]
+    {
+        var scan = Tokenizer(.{ .tokenize_indents = false })
+            .init("a\n\n\n");
+        //         01 2 3 4
+        try t.expectEqual(.identifier, scan.next().tag);
+        try t.expectEqual(1, scan.getLine());
+        const token = scan.next();
+        try t.expectEqual(.newline, token.tag);
+        try t.expectEqual(3, token.len());
+        try t.expectEqual(1, token.loc.start);
+        try t.expectEqual(4, token.loc.end);
+        try t.expectEqual(4, scan.getLine());
+    }
+    {
+        var scan = Tokenizer(.{ .tokenize_indents = true }).init("\n");
+        const token = scan.next();
+        try t.expectEqual(.eof, token.tag);
+        try t.expectEqual(0, token.len());
+    }
 
-        // [nextFrom(.indent)]
-        // -------------------------------
-        {
-            var scan = Tokenizer(.{ .tokenize_indents = false }).init("  !");
-            const token = scan.nextFrom(.indent);
-            try t.expectEqual(.indent, token.tag);
-            try t.expectEqual(2, token.len());
-            try t.expectEqual(' ', scan.input[token.loc.start]);
-            try t.expectEqual('!', scan.input[token.loc.end]);
-        }
+    // [nextFrom(.indent)]
+    {
+        var scan = Tokenizer(.{ .tokenize_indents = false }).init("  !");
+        const token = scan.nextFrom(.indent);
+        try t.expectEqual(.indent, token.tag);
+        try t.expectEqual(2, token.len());
+    }
 
-        // mixed
-        // -------------------------------
-        {
-            var scan = Tokenizer(.{
-                .tokenize_indents = true,
-                .tokenize_spaces = true,
-            }).init(
-                \\  hello!
-                \\  {123,456}+
-            );
+    // mixed
+    {
+        var scan = Tokenizer(.{
+            .tokenize_indents = true,
+            .tokenize_spaces = true,
+        }).init(
+            \\ hello!
+            \\  {123,456}+
+        );
 
-            var token = scan.next();
-            try t.expectEqual(.space, token.tag);
-            try t.expectEqual(2, token.len());
-            try t.expectEqual(.identifier, scan.next().tag);
-            try t.expectEqual(true, scan.nextIs(.exclamation));
-            try t.expectEqual(.exclamation, scan.next().tag);
-            token = scan.next();
-            try t.expectEqual(.indent, token.tag);
-            try t.expectEqual(2, token.len());
-            try t.expectEqual(.curly_open, scan.next().tag);
-            try t.expectEqual(.number, scan.next().tag);
-            try t.expectEqual(.comma, scan.next().tag);
-            try t.expectEqual(.number, scan.next().tag);
-            try t.expectEqual(.curly_close, scan.next().tag);
-            try t.expectEqual(.plus, scan.next().tag);
-            try t.expectEqual(.eof, scan.next().tag);
-            try t.expectEqual(.eof, scan.next().tag); // make sure we stay the same
-        }
+        var token = scan.next();
+        try t.expectEqual(.space, token.tag);
+        try t.expectEqual(1, token.len());
+        try t.expectEqual(.identifier, scan.next().tag);
+        try t.expectEqual(true, scan.nextIs(.exclamation));
+        try t.expectEqual(.exclamation, scan.next().tag);
+        token = scan.next();
+        try t.expectEqual(.indent, token.tag);
+        try t.expectEqual(2, token.len());
+        try t.expectEqual(.curly_open, scan.next().tag);
+        try t.expectEqual(.number, scan.next().tag);
+        try t.expectEqual(.comma, scan.next().tag);
+        try t.expectEqual(.number, scan.next().tag);
+        try t.expectEqual(.curly_close, scan.next().tag);
+        try t.expectEqual(.plus, scan.next().tag);
+        try t.expectEqual(.eof, scan.next().tag);
+        try t.expectEqual(.eof, scan.next().tag); // make sure we stay the same
     }
 }
