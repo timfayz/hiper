@@ -155,7 +155,7 @@ pub const Error = error{
 };
 
 pub const ParserOptions = struct {
-    log: bool = false,
+    log_debug_info: bool = false,
 };
 
 pub fn Parser(opt: ParserOptions) type {
@@ -417,12 +417,14 @@ pub fn Parser(opt: ParserOptions) type {
             try p.pushAndSetScope(root);
             try p.pushJump(.end);
             while (true) {
-                p.log(logger.writer(), .state, false);
-                p.log(logger.writer(), .token, false);
-                p.log(logger.writer(), .unparsed, false);
-                p.log(logger.writer(), .scope, false);
-                p.log(logger.writer(), .scopes, false);
-                p.log(logger.writer(), .states, true);
+                if (opt.log_debug) {
+                    p.log(logger.writer(), .state, false);
+                    p.log(logger.writer(), .token, false);
+                    p.log(logger.writer(), .operator_stack, false);
+                    p.log(logger.writer(), .scope, false);
+                    p.log(logger.writer(), .scope_stack, false);
+                    p.log(logger.writer(), .state_stack, true);
+                }
                 switch (p.state) {
                     // ----------------
                     // .expr
@@ -631,7 +633,7 @@ pub fn Parser(opt: ParserOptions) type {
                     else => unreachable,
                 }
             }
-            p.log(logger.writer(), .all, true);
+            if (opt.log_debug) p.log(logger.writer(), .all, true);
 
             return root;
         }
@@ -649,15 +651,14 @@ pub fn Parser(opt: ParserOptions) type {
                 indent,
                 token,
                 state,
-                unparsed,
+                operator_stack,
                 scope,
-                scopes,
-                states,
+                scope_stack,
+                state_stack,
                 cursor,
             },
             comptime extra_nl: bool,
         ) void {
-            if (!opt.log) return;
             switch (part) {
                 .token => {
                     writer.print("token: .{s} '{s}'\n", .{
@@ -674,8 +675,8 @@ pub fn Parser(opt: ParserOptions) type {
                     writer.print("indent.trim_size: {d}\n", .{p.indent.trim_size}) catch {};
                 },
                 .scope,
-                .scopes,
-                .unparsed,
+                .scope_stack,
+                .operator_stack,
                 => |tag| {
                     writer.print(@tagName(tag) ++ ": ", .{}) catch {};
                     const src = switch (tag) {
@@ -687,8 +688,8 @@ pub fn Parser(opt: ParserOptions) type {
                             }
                             break :blk p.scope.next;
                         },
-                        .scopes => p.scope_stack,
-                        .unparsed => p.operator_stack,
+                        .scope_stack => p.scope_stack,
+                        .operator_stack => p.operator_stack,
                         else => unreachable,
                     };
                     writer.writeByte('\n') catch {};
@@ -700,7 +701,7 @@ pub fn Parser(opt: ParserOptions) type {
                         node.dump(writer, p.tokenizer.input) catch {};
                     }
                 },
-                .states => |tag| {
+                .state_stack => |tag| {
                     writer.print(@tagName(tag) ++ ":\n", .{}) catch {};
                     var i: usize = p.state_stack.constSlice().len;
                     while (i > 0) {
@@ -713,16 +714,16 @@ pub fn Parser(opt: ParserOptions) type {
                     line.printWithCursor(writer, p.tokenizer.input, .{
                         .index = p.token.loc.start,
                         .range = @max(p.token.len(), 1),
-                        .line_num = p.tokenizer.loc.line_number,
+                        .line_num = p.tokenizer.getLine(),
                     }, .{ .around = 15 }, .{}) catch {};
                 },
                 .all => {
                     log(p, writer, .state, false);
                     log(p, writer, .token, false);
-                    log(p, writer, .unparsed, false);
+                    log(p, writer, .operator_stack, false);
                     log(p, writer, .scope, false);
-                    log(p, writer, .scopes, false);
-                    log(p, writer, .states, false);
+                    log(p, writer, .scope_stack, false);
+                    log(p, writer, .state_stack, false);
                     log(p, writer, .indent, false);
                     log(p, writer, .cursor, false);
                 },
